@@ -128,7 +128,7 @@
 ```
 
 - `status` 状态机见 §4。`failed`（run 级异常，如 Judge 全挂）时 `error` 带错误码。
-- `skipped_reason`：➕ 现状 runner 已传此字段但模型未收录（被 pydantic 静默丢弃），需补。
+- `skipped_reason`：✅ 已实现（2026-08-17 bug-fix：Judge 不可用时跳过该 case；pass_rate 计算排除 skipped，与契约一致）。
 - `summary.pass_rate` 计算时**排除 skipped case**（现状逻辑一致，保留）。
 - 落库位置：`data/runs/{project_id}/{run_id}.json`（➕ 新增存储层）。
 
@@ -274,7 +274,7 @@ POST /api/runs → queued（落库）
 
 | # | 改动 | 涉及 | 状态 |
 |---|---|---|---|
-| 1 | `TargetConfig` 增 `auth` + `response_mapping`；`JudgeConfig` 增 `prompt_template`；`EvalCase` 增 `id` + `enabled`；`CaseResult` 增 `skipped_reason`；`EvalRun` 增 `status/started_at/finished_at/error` | models.py | 🔧 |
+| 1 | `TargetConfig` 增 `auth` + `response_mapping`；`JudgeConfig` 增 `prompt_template`；`EvalCase` 增 `id` + `enabled`；`EvalRun` 增 `status/started_at/finished_at/error` | models.py | 🔧 |
 | 2 | run 落库 `data/runs/{pid}/{rid}.json` + 读写工具函数 | 新增 storage 模块 | ➕ |
 | 3 | `POST /api/runs` 异步化：落库 + BackgroundTasks + 状态推进 | main.py + runner.py | 🔧 |
 | 4 | `GET /api/projects`（含 last_run + trend）、`GET/PUT /api/projects/{pid}`、`POST/DELETE /api/projects` | 新增 routes | ➕ |
