@@ -144,7 +144,7 @@
 | `POST /api/projects` | ➕ | 新建。body 最少字段 `{name, task_shape}`，其余配置可后续 PUT |
 | `GET /api/projects/{pid}` | ➕ | 详情（含完整 config，secret 字段 masked） |
 | `PUT /api/projects/{pid}` | ➕ | 全量更新配置。secret 字段支持 `"__UNCHANGED__"` 哨兵值 |
-| `DELETE /api/projects/{pid}` | ➕ | 删除 project + 其 run 历史（危险操作，UI 需二次确认） |
+| `DELETE /api/projects/{pid}` | ❌ | 不入 v0.1（决议：暂不做删除入口，避免误删历史数据） |
 
 **`GET /api/projects` 响应示例**：
 
@@ -267,6 +267,7 @@ POST /api/runs → queued（落库）
 - **单 case 失败不置 run 为 failed**：case 标 `passed: false`，run 照常 completed。
 - 前端轮询：`GET /api/runs/{rid}`，2s 起，指数退避封顶 10s；`document.visibilitychange` 隐藏时暂停，恢复时立即补拉。
 - 关页面不打断任务：执行在服务端（FastAPI BackgroundTasks 起步），落库即与请求生命周期解耦。
+- **并发（决议：v0.1 不做）**：不做并发控制与排队。允许多个 run 同时执行，各自独立落库（每个 run 独立文件，无共享状态竞争）；前端不做并发引导 UI。并发语义留给 v2。
 
 ---
 
@@ -277,7 +278,7 @@ POST /api/runs → queued（落库）
 | 1 | `TargetConfig` 增 `auth` + `response_mapping`；`JudgeConfig` 增 `prompt_template`；`EvalCase` 增 `id` + `enabled`；`EvalRun` 增 `status/started_at/finished_at/error` | models.py | 🔧 |
 | 2 | run 落库 `data/runs/{pid}/{rid}.json` + 读写工具函数 | 新增 storage 模块 | ➕ |
 | 3 | `POST /api/runs` 异步化：落库 + BackgroundTasks + 状态推进 | main.py + runner.py | 🔧 |
-| 4 | `GET /api/projects`（含 last_run + trend）、`GET/PUT /api/projects/{pid}`、`POST/DELETE /api/projects` | 新增 routes | ➕ |
+| 4 | `GET /api/projects`（含 last_run + trend）、`GET/PUT /api/projects/{pid}`、`POST /api/projects`（DELETE 不入 v0.1） | 新增 routes | ➕ |
 | 5 | evalset 全部接口 + CSV 导入导出（BOM 处理） | 新增 routes + util | ➕ |
 | 6 | run 查询接口（详情/历史/导出） | 新增 routes | ➕ |
 | 7 | 3 个 test 端点 | 新增 routes | ➕ |
@@ -288,8 +289,10 @@ POST /api/runs → queued（落库）
 
 ---
 
-## 6. 待 David 决策的开放项
+## 6. 评审决议（2026-08-18 已定）
 
-1. **`GET /api/projects` 的 trend 数据**：是列表接口直接算好（N 次 run 的 pass_rate），还是前端拿历史列表自己算 sparkline？——骨架暂定前者（减少前端请求数），数据量大后可改。
-2. **DELETE /api/projects**：要不要在 v0.1 做？UI 规范没画删除入口。骨架暂列为 ➕，可砍。
-3. **run 并发**：MVP 是否允许多个 run 同时执行？（PRD 把并发列为 v2，但"关页面不打断"的架构天然支持排队）——建议：同一 project 同时最多 1 个 running，新发起自动排队（`queued`），无额外 UI。
+| 开放项 | 决议 |
+|---|---|
+| Projects 列表 trend 数据 | **后端算好**（列表接口直接返回近 8 次 run 的 pass_rate），维持轻量前端 |
+| DELETE /api/projects | **不入 v0.1**（§2.1 已标 ❌） |
+| run 并发 | **v0.1 不做并发控制**（§4 已写入：允许多 run 并行、各自独立落库，无排队语义） |
