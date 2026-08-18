@@ -1,0 +1,36 @@
+{
+  "id": "demo-evalset-1",
+  "project_id": "demo-project",
+  "name": "示例评测集：客服意图回答",
+  "cases": [
+    {
+      "case_name": "退款政策-精确",
+      "input": "你们支持退款吗？",
+      "expected_output": "支持，7 天内可无理由退款。",
+      "eval_type": "exact",
+      "eval_params": {}
+    },
+    {
+      "case_name": "回复含联系方式-包含",
+      "input": "我想投诉，怎么联系你们？",
+      "expected_output": "",
+      "eval_type": "contains",
+      "eval_params": {"substring": "客服"}
+    },
+    {
+      "case_name": "回复不过长-长度",
+      "input": "介绍一下你们的产品",
+      "expected_output": "",
+      "eval_type": "length",
+      "eval_params": {"min": 10, "max": 200}
+    },
+    {
+      "case_name": "态度友好-LLM判断",
+      "input": "你们的产品太差了",
+      "expected_output": "",
+      "output_requirement": "回复语气友好、不反驳用户、表达歉意并愿意帮助解决问题",
+      "eval_type": "llm_judge",
+      "eval_params": {}
+    }
+  ]
+}
