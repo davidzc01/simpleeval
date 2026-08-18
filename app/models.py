@@ -60,6 +60,7 @@ class CaseResult(BaseModel):
     score: float = 0.0
     latency_ms: float = 0.0
     token_used: int = 0
+    skipped_reason: Optional[str] = None  # 跳过原因，如 "llm_unavailable"
 
 
 class EvalSummary(BaseModel):
