@@ -84,14 +84,21 @@ class JudgeConfig(BaseModel):
 
 
 class TargetConfig(BaseModel):
-    """被评测 API 的请求配置（OpenAI Compatible）"""
+    """被评测 API 的请求配置
+
+    api_type:
+    - openai_compatible（默认）：model 必填，请求模板默认走 OpenAI /chat/completions
+    - custom：request_template 必填，渲染模板后不注入 model/messages，URL 不补 /chat/completions
+    校验在 routes 层 PUT /projects 时阻断（422），不在模型层阻断（允许创建空项目）。
+    """
+    api_type: Literal["openai_compatible", "custom"] = "openai_compatible"
     base_url: str
-    api_key: str
-    model: str
-    request_template: str = "{input}"  # 默认直接把 case.input 塞进 prompt
+    api_key: str = ""  # 留空 = 不带 Authorization 头
+    model: Optional[str] = None  # openai_compatible 模式必填
+    request_template: str = "{input}"  # custom 模式必填
     auth: AuthConfig = Field(default_factory=AuthConfig)
     response_mapping: list[ResponseMapping] = Field(default_factory=list)
-    response_parsing: Optional[ResponseParsing] = None  # 新增：四键模型，优先于 response_mapping
+    response_parsing: Optional[ResponseParsing] = None
 
 
 class TokenBudget(BaseModel):
@@ -193,9 +200,10 @@ class RunEvalRequest(BaseModel):
 class TestTargetRequest(BaseModel):
     """测试目标 API 请求"""
     base_url: str
-    api_key: str
-    model: str
+    api_key: str = ""
+    model: Optional[str] = None
     request_template: str = "{input}"
+    api_type: Literal["openai_compatible", "custom"] = "openai_compatible"
     auth: AuthConfig = Field(default_factory=AuthConfig)
     response_mapping: list[ResponseMapping] = Field(default_factory=list)
     response_parsing: Optional[ResponseParsing] = None

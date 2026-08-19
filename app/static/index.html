@@ -748,6 +748,32 @@
         .justify-between { justify-content: space-between; }
         .text-right { text-align: right; }
         .text-muted { color: var(--ink-4); }
+
+        /* B-7: 响应解析行编辑器 + JSON 树点选 */
+        .rp-path-list { display: flex; flex-direction: column; gap: 6px; }
+        .rp-path-row { display: flex; gap: 6px; align-items: center; }
+        .rp-path-row .rp-path-input { flex: 1; font-size: 13px; }
+        .rp-path-row .btn-sm { padding: 4px 10px; line-height: 1.4; }
+        .rp-toolbar { display: flex; gap: 8px; margin-top: 6px; flex-wrap: wrap; }
+
+        .json-tree { font-family: var(--font-mono); font-size: 12px; line-height: 1.7; color: var(--ink-2); }
+        .json-tree .jt-row { margin-left: 18px; border-left: 1px dashed var(--gray-bd); padding-left: 8px; }
+        .json-tree .jt-key { color: var(--accent); cursor: pointer; }
+        .json-tree .jt-key:hover { text-decoration: underline; }
+        .json-tree .jt-leaf { cursor: pointer; padding: 0 2px; border-radius: 2px; }
+        .json-tree .jt-leaf:hover { background: var(--accent-pale); }
+        .json-tree .jt-string { color: var(--green); }
+        .json-tree .jt-number { color: var(--ink-1); font-weight: 600; }
+        .json-tree .jt-boolean { color: var(--red); }
+        .json-tree .jt-null { color: var(--ink-4); font-style: italic; }
+        .json-tree .jt-bracket { color: var(--ink-3); cursor: pointer; user-select: none; }
+        .json-tree .jt-bracket:hover { color: var(--accent); }
+        .json-tree .jt-children.jt-hidden { display: none; }
+        .json-tree .jt-preview { color: var(--ink-4); font-style: italic; margin-left: 8px; font-size: 11px; }
+        .json-tree .jt-hint { font-size: 11px; color: var(--ink-4); margin-bottom: 8px; }
+        .json-tree-container { border: 1px solid var(--gray-bd); border-radius: var(--radius-md); padding: 12px; max-height: 400px; overflow: auto; background: var(--gray-bg); }
+        .rp-target-badge { font-size: 11px; color: var(--ink-4); margin-left: 8px; }
+        .rp-target-badge.active { color: var(--accent); font-weight: 600; }
     </style>
 </head>
 <body>
@@ -804,10 +830,12 @@
         // ==================== 辅助函数 ====================
         function isProjectReady(project) {
             // 检查项目是否配置完整（Target API 和 Judge）
+            // B-6: custom 模式不要求 model
             if (!project) return false;
             const tc = project.target_config || {};
             const jc = project.judge_config || {};
-            return !!(tc.base_url && tc.model && jc.base_url && jc.model);
+            const targetReady = tc.base_url && (tc.api_type === 'custom' ? true : !!tc.model);
+            return !!(targetReady && jc.base_url && jc.model);
         }
 
         // ==================== API 客户端 ====================
@@ -834,7 +862,7 @@
             const container = document.getElementById('toastContainer');
             const toast = document.createElement('div');
             toast.className = `toast toast-${type}`;
-            toast.innerHTML = `<span>${type === 'success' ? '✓' : type === 'error' ? '✗' : '⚠'}</span><span>${message}</span>`;
+            toast.innerHTML = `<span>${type === 'success' ? '✓' : type === 'error' ? '✗' : '⚠'}</span><span>${escapeHtml(message)}</span>`;
             container.appendChild(toast);
             setTimeout(() => toast.remove(), 3000);
         }
@@ -1080,17 +1108,80 @@
 
         function renderSparkline(data) {
             if (!data.length) return '-';
-            const max = Math.max(...data.map(d => d.pass_rate));
-            const min = Math.min(...data.map(d => d.pass_rate));
-            const range = max - min || 1;
+            // B-9: y 轴固定 0–1（pass_rate 为 0-1 小数），禁止 min-max 缩放
             const height = 20;
             const width = 60;
             const points = data.map((d, i) => {
-                const x = (i / (data.length - 1)) * width;
-                const y = height - ((d.pass_rate - min) / range) * height;
+                const x = data.length === 1 ? width / 2 : (i / (data.length - 1)) * width;
+                const y = height - d.pass_rate * height;
                 return `${x},${y}`;
             }).join(' ');
             return `<svg width="${width}" height="${height}"><polyline points="${points}" fill="none" stroke="var(--accent)" stroke-width="2"/></svg>`;
+        }
+
+        // B-9: 概览趋势图（双系列：pass_rate 折线 + total_token 浅柱）
+        function renderTrendChart(trend) {
+            if (!trend || !trend.length) return '<div class="empty-state-text">暂无趋势数据</div>';
+            const n = trend.length;
+            const width = 440;
+            const height = 140;
+            const pad = { top: 16, right: 20, bottom: 28, left: 44 };
+            const plotW = width - pad.left - pad.right;
+            const plotH = height - pad.top - pad.bottom;
+
+            // token 最大值用于柱状图缩放
+            const maxToken = Math.max(...trend.map(d => d.total_token || 0), 1);
+            const barW = Math.min(plotW / n * 0.5, 20);
+            const xStep = n === 1 ? 0 : plotW / (n - 1);
+            const xFor = i => n === 1 ? pad.left + plotW / 2 : pad.left + i * xStep;
+            // pass_rate y 轴固定 0-1
+            const yRateFor = v => pad.top + plotH * (1 - v);
+            // token y 轴 0-maxToken
+            const yTokenFor = v => pad.top + plotH * (1 - v / maxToken);
+
+            // 网格
+            let grid = '';
+            for (const v of [0, 0.5, 1.0]) {
+                const y = yRateFor(v);
+                grid += `<line x1="${pad.left}" y1="${y}" x2="${width - pad.right}" y2="${y}" stroke="var(--border)"/>`;
+                grid += `<text x="${pad.left - 6}" y="${y + 3}" text-anchor="end" font-size="10" fill="var(--ink-4)">${v.toFixed(1)}</text>`;
+            }
+
+            // token 柱
+            let bars = '';
+            trend.forEach((d, i) => {
+                const x = xFor(i) - barW / 2;
+                const y = yTokenFor(d.total_token || 0);
+                const h = pad.top + plotH - y;
+                bars += `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barW.toFixed(1)}" height="${h.toFixed(1)}" fill="var(--accent-pale)" rx="2"/>`;
+            });
+
+            // pass_rate 折线
+            const pts = trend.map((d, i) => `${xFor(i).toFixed(1)},${yRateFor(d.pass_rate).toFixed(1)}`).join(' ');
+            const dots = trend.map((d, i) => `<circle cx="${xFor(i).toFixed(1)}" cy="${yRateFor(d.pass_rate).toFixed(1)}" r="3" fill="var(--accent)" stroke="white" stroke-width="1.5"/>`).join('');
+
+            // x 轴标签（run 序号）
+            const xLabels = trend.map((d, i) => `<text x="${xFor(i).toFixed(1)}" y="${height - 8}" text-anchor="middle" font-size="10" fill="var(--ink-4)">#${i + 1}</text>`).join('');
+
+            return `
+                <svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" style="max-width: 100%;">
+                    ${grid}
+                    ${bars}
+                    <polyline points="${pts}" fill="none" stroke="var(--accent)" stroke-width="2"/>
+                    ${dots}
+                    ${xLabels}
+                </svg>
+                <div style="display: flex; gap: 16px; margin-top: 8px; font-size: 11px;">
+                    <div style="display: flex; align-items: center; gap: 6px;">
+                        <span style="width: 16px; height: 2px; background: var(--accent); display: inline-block;"></span>
+                        <span style="color: var(--ink-3);">pass rate</span>
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 6px;">
+                        <span style="width: 12px; height: 12px; background: var(--accent-pale); display: inline-block; border: 1px solid var(--accent-bd);"></span>
+                        <span style="color: var(--ink-3);">token</span>
+                    </div>
+                </div>
+            `;
         }
 
         // ==================== Project 详情页 ====================
@@ -1190,7 +1281,23 @@
                     </div>
                     <div class="metric-card">
                         <div class="metric-value num">${lastRun ? (lastRun.total_token / 10000).toFixed(1) + 'K' : '-'}</div>
-                        <div class="metric-label">成本(约)</div>
+                        <div class="metric-label">token 量(K)</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-value num">${lastRun ? lastRun.token_per_pass.toFixed(1) : '-'}</div>
+                        <div class="metric-label">每万 token 完成率</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-value num">${lastRun ? (lastRun.latency_p50 / 1000).toFixed(1) + 's' : '-'}</div>
+                        <div class="metric-label">P50 延迟</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-value num">${lastRun ? (lastRun.latency_p95 / 1000).toFixed(1) + 's' : '-'}</div>
+                        <div class="metric-label">P95 延迟</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-value num" style="color: ${(lastRun && lastRun.failed_count > 0) ? 'var(--red)' : 'inherit'}">${lastRun ? lastRun.failed_count : '-'}</div>
+                        <div class="metric-label">失败</div>
                     </div>
                 </div>
 
@@ -1200,7 +1307,7 @@
                         <span class="card-title">变化趋势（近 ${trend.length} 次 run）</span>
                     </div>
                     <div style="padding: 20px;">
-                        ${renderSparkline(trend)}
+                        ${renderTrendChart(trend)}
                     </div>
                 </div>
                 ` : ''}
@@ -1480,6 +1587,17 @@
         function renderEvalsetDetail(evalset, projectId) {
             const cases = evalset.cases || [];
             const enabledCount = cases.filter(c => c.enabled).length;
+            // 用例预览文本（按 eval_type 取对应字段）
+            const previewField = c => {
+                if (c.eval_type === 'llm_judge') return c.output_requirement;
+                if (c.eval_type === 'contains' || c.eval_type === 'not_contains') return c.eval_params?.substring;
+                if (c.eval_type === 'length') {
+                    const mn = c.eval_params?.min;
+                    const mx = c.eval_params?.max;
+                    return `[${mn ?? 0}, ${mx ?? '∞'}]`;
+                }
+                return c.expected_output;
+            };
             return `
                 <div id="evalsetDetail">
                     <div class="card">
@@ -1488,6 +1606,7 @@
                             <div class="flex gap-2">
                                 <button class="btn btn-sm btn-secondary" onclick="showImportModal('${evalset.id}', '${projectId}')">⤒ 导入</button>
                                 <button class="btn btn-sm btn-secondary" onclick="exportEvalSet('${evalset.id}', '${projectId}')">⇩ 导出</button>
+                                <button class="btn btn-sm btn-primary" onclick="showCaseEditorModal('${evalset.id}', '${projectId}', null)">+ 新增用例</button>
                             </div>
                         </div>
                         <div style="padding: 8px 16px; color: var(--ink-4); font-size: 12px;">
@@ -1500,28 +1619,30 @@
                                         <th>case 名</th>
                                         <th>输入(截断)</th>
                                         <th>评测类型</th>
-                                        <th>期望输出</th>
+                                        <th>期望/判据</th>
                                         <th>状态</th>
                                         <th>操作</th>
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    ${cases.length === 0 ? `<tr><td colspan="6" style="text-align: center; color: var(--ink-4); padding: 24px;">暂无用例，点击「导入」添加</td></tr>` : cases.map(c => `
+                                    ${cases.length === 0 ? `<tr><td colspan="6" style="text-align: center; color: var(--ink-4); padding: 24px;">暂无用例，点击「+ 新增用例」或「导入」添加</td></tr>` : cases.map(c => `
                                         <tr style="${c.enabled === false ? 'opacity: 0.5' : ''}">
                                             <td>${escapeHtml(c.case_name)}</td>
                                             <td class="truncate mono">${escapeHtml(c.input || '-')}</td>
                                             <td><span class="tag tag-${c.eval_type}">${escapeHtml(c.eval_type)}</span></td>
-                                            <td class="truncate mono">${escapeHtml(c.expected_output || c.output_requirement || '-')}</td>
+                                            <td class="truncate mono">${escapeHtml(previewField(c) || '-')}</td>
                                             <td>
                                                 <span class="status-badge ${c.enabled ? 'status-passed' : 'status-disabled'}">
                                                     <span class="status-dot"></span>
                                                     ${c.enabled ? '启用' : '禁用'}
                                                 </span>
                                             </td>
-                                            <td>
-                                                <button class="btn btn-sm btn-secondary" onclick="toggleCaseEnabled('${evalset.id}', '${projectId}', '${c.id}', ${!c.enabled})">
+                                            <td style="white-space: nowrap;">
+                                                <button class="btn btn-sm btn-secondary" onclick="toggleCaseEnabled('${evalset.id}', '${projectId}', '${c.id}', ${!c.enabled})" title="${c.enabled ? '禁用' : '启用'}">
                                                     ${c.enabled ? '禁用' : '启用'}
                                                 </button>
+                                                <button class="btn btn-sm btn-secondary" onclick="showCaseEditorModal('${evalset.id}', '${projectId}', '${c.id}')" title="编辑">编辑</button>
+                                                <button class="btn btn-sm btn-danger" onclick="showDeleteCaseModal('${evalset.id}', '${projectId}', '${c.id}')" title="永久删除">删除</button>
                                             </td>
                                         </tr>
                                     `).join('')}
@@ -1576,6 +1697,202 @@
             } catch (err) {}
         }
 
+        // B-5: 用例新增/编辑弹窗（caseId 为 null = 新增）
+        function showCaseEditorModal(evalsetId, projectId, caseId) {
+            const evalset = (state.currentEvalsets || []).find(e => e.id === evalsetId);
+            const existing = caseId ? evalset?.cases?.find(c => c.id === caseId) : null;
+            const isNew = !existing;
+            // 默认值（新增用例）
+            const c = existing || {
+                id: 'case-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6),
+                case_name: '',
+                input: '',
+                expected_output: '',
+                output_requirement: '',
+                eval_type: 'exact',
+                eval_params: {},
+                task_shape: '',
+                enabled: true
+            };
+            const params = c.eval_params || {};
+            const substringVal = params.substring || '';
+            const minVal = params.min ?? '';
+            const maxVal = params.max ?? '';
+
+            const modal = document.createElement('div');
+            modal.className = 'modal-overlay';
+            modal.id = 'caseEditorModal';
+            modal.innerHTML = `
+                <div class="modal" style="max-width: 720px;">
+                    <div class="modal-header">
+                        <span class="modal-title">${isNew ? '新增用例' : '编辑用例'}</span>
+                        <button class="modal-close" onclick="closeModal('caseEditorModal')">×</button>
+                    </div>
+                    <div class="modal-body">
+                        <div class="form-group">
+                            <label class="form-label">case_name <span style="color: var(--red);">*</span></label>
+                            <input type="text" class="form-input mono" id="ceCaseName" value="${escapeHtml(c.case_name || '')}">
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">input <span style="color: var(--red);">*</span>（多行文本域）</label>
+                            <textarea class="form-input mono" id="ceInput" style="min-height: 100px;">${escapeHtml(c.input || '')}</textarea>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">eval_type</label>
+                            <select class="form-input" id="ceEvalType" onchange="toggleCaseEditorFields()">
+                                <option value="exact" ${c.eval_type === 'exact' ? 'selected' : ''}>exact（精确匹配）</option>
+                                <option value="contains" ${c.eval_type === 'contains' ? 'selected' : ''}>contains（包含子串）</option>
+                                <option value="not_contains" ${c.eval_type === 'not_contains' ? 'selected' : ''}>not_contains（不包含子串）</option>
+                                <option value="length" ${c.eval_type === 'length' ? 'selected' : ''}>length（长度范围）</option>
+                                <option value="llm_judge" ${c.eval_type === 'llm_judge' ? 'selected' : ''}>llm_judge（LLM 评判）</option>
+                            </select>
+                        </div>
+                        <div id="ceExactGroup" class="form-group">
+                            <label class="form-label">expected_output</label>
+                            <textarea class="form-input mono" id="ceExpectedOutput" style="min-height: 80px;">${escapeHtml(c.expected_output || '')}</textarea>
+                        </div>
+                        <div id="ceContainsGroup" class="form-group" style="display: none;">
+                            <label class="form-label">substring（要检查的子串）</label>
+                            <input type="text" class="form-input mono" id="ceSubstring" value="${escapeHtml(substringVal)}">
+                        </div>
+                        <div id="ceLengthGroup" class="form-group" style="display: none;">
+                            <label class="form-label">长度范围（min / max）</label>
+                            <div style="display: flex; gap: 8px;">
+                                <input type="number" class="form-input mono" id="ceLengthMin" placeholder="min（含）" value="${minVal}">
+                                <input type="number" class="form-input mono" id="ceLengthMax" placeholder="max（含）" value="${maxVal}">
+                            </div>
+                        </div>
+                        <div id="ceJudgeGroup" class="form-group" style="display: none;">
+                            <label class="form-label">output_requirement（评判标准）</label>
+                            <textarea class="form-input mono" id="ceOutputRequirement" style="min-height: 100px;">${escapeHtml(c.output_requirement || '')}</textarea>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">task_shape（可选，覆盖项目默认）</label>
+                            <input type="text" class="form-input mono" id="ceTaskShape" value="${escapeHtml(c.task_shape || '')}">
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button class="btn btn-secondary" onclick="closeModal('caseEditorModal')">取消</button>
+                        <button class="btn btn-primary" onclick="saveCaseFromEditor('${evalsetId}', '${projectId}', '${c.id}')">${isNew ? '新增' : '保存'}</button>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(modal);
+            toggleCaseEditorFields();
+        }
+
+        function toggleCaseEditorFields() {
+            const type = document.getElementById('ceEvalType')?.value;
+            if (!type) return;
+            const setDisplay = (id, show) => {
+                const el = document.getElementById(id);
+                if (el) el.style.display = show ? '' : 'none';
+            };
+            setDisplay('ceExactGroup', type === 'exact');
+            setDisplay('ceContainsGroup', type === 'contains' || type === 'not_contains');
+            setDisplay('ceLengthGroup', type === 'length');
+            setDisplay('ceJudgeGroup', type === 'llm_judge');
+        }
+
+        async function saveCaseFromEditor(evalsetId, projectId, caseId) {
+            const caseName = document.getElementById('ceCaseName').value.trim();
+            const input = document.getElementById('ceInput').value;
+            if (!caseName) { showToast('请填写 case_name', 'error'); return; }
+            if (!input) { showToast('请填写 input', 'error'); return; }
+
+            const evalType = document.getElementById('ceEvalType').value;
+            const taskShape = document.getElementById('ceTaskShape').value.trim() || null;
+            let expectedOutput = null, outputRequirement = null, evalParams = {};
+
+            if (evalType === 'exact') {
+                expectedOutput = document.getElementById('ceExpectedOutput').value;
+            } else if (evalType === 'contains' || evalType === 'not_contains') {
+                evalParams.substring = document.getElementById('ceSubstring').value;
+            } else if (evalType === 'length') {
+                const minV = document.getElementById('ceLengthMin').value;
+                const maxV = document.getElementById('ceLengthMax').value;
+                if (minV !== '') evalParams.min = parseInt(minV, 10);
+                if (maxV !== '') evalParams.max = parseInt(maxV, 10);
+            } else if (evalType === 'llm_judge') {
+                outputRequirement = document.getElementById('ceOutputRequirement').value;
+            }
+
+            try {
+                const evalset = await api(`/evalsets/${evalsetId}?project_id=${projectId}`);
+                const cases = evalset.cases || [];
+                const idx = cases.findIndex(c => c.id === caseId);
+                const newCase = {
+                    id: caseId,
+                    case_name: caseName,
+                    input,
+                    expected_output: expectedOutput,
+                    output_requirement: outputRequirement,
+                    eval_type: evalType,
+                    eval_params: evalParams,
+                    task_shape: taskShape,
+                    enabled: idx >= 0 ? cases[idx].enabled : true
+                };
+                if (idx >= 0) {
+                    cases[idx] = newCase;
+                } else {
+                    cases.push(newCase);
+                }
+                await api(`/evalsets/${evalsetId}`, {
+                    method: 'PUT',
+                    body: JSON.stringify({ ...evalset, cases })
+                });
+                closeModal('caseEditorModal');
+                showToast(idx >= 0 ? '已更新用例' : '已新增用例');
+                switchTab('evalsets');
+            } catch (err) {}
+        }
+
+        // B-5: 用例硬删除（红色入口 + 二次确认 + 影响说明）
+        function showDeleteCaseModal(evalsetId, projectId, caseId) {
+            // 从 state.currentEvalsets 查 case_name，避免在 HTML 属性里拼接用户输入（XSS 风险）
+            const evalset = (state.currentEvalsets || []).find(e => e.id === evalsetId);
+            const c = evalset?.cases?.find(x => x.id === caseId);
+            const caseName = c?.case_name || caseId;
+            const modal = document.createElement('div');
+            modal.className = 'modal-overlay';
+            modal.id = 'deleteCaseModal';
+            modal.innerHTML = `
+                <div class="modal" style="max-width: 480px;">
+                    <div class="modal-header">
+                        <span class="modal-title" style="color: var(--red);">确认删除用例</span>
+                        <button class="modal-close" onclick="closeModal('deleteCaseModal')">×</button>
+                    </div>
+                    <div class="modal-body">
+                        <div style="margin-bottom: 12px;">
+                            将永久删除用例 <span class="mono" style="font-weight: 600;">${escapeHtml(caseName)}</span>
+                        </div>
+                        <div style="background: var(--red-bg); color: var(--red); padding: 12px; border-radius: 6px; font-size: 13px;">
+                            删除后无法恢复；历史 run 中该 case 的结果保留。
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button class="btn btn-secondary" onclick="closeModal('deleteCaseModal')">取消</button>
+                        <button class="btn btn-danger" onclick="confirmDeleteCase('${evalsetId}', '${projectId}', '${caseId}')">永久删除</button>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(modal);
+        }
+
+        async function confirmDeleteCase(evalsetId, projectId, caseId) {
+            try {
+                const evalset = await api(`/evalsets/${evalsetId}?project_id=${projectId}`);
+                const cases = (evalset.cases || []).filter(c => c.id !== caseId);
+                await api(`/evalsets/${evalsetId}`, {
+                    method: 'PUT',
+                    body: JSON.stringify({ ...evalset, cases })
+                });
+                closeModal('deleteCaseModal');
+                showToast('已删除用例');
+                switchTab('evalsets');
+            } catch (err) {}
+        }
+
         function renderConfigTab(container, project) {
             const tc = project.target_config;
             const jc = project.judge_config;
@@ -1599,20 +1916,27 @@
                         <span class="card-title">Target API 配置</span>
                     </div>
                     <div class="form-group">
-                        <label class="form-label">base_url</label>
+                        <label class="form-label">API 模式</label>
+                        <select class="form-input" id="targetApiType" onchange="toggleApiMode()">
+                            <option value="openai_compatible" ${(tc.api_type || 'openai_compatible') === 'openai_compatible' ? 'selected' : ''}>OpenAI 兼容（自动注入 model + /chat/completions）</option>
+                            <option value="custom" ${tc.api_type === 'custom' ? 'selected' : ''}>自定义 API（纯模板渲染，不注入 model）</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">base_url ${tc.api_type === 'custom' ? '（完整端点 URL，不补路径）' : '（如 https://api.example.com/v1）'}</label>
                         <input type="text" class="form-input mono" value="${escapeHtml(tc.base_url)}" id="targetBaseUrl">
                     </div>
                     <div class="form-group">
-                        <label class="form-label">api_key</label>
+                        <label class="form-label">api_key <span id="apiKeyHint" style="color: var(--ink-5); font-weight: normal;">（留空 = 不带 Authorization 头）</span></label>
                         ${secretInput('targetApiKey', tc.api_key)}
                     </div>
-                    <div class="form-group">
-                        <label class="form-label">model</label>
-                        <input type="text" class="form-input mono" value="${escapeHtml(tc.model)}" id="targetModel">
+                    <div class="form-group" id="modelGroup">
+                        <label class="form-label">model <span id="modelRequired" style="color: var(--red);">*</span></label>
+                        <input type="text" class="form-input mono" value="${escapeHtml(tc.model || '')}" id="targetModel">
                     </div>
                     <div class="form-group">
-                        <label class="form-label">请求模板（占位符 {input}）</label>
-                        <textarea class="form-input mono" id="targetTemplate">${escapeHtml(tc.request_template || '')}</textarea>
+                        <label class="form-label">请求模板（占位符 {input}）<span id="templateHint" style="color: var(--ink-5); font-weight: normal;">（留空 {input} = 默认 OpenAI 格式）</span></label>
+                        <textarea class="form-input mono" id="targetTemplate" style="min-height: 80px;">${escapeHtml(tc.request_template || '')}</textarea>
                     </div>
 
                     <div class="form-group">
@@ -1636,29 +1960,78 @@
                         <span class="card-title">响应解析配置</span>
                     </div>
                     <div style="padding: 0 0 12px; color: var(--ink-4); font-size: 12px;">
-                        四键模型：output_paths 按序 fallback，token_paths 命中求和，token_fields 全树递归求和（配 token_scope）。paths 与 fields 同时给时 paths 优先。全空 = 完整响应原文 + 不统计 token。
+                        四键模型：output_paths 按序 fallback，token_paths 命中求和，token_fields 全树递归求和（配 token_scope）。paths 与 fields 同时给时 paths 优先。全空 = 完整响应原文 + 不统计 token。<br>
+                        <strong>无需手写 JSONPath</strong>：粘贴样例响应 → 渲染 JSON 树 → 点击节点自动填入下方"激活的"路径输入框。
                     </div>
+
                     <div class="form-group">
-                        <label class="form-label">output_paths（每行一条，如 $.choices[0].message.content）</label>
-                        <textarea class="form-input mono" id="rpOutputPaths">${escapeHtml((rp.output_paths || []).join('\n'))}</textarea>
+                        <label class="form-label">
+                            output_paths（按序 fallback）
+                            <span class="rp-target-badge" id="rpTargetBadge-output_paths">点击下方任一输入框选中目标</span>
+                        </label>
+                        <div id="rpOutputPathsList" class="rp-path-list" data-target="output_paths"></div>
+                        <div class="rp-toolbar">
+                            <button class="btn btn-sm btn-secondary" onclick="addRpPathRow('output_paths')">+ 添加路径</button>
+                            <button class="btn btn-sm btn-secondary" onclick="parseSampleToTree()">⌁ 从样例渲染 JSON 树</button>
+                        </div>
                     </div>
+
                     <div class="form-group">
-                        <label class="form-label">token_paths（每行一条，如 $.usage.total_tokens）</label>
-                        <textarea class="form-input mono" id="rpTokenPaths">${escapeHtml((rp.token_paths || []).join('\n'))}</textarea>
+                        <label class="form-label">Token 统计模式</label>
+                        <div style="display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 8px;">
+                            <label style="display: flex; align-items: center; gap: 4px;">
+                                <input type="radio" name="rpTokenMode" value="paths" onchange="toggleRpTokenMode()"> 路径求和（token_paths）
+                            </label>
+                            <label style="display: flex; align-items: center; gap: 4px;">
+                                <input type="radio" name="rpTokenMode" value="fields" onchange="toggleRpTokenMode()"> 字段递归（token_fields）
+                            </label>
+                            <label style="display: flex; align-items: center; gap: 4px;">
+                                <input type="radio" name="rpTokenMode" value="none" onchange="toggleRpTokenMode()"> 不统计
+                            </label>
+                        </div>
                     </div>
-                    <div class="form-group">
-                        <label class="form-label">token_fields（每行一个字段名，如 total_tokens）</label>
-                        <textarea class="form-input mono" id="rpTokenFields">${escapeHtml((rp.token_fields || []).join('\n'))}</textarea>
+
+                    <div class="form-group" id="rpTokenPathsGroup" style="display: none;">
+                        <label class="form-label">
+                            token_paths（命中求和）
+                            <span class="rp-target-badge" id="rpTargetBadge-token_paths">点击下方任一输入框选中目标</span>
+                        </label>
+                        <div id="rpTokenPathsList" class="rp-path-list" data-target="token_paths"></div>
+                        <div class="rp-toolbar">
+                            <button class="btn btn-sm btn-secondary" onclick="addRpPathRow('token_paths')">+ 添加 token_path</button>
+                        </div>
                     </div>
+
+                    <div class="form-group" id="rpTokenFieldsGroup" style="display: none;">
+                        <label class="form-label">
+                            token_fields（全树递归求和，按字段名匹配）
+                            <span class="rp-target-badge" id="rpTargetBadge-token_fields">点击下方任一输入框选中目标</span>
+                        </label>
+                        <div id="rpTokenFieldsList" class="rp-path-list" data-target="token_fields"></div>
+                        <div class="rp-toolbar">
+                            <button class="btn btn-sm btn-secondary" onclick="addRpPathRow('token_fields')">+ 添加 token_field</button>
+                        </div>
+                    </div>
+
                     <div class="form-group">
                         <label class="form-label">token_scope（JSON，可选过滤）</label>
                         <textarea class="form-input mono" id="rpTokenScope" placeholder='{"path": "$.usage"} 或留空'>${escapeHtml(rp.token_scope ? JSON.stringify(rp.token_scope) : '')}</textarea>
                     </div>
 
                     <div class="form-group">
-                        <label class="form-label">样例响应（用于测试解析）</label>
-                        <textarea class="form-input mono" id="parsingSample" placeholder='{"choices":[{"message":{"content":"hi"}}], "usage":{"total_tokens": 12}}' style="min-height: 100px;"></textarea>
+                        <label class="form-label">样例响应（粘贴真实返回 JSON）</label>
+                        <textarea class="form-input mono" id="parsingSample" placeholder='{"choices":[{"message":{"content":"hi"}}], "usage":{"total_tokens": 12}}' style="min-height: 100px;">${escapeHtml(state._rpSample || '')}</textarea>
                     </div>
+
+                    <div id="jsonTreeContainer" class="json-tree-container" style="display: none;">
+                        <div class="jt-hint" id="jsonTreeHint">
+                            当前激活目标：<span id="rpActiveTargetLabel" style="color: var(--accent); font-weight: 600;">（未选）</span>。
+                            点击上方任一"路径输入框"激活它，再点击下方 JSON 树的任意节点（key 或叶子值）→ 路径自动填入。
+                            点击括号 <code>[ ]</code> / <code>{ }</code> 可折叠/展开子树。
+                        </div>
+                        <div id="jsonTree" class="json-tree"></div>
+                    </div>
+
                     <button class="btn btn-secondary" onclick="testParsingConfig()">测试解析</button>
                     <div id="parsingTestResult" class="mt-4"></div>
                 </div>
@@ -1687,12 +2060,54 @@
                     <div id="judgeTestResult" class="mt-4"></div>
                 </div>
 
+                <div class="card mb-4">
+                    <div class="card-header">
+                        <span class="card-title">Token 预算</span>
+                    </div>
+                    <div style="padding: 0 0 12px; color: var(--ink-4); font-size: 12px;">
+                        设置单次 run 的 token 预算上限。超限时按"提醒模式"处理——只警告不中断（MVP 阶段）。
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">limit（token 上限，留空 = 不限）</label>
+                        <input type="number" class="form-input mono" id="budgetLimit" min="0" placeholder="如 1000000" value="${escapeHtml(String(project.token_budget?.limit ?? ''))}">
+                    </div>
+                    <div class="form-group">
+                        <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+                            <input type="checkbox" id="budgetWarnOnly" ${project.token_budget?.warn_only !== false ? 'checked' : ''}>
+                            <span>warn_only（仅提醒，不中断 run）</span>
+                        </label>
+                    </div>
+                </div>
+
                 <button class="btn btn-primary" onclick="saveProjectConfig('${project.id}')">保存配置</button>
             `;
 
             // 渲染认证字段（首次进入）
             state._auth = JSON.parse(JSON.stringify(auth));
             renderAuthFields(project.id);
+            toggleApiMode();
+            // B-7: 初始化响应解析行编辑器（从 rp 数据填充）
+            initRpPathLists(rp);
+        }
+
+        // B-6: API 模式切换时调整字段提示
+        function toggleApiMode() {
+            const mode = document.getElementById('targetApiType')?.value;
+            const modelGroup = document.getElementById('modelGroup');
+            const modelRequired = document.getElementById('modelRequired');
+            const templateHint = document.getElementById('templateHint');
+            if (!mode) return;
+            if (mode === 'custom') {
+                // custom: model 可选，request_template 必填
+                if (modelRequired) modelRequired.style.display = 'none';
+                if (templateHint) templateHint.textContent = '（必填，JSON 格式，不注入 model/messages）';
+                if (modelGroup) modelGroup.querySelector('label').firstChild.textContent = 'model（可选） ';
+            } else {
+                // openai_compatible: model 必填
+                if (modelRequired) modelRequired.style.display = '';
+                if (templateHint) templateHint.textContent = '（留空 {input} = 默认 OpenAI 格式）';
+                if (modelGroup) modelGroup.querySelector('label').firstChild.textContent = 'model ';
+            }
         }
 
         function renderAuthFields(projectId) {
@@ -1786,19 +2201,249 @@
             return auth;
         }
 
+        // B-7: 响应解析行编辑器 + JSON 树点选
+        // 当前激活的路径目标：'output_paths' | 'token_paths' | 'token_fields' | null
+        // 用户点 input 聚焦时设值，点 JSON 树节点时按此目标填入
+
+        const RP_LIST_IDS = {
+            output_paths: 'rpOutputPathsList',
+            token_paths: 'rpTokenPathsList',
+            token_fields: 'rpTokenFieldsList'
+        };
+
+        function initRpPathLists(rp) {
+            state._rpActiveTarget = null;
+            state._rpSample = state._rpSample || '';
+            // 填充 output_paths
+            const op = Array.isArray(rp.output_paths) ? rp.output_paths : [];
+            fillRpList('output_paths', op);
+            // token 模式选择
+            const hasPaths = Array.isArray(rp.token_paths) && rp.token_paths.length > 0;
+            const hasFields = Array.isArray(rp.token_fields) && rp.token_fields.length > 0;
+            const mode = hasPaths ? 'paths' : (hasFields ? 'fields' : 'none');
+            const radio = document.querySelector(`input[name="rpTokenMode"][value="${mode}"]`);
+            if (radio) radio.checked = true;
+            // 填充 token_paths / token_fields
+            fillRpList('token_paths', hasPaths ? rp.token_paths : []);
+            fillRpList('token_fields', hasFields ? rp.token_fields : []);
+            toggleRpTokenMode();
+            updateRpActiveTargetLabel();
+        }
+
+        function fillRpList(target, values) {
+            const listId = RP_LIST_IDS[target];
+            const list = document.getElementById(listId);
+            if (!list) return;
+            list.innerHTML = '';
+            if (values.length === 0) {
+                addRpPathRow(target, '');
+            } else {
+                values.forEach(v => addRpPathRow(target, v));
+            }
+        }
+
+        function addRpPathRow(target, value = '') {
+            const listId = RP_LIST_IDS[target];
+            const container = document.getElementById(listId);
+            if (!container) return;
+            const row = document.createElement('div');
+            row.className = 'rp-path-row';
+            const placeholder = target === 'token_fields' ? '字段名，如 total_tokens' : '$.路径，如 $.choices[0].message.content';
+            row.innerHTML = `
+                <input type="text" class="form-input mono rp-path-input" value="${escapeHtml(value)}" placeholder="${escapeHtml(placeholder)}" onfocus="setRpActiveTarget('${target}')">
+                <button class="btn btn-sm btn-danger" onclick="removeRpPathRow(this)" title="删除">×</button>
+            `;
+            container.appendChild(row);
+        }
+
+        function removeRpPathRow(btn) {
+            const list = btn.closest('.rp-path-list');
+            const row = btn.closest('.rp-path-row');
+            if (row) row.remove();
+            // 至少保留一行（避免空 list 无法点选填入）
+            if (list && list.children.length === 0) {
+                addRpPathRow(list.dataset.target, '');
+            }
+        }
+
+        function setRpActiveTarget(target) {
+            state._rpActiveTarget = target;
+            updateRpActiveTargetLabel();
+        }
+
+        function updateRpActiveTargetLabel() {
+            const label = document.getElementById('rpActiveTargetLabel');
+            if (!label) return;
+            const t = state._rpActiveTarget;
+            label.textContent = t ? t : '（未选）';
+            // 高亮当前激活的列表 badge
+            ['output_paths', 'token_paths', 'token_fields'].forEach(k => {
+                const badge = document.getElementById('rpTargetBadge-' + k);
+                if (badge) badge.classList.toggle('active', k === t);
+            });
+        }
+
+        function toggleRpTokenMode() {
+            const mode = document.querySelector('input[name="rpTokenMode"]:checked')?.value || 'none';
+            const showPaths = mode === 'paths';
+            const showFields = mode === 'fields';
+            const pathsGroup = document.getElementById('rpTokenPathsGroup');
+            const fieldsGroup = document.getElementById('rpTokenFieldsGroup');
+            if (pathsGroup) pathsGroup.style.display = showPaths ? '' : 'none';
+            if (fieldsGroup) fieldsGroup.style.display = showFields ? '' : 'none';
+            // 切换到某模式但列表为空 → 自动加一行
+            if (showPaths && document.getElementById('rpTokenPathsList').children.length === 0) addRpPathRow('token_paths');
+            if (showFields && document.getElementById('rpTokenFieldsList').children.length === 0) addRpPathRow('token_fields');
+        }
+
+        // ============== JSON 树渲染 + 点选生成路径 ==============
+
+        function parseSampleToTree() {
+            const sample = document.getElementById('parsingSample')?.value.trim();
+            const treeDiv = document.getElementById('jsonTree');
+            const container = document.getElementById('jsonTreeContainer');
+            if (!sample) { showToast('请先粘贴样例响应', 'warning'); return; }
+            let data;
+            try {
+                data = JSON.parse(sample);
+            } catch (e) {
+                showToast('JSON 解析失败: ' + e.message, 'error');
+                container.style.display = 'none';
+                return;
+            }
+            state._rpSample = sample;
+            treeDiv.innerHTML = renderJsonTree(data, '$');
+            container.style.display = 'block';
+            // 事件委托：点击 [data-path] 节点 → 生成路径；点击 [data-toggle] → 折叠
+            treeDiv.onclick = e => {
+                const toggler = e.target.closest('[data-toggle]');
+                if (toggler) {
+                    const children = toggler.nextElementSibling;
+                    if (children && children.classList.contains('jt-children')) {
+                        children.classList.toggle('jt-hidden');
+                        toggler.classList.toggle('jt-collapsed');
+                    }
+                    return;
+                }
+                const node = e.target.closest('[data-path]');
+                if (node) pickJsonPath(node.dataset.path);
+            };
+        }
+
+        // 递归渲染 JSON 节点。path 是当前节点的 JSONPath
+        function renderJsonTree(node, path) {
+            if (node === null) {
+                return `<span class="jt-leaf jt-null" data-path="${escapeHtml(path)}">null</span>`;
+            }
+            if (typeof node !== 'object') {
+                const type = typeof node;
+                const cls = type === 'string' ? 'jt-string' : (type === 'boolean' ? 'jt-boolean' : 'jt-number');
+                const display = type === 'string' ? `"${escapeHtml(node)}"` : escapeHtml(String(node));
+                return `<span class="jt-leaf ${cls}" data-path="${escapeHtml(path)}">${display}</span>`;
+            }
+            const isArray = Array.isArray(node);
+            const entries = isArray
+                ? node.map((v, i) => [i, v])
+                : Object.entries(node);
+            if (entries.length === 0) {
+                return `<span class="jt-bracket">${isArray ? '[]' : '{}'}</span>`;
+            }
+            const children = entries.map(([k, v]) => {
+                let childPath;
+                if (isArray) {
+                    childPath = `${path}[${k}]`;
+                } else if (/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(String(k))) {
+                    childPath = `${path}.${k}`;
+                } else {
+                    childPath = `${path}['${String(k).replace(/'/g, "\\'")}']`;
+                }
+                const preview = (v === null || typeof v !== 'object')
+                    ? ''
+                    : ` <span class="jt-preview">${escapeHtml(Array.isArray(v) ? `[${v.length} 项]` : `{${Object.keys(v).length} 键}`)}</span>`;
+                return `<div class="jt-row">
+                    <span class="jt-key" data-path="${escapeHtml(childPath)}">${escapeHtml(String(k))}:</span>
+                    ${renderJsonTree(v, childPath)}
+                    ${preview}
+                </div>`;
+            }).join('');
+            const open = isArray ? '[' : '{';
+            const close = isArray ? ']' : '}';
+            return `<span class="jt-bracket" data-toggle="1" data-path="${escapeHtml(path)}">${open}</span>
+                <div class="jt-children">${children}</div>
+                <span class="jt-bracket">${close}</span>`;
+        }
+
+        function pickJsonPath(path) {
+            const target = state._rpActiveTarget;
+            if (!target) {
+                showToast('请先点击上方的路径输入框选中目标', 'warning');
+                return;
+            }
+            // token_fields 目标：把 $.a.b 转成末段字段名（用户可手改）
+            let value = path;
+            if (target === 'token_fields') {
+                const m = path.match(/\.([A-Za-z_$][A-Za-z0-9_$]*)$/);
+                if (m) value = m[1];
+                else if (path !== '$') value = path.replace(/^\$\.?|^\$/, '').replace(/^\['/, '').replace(/'\]$/, '');
+            }
+            // 优先填当前聚焦的 input
+            const active = document.activeElement;
+            if (active && active.classList && active.classList.contains('rp-path-input') && active.closest('#' + RP_LIST_IDS[target])) {
+                active.value = value;
+                active.focus();
+                return;
+            }
+            // 找第一个空 input 填入
+            const list = document.getElementById(RP_LIST_IDS[target]);
+            if (!list) return;
+            const inputs = Array.from(list.querySelectorAll('.rp-path-input'));
+            const empty = inputs.find(i => !i.value.trim());
+            if (empty) {
+                empty.value = value;
+                empty.focus();
+                return;
+            }
+            // 没空 input → 新增一行
+            addRpPathRow(target, value);
+            const last = list.querySelector('.rp-path-row:last-child .rp-path-input');
+            if (last) last.focus();
+        }
+
         function collectResponseParsing() {
-            const splitLines = id => (document.getElementById(id)?.value || '').split('\n').map(s => s.trim()).filter(Boolean);
+            const readList = target => {
+                const listId = RP_LIST_IDS[target];
+                const list = document.getElementById(listId);
+                if (!list) return [];
+                return Array.from(list.querySelectorAll('.rp-path-input'))
+                    .map(i => i.value.trim()).filter(Boolean);
+            };
             const scopeRaw = document.getElementById('rpTokenScope')?.value.trim();
             let tokenScope = null;
             if (scopeRaw) {
                 try { tokenScope = JSON.parse(scopeRaw); }
                 catch (e) { /* 留空，save 时由后端兜底；test 时单独报错 */ }
             }
+            const mode = document.querySelector('input[name="rpTokenMode"]:checked')?.value || 'none';
             return {
-                output_paths: splitLines('rpOutputPaths'),
-                token_paths: splitLines('rpTokenPaths'),
-                token_fields: splitLines('rpTokenFields'),
+                output_paths: readList('output_paths'),
+                token_paths: mode === 'paths' ? readList('token_paths') : [],
+                token_fields: mode === 'fields' ? readList('token_fields') : [],
                 token_scope: tokenScope
+            };
+        }
+
+        // P2-6: 收集 token_budget（limit 留空 = null = 不限预算）
+        function collectTokenBudget() {
+            const limitEl = document.getElementById('budgetLimit');
+            const warnEl = document.getElementById('budgetWarnOnly');
+            if (!limitEl) return state.currentProject?.token_budget || null;
+            const raw = limitEl.value.trim();
+            if (!raw) return null;
+            const limit = parseInt(raw, 10);
+            if (isNaN(limit) || limit < 0) return null;
+            return {
+                limit,
+                warn_only: warnEl ? warnEl.checked : true
             };
         }
 
@@ -2309,6 +2954,9 @@
                     } else {
                         throw new Error('不支持的文件格式');
                     }
+                    // P2-8: 保留原始内容，确认时传给后端 import 端点
+                    importData.rawContent = content;
+                    importData.format = file.name.endsWith('.json') ? 'json' : 'csv';
                     showImportPreview();
                 } catch (err) {
                     showToast('文件解析失败: ' + err.message, 'error');
@@ -2421,6 +3069,9 @@
             try {
                 const data = JSON.parse(input);
                 importData = validateImportData(data);
+                // P2-8: 保留原始内容（手动输入总是 JSON 数组）
+                importData.rawContent = input;
+                importData.format = 'json';
                 showImportPreview();
                 previewDiv.innerHTML = importData.errors.length > 0
                     ? '<div style="color: var(--red);">验证失败: ' + importData.errors.length + ' 条错误</div>'
@@ -2440,6 +3091,10 @@
                 showToast('没有可导入的数据', 'warning');
                 return;
             }
+            if (!importData.rawContent) {
+                showToast('请先选择文件或输入数据', 'warning');
+                return;
+            }
             const mode = document.querySelector('input[name="importMode"]:checked').value;
             const progressDiv = document.getElementById('importProgress');
             const confirmBtn = document.getElementById('confirmImportBtn');
@@ -2447,26 +3102,33 @@
             progressDiv.innerHTML = '<div style="color: var(--ink-3);">导入中...</div>';
             confirmBtn.disabled = true;
             try {
-                const currentEvalset = await api('/evalsets/' + evalsetId + '?project_id=' + projectId);
-                let newCases;
-                if (mode === 'replace') {
-                    newCases = importData.cases;
-                } else {
-                    const existingIds = new Set((currentEvalset.cases || []).map(c => c.id));
-                    newCases = (currentEvalset.cases || []).concat(
-                        importData.cases.filter(c => !existingIds.has(c.id))
-                    );
-                }
-                await api('/evalsets/' + evalsetId, {
-                    method: 'PUT',
-                    body: JSON.stringify({ ...currentEvalset, cases: newCases })
+                // P2-8: 走后端 import 端点（merge/replace + 行级错误兜底）
+                const formData = new FormData();
+                formData.append('file_content', importData.rawContent);
+                formData.append('mode', mode);
+                const resp = await fetch(`/api/evalsets/${evalsetId}/import?project_id=${projectId}`, {
+                    method: 'POST',
+                    body: formData
                 });
-                progressDiv.innerHTML = '<div style="color: var(--green);">✓ 导入完成</div>';
-                showToast('成功导入 ' + importData.cases.length + ' 条用例', 'success');
+                const result = await resp.json();
+                if (!resp.ok) {
+                    // 后端行级错误（422 + errors 数组）
+                    const errs = result?.detail?.errors || [];
+                    if (errs.length > 0) {
+                        progressDiv.innerHTML = '<div style="color: var(--red);">后端校验失败 (' + errs.length + ' 条):</div>' +
+                            errs.slice(0, 5).map(e => '<div style="font-size: 12px; margin-top: 4px;">行 ' + e.row + ': ' + escapeHtml(e.error) + '</div>').join('');
+                    } else {
+                        throw new Error(result?.detail?.error || result?.detail || '导入失败');
+                    }
+                    confirmBtn.disabled = false;
+                    return;
+                }
+                progressDiv.innerHTML = '<div style="color: var(--green);">✓ 导入完成（' + result.imported + ' 条，模式: ' + result.mode + '）</div>';
+                showToast('成功导入 ' + result.imported + ' 条用例', 'success');
                 switchTab('evalsets');
-                closeModal('importModal');
+                setTimeout(() => closeModal('importModal'), 800);
             } catch (err) {
-                progressDiv.innerHTML = '<div style="color: var(--red);">导入失败: ' + err.message + '</div>';
+                progressDiv.innerHTML = '<div style="color: var(--red);">导入失败: ' + escapeHtml(err.message) + '</div>';
                 confirmBtn.disabled = false;
             }
         }
@@ -2524,7 +3186,9 @@
                 state.currentEvalsets = evalsets;
                 const proj = state.currentProject;
                 const isJudgeReady = !!(proj?.judge_config?.base_url && proj?.judge_config?.model);
-                const isTargetReady = !!(proj?.target_config?.base_url && proj?.target_config?.model);
+                // B-6: custom 模式不要求 model
+                const tc = proj?.target_config;
+                const isTargetReady = tc?.base_url && (tc.api_type === 'custom' ? true : !!tc.model);
 
                 if (evalsets.length === 0) {
                     body.innerHTML = `
@@ -2703,14 +3367,16 @@
                     prompt_template: document.getElementById('judgePrompt').value
                 },
                 target_config: {
+                    api_type: document.getElementById('targetApiType').value,
                     base_url: document.getElementById('targetBaseUrl').value,
                     api_key: readSecret('targetApiKey') || '__UNCHANGED__',
-                    model: document.getElementById('targetModel').value,
+                    model: document.getElementById('targetModel').value || null,
                     request_template: document.getElementById('targetTemplate').value,
                     auth: collectAuth(),
                     response_mapping: [],
                     response_parsing: collectResponseParsing()
-                }
+                },
+                token_budget: collectTokenBudget()
             };
 
             try {

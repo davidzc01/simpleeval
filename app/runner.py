@@ -12,21 +12,13 @@ from .storage import save_run
 JUDGE_THRESHOLD = 0.5  # llm_judge 分数超过该阈值判为通过
 
 
-def _compute_token_missing(project: Project, token_used: int) -> bool:
-    """根据 response_parsing 配置判断 token 是否缺失。
+def _token_missing_on_error(project: Project) -> bool:
+    """call_target 异常时的 token_missing 标记。
 
     - 未配置 response_parsing：按 OpenAI 默认，不标记缺失
-    - 配置了但 token_paths/token_fields 均空：未配置统计 → missing
-    - 配置了 token 统计但结果为 0：路径未命中 → missing
-    - 否则：不缺失
+    - 配置了 response_parsing：call 失败 → 无法获取 token → missing
     """
-    rp = project.target_config.response_parsing
-    if rp is None:
-        return False
-    has_token_config = bool(rp.token_paths) or bool(rp.token_fields)
-    if not has_token_config:
-        return True
-    return token_used == 0
+    return project.target_config.response_parsing is not None
 
 
 def _utc_now() -> str:
@@ -89,15 +81,16 @@ async def run_evalset(project: Project, evalset: EvalSet) -> EvalRun:
         start = time.perf_counter()
 
         try:
-            actual, token = await call_target(
+            actual, token, token_missing = await call_target(
                 base_url=project.target_config.base_url,
                 api_key=project.target_config.api_key,
-                model=project.target_config.model,
+                model=project.target_config.model or "",
                 prompt=prompt,
                 request_template=project.target_config.request_template,
                 auth=project.target_config.auth,
                 response_mapping=project.target_config.response_mapping,
                 response_parsing=project.target_config.response_parsing,
+                api_type=project.target_config.api_type,
             )
             latency_ms = (time.perf_counter() - start) * 1000
 
@@ -105,7 +98,6 @@ async def run_evalset(project: Project, evalset: EvalSet) -> EvalRun:
             passed = False
             score = 0.0
             skipped_reason = None
-            token_missing = _compute_token_missing(project, token)
 
             if case.eval_type == "llm_judge":
                 if not judge_available:
@@ -136,7 +128,7 @@ async def run_evalset(project: Project, evalset: EvalSet) -> EvalRun:
             score = 0.0
             token = 0
             skipped_reason = None
-            token_missing = _compute_token_missing(project, 0)
+            token_missing = _token_missing_on_error(project)
 
         results.append(
             CaseResult(
@@ -224,22 +216,22 @@ async def execute_run(run: EvalRun, project: Project, evalset: EvalSet) -> EvalR
             start = time.perf_counter()
 
             try:
-                actual, token = await call_target(
+                actual, token, token_missing = await call_target(
                     base_url=project.target_config.base_url,
                     api_key=project.target_config.api_key,
-                    model=project.target_config.model,
+                    model=project.target_config.model or "",
                     prompt=prompt,
                     request_template=project.target_config.request_template,
                     auth=project.target_config.auth,
                     response_mapping=project.target_config.response_mapping,
                     response_parsing=project.target_config.response_parsing,
+                    api_type=project.target_config.api_type,
                 )
                 latency_ms = (time.perf_counter() - start) * 1000
 
                 passed = False
                 score = 0.0
                 skipped_reason = None
-                token_missing = _compute_token_missing(project, token)
 
                 if case.eval_type == "llm_judge":
                     if not judge_available:
@@ -270,7 +262,7 @@ async def execute_run(run: EvalRun, project: Project, evalset: EvalSet) -> EvalR
                 score = 0.0
                 token = 0
                 skipped_reason = None
-                token_missing = _compute_token_missing(project, 0)
+                token_missing = _token_missing_on_error(project)
 
             results.append(
                 CaseResult(

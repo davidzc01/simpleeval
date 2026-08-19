@@ -303,6 +303,10 @@ def parse_response(raw: str, parsing: Optional[ResponseParsing]) -> dict:
         parsing = ResponseParsing()
 
     output, output_found = extract_output(data, parsing.output_paths)
+    # A-1: output_paths 为空 → 输出 = 完整响应原文（设计约定"全部留空 = 原文"）
+    if not output_found and not parsing.output_paths:
+        output = raw
+        output_found = True
     token, token_missing = count_tokens(
         data, parsing.token_paths, parsing.token_fields, parsing.token_scope
     )

@@ -300,12 +300,13 @@ class TestParseResponse:
         assert result["token_missing"] is False
 
     def test_all_empty_config(self):
+        """A-1: output_paths 为空 → 输出 = 完整响应原文"""
         raw = json.dumps({"anything": "x"})
         result = parse_response(raw, ResponseParsing())
-        assert result["output"] == ""
+        assert result["output"] == raw  # 全部留空 = 原文
         assert result["token_used"] == 0
         assert result["token_missing"] is True
-        assert result["output_found"] is False
+        assert result["output_found"] is True  # 原文兜底算命中
 
     def test_output_all_miss(self):
         raw = json.dumps({"other": "x"})

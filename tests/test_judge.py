@@ -140,7 +140,7 @@ class TestCallTarget:
 
             mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
 
-            output, token = await call_target(
+            output, token, _missing = await call_target(
                 base_url="https://api.example.com/v1",
                 api_key="test-key",
                 model="gpt-3.5-turbo",
@@ -220,7 +220,7 @@ class TestCallTarget:
             mock_response.raise_for_status = MagicMock()
             mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
 
-            output, token = await call_target(
+            output, token, _missing = await call_target(
                 base_url="https://api.example.com/v1",
                 api_key="test-key",
                 model="gpt-3.5-turbo",
@@ -379,7 +379,7 @@ class TestCallTargetExtended:
             mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
 
             # 使用无效的 JSON 模板
-            output, token = await call_target(
+            output, token, _missing = await call_target(
                 base_url="https://api.example.com/v1",
                 api_key="test-key",
                 model="gpt-3.5-turbo",
@@ -449,7 +449,7 @@ class TestCallTargetResponseParsing:
             mock_response.raise_for_status = MagicMock()
             mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
 
-            output, token = await call_target(
+            output, token, _missing = await call_target(
                 base_url="https://api.example.com/v1",
                 api_key="test-key",
                 model="gpt-3.5-turbo",
@@ -473,7 +473,7 @@ class TestCallTargetResponseParsing:
             mock_response.raise_for_status = MagicMock()
             mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
 
-            output, token = await call_target(
+            output, token, _missing = await call_target(
                 base_url="https://api.example.com/v1",
                 api_key="test-key",
                 model="gpt-3.5-turbo",
@@ -500,7 +500,7 @@ class TestCallTargetResponseParsing:
             mock_response.raise_for_status = MagicMock()
             mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
 
-            output, token = await call_target(
+            output, token, _missing = await call_target(
                 base_url="https://api.example.com/v1",
                 api_key="test-key",
                 model="gpt-3.5-turbo",
@@ -527,7 +527,7 @@ class TestCallTargetResponseParsing:
             mock_response.raise_for_status = MagicMock()
             mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
 
-            output, token = await call_target(
+            output, token, _missing = await call_target(
                 base_url="https://api.example.com/v1",
                 api_key="test-key",
                 model="gpt-3.5-turbo",
@@ -541,6 +541,94 @@ class TestCallTargetResponseParsing:
             # parsing 优先，输出是纯内容而非 "x: ..." 格式
             assert output == "parsing 输出"
             assert token == 50
+
+    @pytest.mark.asyncio
+    async def test_response_parsing_empty_output_paths_returns_raw(self):
+        """A-1: output_paths 为空 → 输出 = 完整响应原文，不返回 PARSE_ERROR"""
+        api_response = {"anything": "x", "nested": {"y": 1}}
+        raw = json.dumps(api_response)
+        with patch("httpx.AsyncClient") as mock_client:
+            mock_response = MagicMock()
+            mock_response.json.return_value = api_response
+            mock_response.text = raw
+            mock_response.raise_for_status = MagicMock()
+            mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
+
+            output, token, missing = await call_target(
+                base_url="https://api.example.com/v1",
+                api_key="test-key",
+                model="gpt-3.5-turbo",
+                prompt="你好",
+                response_parsing=ResponseParsing(),  # 全空
+            )
+            # A-1: 空路径 → 原文兜底，不是 [PARSE_ERROR]
+            assert output == raw
+            assert "[PARSE_ERROR]" not in output
+            # 无 token 配置 → missing=True
+            assert missing is True
+
+    @pytest.mark.asyncio
+    async def test_response_parsing_output_miss_returns_parse_error(self):
+        """output_paths 非空但全部未命中 → [PARSE_ERROR]"""
+        api_response = {"other": "x"}
+        with patch("httpx.AsyncClient") as mock_client:
+            mock_response = MagicMock()
+            mock_response.json.return_value = api_response
+            mock_response.text = json.dumps(api_response)
+            mock_response.raise_for_status = MagicMock()
+            mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
+
+            output, _token, _missing = await call_target(
+                base_url="https://api.example.com/v1",
+                api_key="test-key",
+                model="gpt-3.5-turbo",
+                prompt="你好",
+                response_parsing=ResponseParsing(
+                    output_paths=["$.choices[0].message.content"],
+                ),
+            )
+            assert "[PARSE_ERROR]" in output
+
+    @pytest.mark.asyncio
+    async def test_custom_mode_no_model_injection(self):
+        """A-4: custom 模式不注入 model，URL 不补 /chat/completions"""
+        api_response = {"result": "custom output"}
+        raw = json.dumps(api_response)
+        template = '{"query": "{input}"}'
+        captured_body = {}
+        captured_url = {}
+
+        class MockPost(AsyncMock):
+            async def __call__(self, url, **kwargs):
+                captured_url["url"] = url
+                captured_body["body"] = kwargs.get("json")
+                mock_response = MagicMock()
+                mock_response.json.return_value = api_response
+                mock_response.text = raw
+                mock_response.raise_for_status = MagicMock()
+                return mock_response
+
+        with patch("httpx.AsyncClient") as mock_client:
+            mock_post = MockPost()
+            mock_client.return_value.__aenter__.return_value.post = mock_post
+
+            output, _token, _missing = await call_target(
+                base_url="https://api.example.com/v2/query",
+                api_key="",
+                model="",
+                prompt="hello",
+                request_template=template,
+                api_type="custom",
+                response_parsing=ResponseParsing(output_paths=["$.result"]),
+            )
+            # custom 模式 URL 不补 /chat/completions
+            assert captured_url["url"] == "https://api.example.com/v2/query"
+            # custom 模式不注入 model
+            assert "model" not in captured_body["body"]
+            # 模板正确渲染
+            assert captured_body["body"] == {"query": "hello"}
+            # 输出正确解析
+            assert output == "custom output"
 
 
 class TestJudgeWithLLMErrors:

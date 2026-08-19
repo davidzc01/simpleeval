@@ -34,6 +34,7 @@ uvicorn app.main:app --reload --port 8000
 - **成本分析**：pass rate + token 消耗 + 每万 token 完成率 + P50/P95 延迟
 - **异步执行**：发起评测落库即返回，BackgroundTasks 后台执行，关页面不打断
 - **JSON 存储**：评测集和结果可版本管理，无数据库依赖
+- **用例 CRUD**：可视化新增/编辑弹窗（按 eval_type 动态切换字段：exact→expected_output、contains/not_contains→substring、length→min/max、llm_judge→output_requirement）+ 硬删除（红色入口 + 二次确认 + 影响说明）
 
 ### 采样稳定性
 
@@ -51,12 +52,17 @@ uvicorn app.main:app --reload --port 8000
 
 ### 配置与安全
 
+- **Target API 双模式**：`openai_compatible`（自动注入 model + `/chat/completions`，model 必填）/ `custom`（纯模板渲染，不注入 model/messages，`request_template` 必填）；两种模式共享同一份 auth 与 response_parsing
+- **响应解析可视化**（B-7）：四键行编辑器（output_paths / token_paths / token_fields / token_scope，每行 input + [×] 删除 + [+ 添加]）+ paths/fields/none 模式 radio 切换；**无需手写 JSONPath**——粘贴样例响应 → 渲染可折叠 JSON 树 → 点击节点自动生成路径填入"激活的"路径框（key/叶子/括号均可点选，括号点击折叠/展开子树）
 - **多种认证方式**：none / bearer / api_key（自定义 header）/ cookie / headers
 - **密钥哨兵值**：`__UNCHANGED__` 保留原值，掩码字符串不会覆盖真实 secret
-- **XSS 防护**：所有用户输入（项目名、case 名等）经 `escapeHtml` 转义
+- **XSS 防护**：所有用户输入（项目名、case 名等）经 `escapeHtml` 转义；删除按钮调用通过内部状态查找，不在 HTML 属性拼接用户输入
 
 ### 前端体验
 
+- **概览指标卡 7 张**：pass rate / 总 token / token 量(K) / 每万 token 完成率 / P50 / P95 / 失败数，与 run 详情对齐
+- **Token 预算 UI**：配置页 `limit` 输入 + `warn_only` checkbox，超限仅提醒不中断（MVP）
+- **导入走后端端点**：`POST /evalsets/{id}/import?mode=merge|replace`，行级错误收集（422 + errors 不保存），支持对象 `eval_params` 与 `task_shape`；前端保留本地预览
 - **hash 路由**：`#/projects` / `#/project/{id}` / `#/run/{pid}/{rid}`，刷新不丢位置
 - **静默轮询**：run 详情增量 DOM 更新（不整页重绘），指数退避封顶 10s，弹窗打开/页面隐藏时暂停
 - **骨架屏**：列表/详情/run 详情初次加载扫光过渡
@@ -72,8 +78,8 @@ uvicorn app.main:app --reload --port 8000
 #/projects                       Projects 列表（入口）
 #/project/{pid}                  Project 详情
    ├── 概览 tab                  指标卡 + 趋势图 + 采样稳定性卡片
-   ├── 评测集 tab                多评测集选择 + 用例表格 + 导入/导出
-   ├── 配置 tab                  Target API + 响应解析 + LLM Judge
+   ├── 评测集 tab                多评测集选择 + 用例表格（新增/编辑/删除）+ 导入/导出
+   ├── 配置 tab                  Target API（双模式）+ 响应解析 + LLM Judge
    └── 历史 tab                  全部 run 列表
 #/run/{pid}/{rid}                Run 详情（进度 + 指标 + case 表格 + 三栏对比视图）
 ```
@@ -102,13 +108,15 @@ python3 -m pytest tests/ --cov=app --cov-report=html
 
 # UI 组件测试（需 Node.js）
 node tests/test_sampling_ui.js
+node tests/test_evalset_ui.js
+node tests/test_parsing_ui.js
 ```
 
 ### 测试结果
 
 ```
-后端：236 passed in 2.1s   Coverage: 91%
-UI 组件：26 passed
+后端：249 passed in 1.9s   Coverage: 91%
+UI 组件：82 passed（采样稳定性 26 + 评测集 CRUD 27 + 响应解析 JSON 树 29）
 ```
 
 ### 测试覆盖
@@ -139,6 +147,8 @@ tests/
 ├── test_parser.py           # 响应解析层测试（JSONPath 子集）
 ├── test_sampling.py         # 采样稳定性测试（pass@k/pass^k 数学 + API）
 ├── test_sampling_ui.js      # 采样卡片 UI 组件测试（SVG 渲染）
+├── test_evalset_ui.js       # 评测集用例 CRUD UI 组件测试（B-5）
+├── test_parsing_ui.js       # 响应解析 JSON 树 UI 组件测试（B-7）
 └── test_api.py              # API 接口测试
 ```
 

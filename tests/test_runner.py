@@ -8,7 +8,7 @@ from app.runner import (
     check_judge_available,
     run_evalset,
     _build_run_result,
-    _compute_token_missing,
+    _token_missing_on_error,
     _utc_now,
     _generate_run_id,
 )
@@ -192,7 +192,7 @@ class TestRunEvalset:
              patch("app.runner.check_judge_available", new_callable=AsyncMock) as mock_check:
 
             # 模拟 API 调用 - exact case 返回匹配内容
-            mock_call.return_value = ("你好！", 50)
+            mock_call.return_value = ("你好！", 50, False)
             mock_check.return_value = (True, "")
 
             run = await run_evalset(project, evalset)
@@ -323,7 +323,7 @@ class TestExecuteRun:
              patch("app.runner.check_judge_available", new_callable=AsyncMock) as mock_check, \
              patch("app.runner.save_run") as mock_save:
 
-            mock_call.return_value = ("你好！", 50)
+            mock_call.return_value = ("你好！", 50, False)
             mock_check.return_value = (True, "")
 
             result = await execute_run(run, project, evalset)
@@ -359,7 +359,7 @@ class TestExecuteRun:
              patch("app.runner.check_judge_available", new_callable=AsyncMock) as mock_check, \
              patch("app.runner.save_run") as mock_save:
 
-            mock_call.return_value = ("礼貌的回复", 50)
+            mock_call.return_value = ("礼貌的回复", 50, False)
             mock_judge.return_value = 0.8
             mock_check.return_value = (True, "")
 
@@ -392,7 +392,7 @@ class TestExecuteRun:
              patch("app.runner.check_judge_available", new_callable=AsyncMock) as mock_check, \
              patch("app.runner.save_run"):
 
-            mock_call.return_value = ("回复内容", 50)
+            mock_call.return_value = ("回复内容", 50, False)
             mock_check.return_value = (False, "llm_unavailable: 网络错误")
 
             result = await execute_run(run, project, evalset)
@@ -465,47 +465,29 @@ class TestExecuteRun:
 
 
 class TestTokenMissing:
-    """token_missing 标记测试"""
+    """token_missing 标记测试（异常路径用 _token_missing_on_error，成功路径由 call_target 返回）"""
 
-    def test_no_response_parsing_not_missing(self, sample_project):
-        """未配置 response_parsing：不标记缺失"""
+    def test_no_response_parsing_not_missing_on_error(self, sample_project):
+        """未配置 response_parsing：异常时也不标记缺失"""
         project = Project(**sample_project)
-        assert _compute_token_missing(project, token_used=50) is False
+        assert _token_missing_on_error(project) is False
 
-    def test_empty_token_config_missing(self, sample_project):
-        """配置了 response_parsing 但无 token 配置：标记缺失"""
+    def test_with_response_parsing_missing_on_error(self, sample_project):
+        """配置了 response_parsing：异常时标记缺失"""
         sample_project["target_config"]["response_parsing"] = {
             "output_paths": ["$.choices[0].message.content"],
         }
         project = Project(**sample_project)
-        assert _compute_token_missing(project, token_used=0) is True
+        assert _token_missing_on_error(project) is True
 
-    def test_token_paths_hit_not_missing(self, sample_project):
-        """token_paths 命中（token>0）：不缺失"""
-        sample_project["target_config"]["response_parsing"] = {
-            "output_paths": ["$.choices[0].message.content"],
-            "token_paths": ["$.usage.total_tokens"],
-        }
-        project = Project(**sample_project)
-        assert _compute_token_missing(project, token_used=100) is False
-
-    def test_token_paths_miss_missing(self, sample_project):
-        """token_paths 配了但未命中（token=0）：缺失"""
+    def test_with_token_config_missing_on_error(self, sample_project):
+        """配置了 token_paths：异常时标记缺失"""
         sample_project["target_config"]["response_parsing"] = {
             "output_paths": ["$.choices[0].message.content"],
             "token_paths": ["$.usage.total_tokens"],
         }
         project = Project(**sample_project)
-        assert _compute_token_missing(project, token_used=0) is True
-
-    def test_token_fields_hit_not_missing(self, sample_project):
-        """token_fields 命中：不缺失"""
-        sample_project["target_config"]["response_parsing"] = {
-            "output_paths": ["$.output"],
-            "token_fields": ["total_tokens"],
-        }
-        project = Project(**sample_project)
-        assert _compute_token_missing(project, token_used=70) is False
+        assert _token_missing_on_error(project) is True
 
     @pytest.mark.asyncio
     async def test_run_sets_token_missing(self, sample_project, sample_evalset):
@@ -520,7 +502,8 @@ class TestTokenMissing:
 
         with patch("app.runner.call_target", new_callable=AsyncMock) as mock_call, \
              patch("app.runner.check_judge_available", new_callable=AsyncMock) as mock_check:
-            mock_call.return_value = ("你好！", 0)
+            # response_parsing 配了但无 token 配置 → count_tokens 返回 missing=True
+            mock_call.return_value = ("你好！", 0, True)
             mock_check.return_value = (True, "")
 
             run = await run_evalset(project, evalset)
@@ -535,7 +518,7 @@ class TestTokenMissing:
 
         with patch("app.runner.call_target", new_callable=AsyncMock) as mock_call, \
              patch("app.runner.check_judge_available", new_callable=AsyncMock) as mock_check:
-            mock_call.return_value = ("你好！", 50)
+            mock_call.return_value = ("你好！", 50, False)
             mock_check.return_value = (True, "")
 
             run = await run_evalset(project, evalset)

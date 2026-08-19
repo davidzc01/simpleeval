@@ -80,12 +80,21 @@ async def list_all_projects():
 
         data["last_run"] = None
         if last_run:
+            s = last_run.summary
+            failed_count = sum(
+                1 for r in (last_run.results or [])
+                if not r.passed and not r.skipped_reason
+            )
             data["last_run"] = {
                 "id": last_run.id,
                 "status": last_run.status,
                 "created_at": last_run.created_at,
-                "pass_rate": last_run.summary.pass_rate if last_run.summary else 0,
-                "total_token": last_run.summary.total_token if last_run.summary else 0,
+                "pass_rate": s.pass_rate if s else 0,
+                "total_token": s.total_token if s else 0,
+                "token_per_pass": s.token_per_pass if s else 0,
+                "latency_p50": s.latency_p50 if s else 0,
+                "latency_p95": s.latency_p95 if s else 0,
+                "failed_count": failed_count,
             }
         data["trend"] = trend
         result.append(data)
@@ -102,7 +111,7 @@ async def create_project(req: CreateProjectRequest):
         name=req.name,
         task_shape=req.task_shape,
         judge_config={"base_url": "", "api_key": "", "model": ""},
-        target_config={"base_url": "", "api_key": "", "model": ""},
+        target_config={"base_url": "", "api_key": "", "model": None},
     )
     save_project(project)
     return _project_to_response(project)
@@ -142,6 +151,19 @@ async def update_project(project_id: str, project: Project):
         for i, cookie in enumerate(auth.cookies):
             if cookie.get("value") == "__UNCHANGED__" and i < len(existing_auth.cookies):
                 cookie["value"] = existing_auth.cookies[i].get("value")
+
+    # A-4: api_type 校验（保存时阻断，422）
+    tc = project.target_config
+    if tc.api_type == "openai_compatible" and not tc.model:
+        raise HTTPException(status_code=422, detail={
+            "error": {"code": "invalid_config",
+                      "message": "openai_compatible 模式下 model 必填"}
+        })
+    if tc.api_type == "custom" and not tc.request_template.strip():
+        raise HTTPException(status_code=422, detail={
+            "error": {"code": "invalid_config",
+                      "message": "custom 模式下 request_template 必填"}
+        })
 
     save_project(project)
     return _project_to_response(project)
@@ -218,53 +240,84 @@ async def import_evalset(
     file_content: str = Form(...),
     mode: str = "merge",
 ):
-    """导入 CSV/JSON 评测集"""
+    """导入 CSV/JSON 评测集（merge | replace）+ 行级错误收集"""
     evalset = get_evalset(evalset_id, project_id)
     if not evalset:
         evalset_not_found(evalset_id)
 
-    # 解析文件内容（简单实现，支持 CSV 和 JSON）
+    if mode not in ("merge", "replace"):
+        import_format_error(f"不支持的 mode: {mode}（仅支持 merge / replace）")
+
+    # 解析文件内容（支持 CSV 和 JSON 数组）
     try:
         if file_content.strip().startswith("["):
-            # JSON 格式
             new_cases_data = json.loads(file_content)
         else:
-            # CSV 格式
             reader = csv.DictReader(io.StringIO(file_content))
             new_cases_data = list(reader)
     except Exception as e:
         import_format_error(f"文件解析失败: {e}")
 
+    # 行级收集：成功 case + 错误列表
     new_cases = []
+    errors = []
     for i, row in enumerate(new_cases_data):
         try:
-            # 生成 case id
-            case_id = row.get("id", _generate_id("case"))
-            eval_params_str = row.get("eval_params", "{}")
-            eval_params = json.loads(eval_params_str) if eval_params_str and eval_params_str != "{}" else {}
-            new_cases.append(EvalCase(
+            case_id = row.get("id") or _generate_id("case")
+            # eval_params 支持对象或 JSON 字符串
+            ep = row.get("eval_params")
+            if isinstance(ep, str):
+                ep = json.loads(ep) if ep and ep != "{}" else {}
+            elif ep is None:
+                ep = {}
+            # enabled 字段容忍字符串/布尔
+            enabled_raw = row.get("enabled", "true")
+            if isinstance(enabled_raw, str):
+                enabled = enabled_raw.lower() == "true"
+            else:
+                enabled = bool(enabled_raw)
+            # task_shape 可选
+            task_shape = row.get("task_shape") or None
+            kwargs = dict(
                 id=case_id,
-                case_name=row.get("case_name", f"case-{i}"),
+                case_name=row.get("case_name") or f"case-{i}",
                 input=row.get("input", ""),
                 expected_output=row.get("expected_output") or None,
                 output_requirement=row.get("output_requirement") or None,
                 eval_type=row.get("eval_type", "exact"),
-                eval_params=eval_params,
-                enabled=row.get("enabled", "true").lower() == "true",
-            ))
+                eval_params=ep,
+                enabled=enabled,
+            )
+            if task_shape:
+                kwargs["task_shape"] = task_shape
+            new_cases.append(EvalCase(**kwargs))
         except Exception as e:
-            import_format_error(f"第 {i+1} 行解析失败: {e}")
+            errors.append({"row": i + 1, "error": str(e)})
+
+    # 有行级错误时不保存，返回 422 + errors
+    if errors:
+        raise HTTPException(status_code=422, detail={
+            "error": "import_validation_failed",
+            "imported": 0,
+            "total": len(new_cases_data),
+            "errors": errors,
+        })
 
     if mode == "replace":
         evalset.cases = new_cases
-    else:  # merge
+    else:  # merge：按 id 去重
         existing_ids = {c.id for c in evalset.cases}
         for case in new_cases:
             if case.id not in existing_ids:
                 evalset.cases.append(case)
 
     save_evalset(evalset)
-    return evalset.model_dump()
+    return {
+        "imported": len(new_cases),
+        "total": len(new_cases_data),
+        "mode": mode,
+        "evalset": evalset.model_dump(),
+    }
 
 
 @router.get("/evalsets/{evalset_id}/export")
@@ -429,15 +482,16 @@ async def test_target(req: TestTargetRequest, project_id: Optional[str] = None):
                     if auth.api_key_value == "__UNCHANGED__":
                         auth.api_key_value = saved.target_config.auth.api_key_value
         start = time.perf_counter()
-        output, token = await call_target(
+        output, token, _missing = await call_target(
             base_url=req.base_url,
             api_key=api_key,
-            model=req.model,
+            model=req.model or "",
             prompt="ping",
             request_template=req.request_template,
             auth=auth,
             response_mapping=req.response_mapping,
             response_parsing=req.response_parsing,
+            api_type=req.api_type,
         )
         latency_ms = (time.perf_counter() - start) * 1000
         return {

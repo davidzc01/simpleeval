@@ -255,6 +255,7 @@ font-family: "Inter", "PingFang SC", "Microsoft YaHei", sans-serif;
 ```
 
 - **上传**：接受 `.csv / .json`；拖拽区 + 文件格式说明；上传前弹「覆盖 or 合并」选择（默认合并，覆盖需二次确认，§5.3）。
+- **手动添加（决议 2026-08-19）**：表单逐条填写，不提供 JSON 文本域——需要手写 JSON 的用户直接走文件导入。表单字段与用例编辑器一致（case_name / input / eval_type 切换显示 expected 或 requirement / eval_params 示例模板），「添加到待导入列表」逐条累积，最后与文件导入共用同一套 preview→confirm 流程。
 - **导出**：CSV（Excel 兼容，带 BOM），列与表格一致，`eval_params` 序列化为 JSON 字符串。
 - **用例 CRUD**：
   - 新增/编辑走弹窗：case_name / input（多行文本域，等宽）/ expected_output 或 output_requirement（按 eval_type 二选一显示）/ eval_type 下拉 / eval_params（JSON 编辑区，按 eval_type 给示例模板）。
