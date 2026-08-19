@@ -28,8 +28,15 @@ class ResponseFormatError(APIError):
 
 
 def _build_headers(api_key: str, auth: AuthConfig) -> dict:
-    """构建请求头"""
-    headers = {"Authorization": f"Bearer {api_key}"}
+    """构建请求头（认证语义：一次只生效一种认证）
+
+    - bearer → Authorization: Bearer <token>
+    - api_key → 自定义头（默认 X-API-Key），不带 Authorization
+    - headers → 仅自定义头集合
+    - cookie → 仅 cookies（由 _build_cookies 单独处理），不带 Authorization
+    - none → api_key 有值发 Bearer（OpenAI 兼容默认），空则完全无认证头
+    """
+    headers = {}
 
     if auth.type == "bearer" and auth.bearer_token:
         headers["Authorization"] = f"Bearer {auth.bearer_token}"
@@ -39,6 +46,11 @@ def _build_headers(api_key: str, auth: AuthConfig) -> dict:
     elif auth.type == "headers":
         for h in auth.headers:
             headers[h.get("name", "")] = h.get("value", "")
+    elif auth.type == "cookie":
+        pass  # 仅 cookies
+    elif api_key:
+        # 默认（none）：OpenAI 兼容行为，有 key 才发 Bearer
+        headers["Authorization"] = f"Bearer {api_key}"
 
     return headers
 
