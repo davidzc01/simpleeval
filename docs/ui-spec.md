@@ -220,6 +220,24 @@ font-family: "Inter", "PingFang SC", "Microsoft YaHei", sans-serif;
 
 - 指标卡固定六枚，对应 `EvalSummary` 全字段（pass_rate / total_token / latency_p50 / latency_p95 / token_per_pass / failed 数）。**每万 token 完成率单独强调**（accent 色描边卡），它是差异化指标。
 - 趋势图：单图双轴可接受（质量 vs 成本本来就是两个量级），但 pass rate 用折线、token 用浅柱，颜色固定 accent + 灰，禁止多系列彩虹。
+- **采样稳定性卡**（新，`GET /projects/{pid}/sampling`）：
+
+```
+┌─────────────────────────────────────────┐
+│ 采样稳定性（基于全部 N 次 run）            │
+│  1.0 ┤●─────────●  pass@k（潜力）        │
+│  0.8 ┤      ●    ●  pass^k（稳定）        │
+│  0.6 ┤            ●                     │
+│      └─────┬─────┬─────┬── k           │
+│            1     2     3                 │
+│  两线夹缝宽度 = 不确定性；coverage < 阈值  │
+│  的 k 点标灰 + 「该 k 还需 X 次 run」提示  │
+└─────────────────────────────────────────┘
+```
+
+- 两条线同图，pass@k 永远 ≥ pass^k；k 固定 1/2/3。夹缝窄=稳定，宽=靠摇。
+- `coverage`（n≥k 的 case 数）低于 60% 时该点标灰并注「采样不足」；`total_runs: 0` 时整卡空态：「跑两次评测后这里会显示采样稳定性」。
+- 评测集结构变动会稀释 case_name 对齐，卡底固定注脚：「基于 case_name 跨 run 对齐，评测集改动可能稀释结果」。
 - 最近 run 卡：显示 4 个 mini 指标 + 通过/失败比 + 查看完整报告入口。
 
 ### 4.3 评测集管理（`/p/:pid` 评测集 tab）

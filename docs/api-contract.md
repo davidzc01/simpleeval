@@ -227,7 +227,41 @@
 
 **`POST /api/test/target` 响应**：`{"ok": true, "latency_ms": 812.4, "token_used": 12, "status_code": 200}` 或 `{"ok": false, "error": {"code": "target_api_error", "message": "401 Unauthorized"}}`
 
-### 2.5 Health
+### 2.5 Sampling（历史聚合的 pass@k / pass^k）
+
+| 接口 | 状态 | 说明 |
+|---|---|---|
+| `GET /api/projects/{pid}/sampling` | ➕ | 基于全部历史 run 聚合计算 pass@k 与 pass^k，k 固定 [1, 2, 3] |
+
+**响应示例**：
+
+```json
+{
+  "project_id": "proj-01",
+  "total_runs": 12,
+  "k_values": [1, 2, 3],
+  "pass_at_k": [
+    { "k": 1, "value": 0.875, "coverage": 20 },
+    { "k": 2, "value": 0.910, "coverage": 20 },
+    { "k": 3, "value": 0.940, "coverage": 18 }
+  ],
+  "pass_pow_k": [
+    { "k": 1, "value": 0.875, "coverage": 20 },
+    { "k": 2, "value": 0.710, "coverage": 20 },
+    { "k": 3, "value": 0.580, "coverage": 18 }
+  ]
+}
+```
+
+**计算约定**（决议 2026-08-19）：
+- 采样来源：全部历史 run（每次 run 即一次采样），不做采样策略，不改执行引擎。
+- case 对齐键：`case_name`（评测集改名/删改会稀释对齐，MVP 接受，UI 加提示文案）。
+- case 级公式：`pass@k = 1 - C(n-c, k)/C(n, k)`；`pass^k = C(c, k)/C(n, k)`（n=采样数，c=通过数）。
+- 评测集级：各 case 等权均值（仅纳入 n ≥ k 的 case）。
+- `coverage`：参与该 k 值计算的 case 数（n ≥ k 的 case 数），前端用它渲染「需更多 run」提示。
+- 无 run 时返回 `total_runs: 0` + 数组空，前端显示空态。
+
+### 2.6 Health
 
 `GET /api/health` ✅ 现状已实现，返回 `{"status": "ok"}`，可扩展带 `active_runs` 计数。
 
