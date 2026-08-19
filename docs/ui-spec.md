@@ -270,20 +270,33 @@ font-family: "Inter", "PingFang SC", "Microsoft YaHei", sans-serif;
 #### 4.4.1 Target API 配置
 
 ```
-base_url      [https://api.example.com/v1        ]  (mono)
-auth 方式     [○ 无  ○ Bearer Token  ○ API Key(header)  ○ Cookie  ○ 自定义 Headers]
+模式切换：[ OpenAI Compatible | 自定义 API ]  ← tab 控件（决议 2026-08-19）
+
+─ OpenAI Compatible tab ───────────────────────────
+base_url      [https://api.example.com/v1        ]  (mono) 必填
+api_key       [                             👁   ]  (mono) 选填：留空 = 不带 Authorization 头（自托管网关）
+model         [deepseek-chat                     ]  (mono) 必填，保存时阻断校验
+请求模板（折叠·高级）[JSON 编辑区，默认 {"messages":[{"role":"user","content":"{input}"}]}]
+auth（折叠·高级）    [与下方自定义 tab 相同的四选一 + kv 编辑器]
+
+─ 自定义 API tab ──────────────────────────────────
+base_url      [https://fastgpt.example.com/api    ]  (mono) 必填
+认证          [○ 无  ○ Bearer Token  ○ API Key(header)  ○ Cookie  ○ 自定义 Headers]
   └ 动态区：Bearer → [token 输入框(密码型+可见切换)]
             API Key → [header 名] [值]
-            Cookie → [kv 行编辑器，可多条：name=value 增删]
+            Cookie → [kv 行编辑器，可多条]
             自定义 Headers → [kv 行编辑器，可多条]
-model         [deepseek-chat                     ]
-请求模板      [JSON 编辑区，默认 {"messages":[{"role":"user","content":"{input}"}]}]
+请求模板      [JSON 编辑区，必填，保存时阻断校验]
               {input} / {case_name} / {task_shape} 为可替换变量
+响应解析      [指向 4.4.2 卡片，建议必配；留空 = 完整原文兑底]
 
 [测试连接]  ← 发一个最小请求，返回：✓ 200 · 1.2s · 12 tokens（或 ✗ 错误详情）
 ```
 
-- auth 方式切换时动态区即时替换，已填值按方式分组记忆（切走不丢）。
+- **两种模式的本质区别只有一条：请求体谁构造。** openai_compatible 由工具构造（标准 messages 模板 + model 注入），custom 由用户模板全权构造（**不注入 model、不补 messages**）。响应解析永远是独立配置，不随模式切换。
+- auth 方式切换时动态区即时替换，已填值按方式分组记忆（切走不丢）；两种 tab 共享同一份 auth 配置。
+- 校验规则（保存时阻断，前后端双保险）：openai_compatible → model 必填；custom → request_template 必填。api_key 在两种模式下均可留空。
+- 旧数据零迁移：无 `api_type` 字段的项目默认 `openai_compatible`。
 - **测试连接按钮是必配项**：这是配置页的"保存前验证"，防止把错误的配置带到 run 里烧 token。结果内联展示在按钮右侧，成功绿色 / 失败红色 + 原始错误。
 - 所有 secret 字段：`type=password` + 右侧眼睛 toggle；**服务端永不回显明文**（返回 `•••`）。
 

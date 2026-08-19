@@ -44,6 +44,8 @@
   },
   "target_config": {
     "base_url": "https://api.target.com/v1",
+    "api_type": "openai_compatible | custom",
+    "api_key": { "masked": true },
     "model": "deepseek-chat",
     "request_template": "{\"messages\":[{\"role\":\"user\",\"content\":\"{input}\"}]}",
     "auth": {
@@ -66,6 +68,8 @@
 ```
 
 - `auth.type` 决定哪些子字段生效；其余子字段允许为空。
+- `api_type`（决议 2026-08-19）：`openai_compatible`（默认，旧数据零迁移）请求体由工具构造（标准 messages + model 注入）；`custom` 由 `request_template` 全权构造（**不注入 model、不补 messages**）。响应解析永远独立于 api_type。
+- 校验规则（保存时阻断，HTTP 422）：`openai_compatible` → `model` 必填；`custom` → `request_template` 必填。`api_key` 两种模式下均可留空（留空 = 不带 Authorization 头）。
 - `response_parsing` 四个键的语义与冲突规则见 `docs/response-parsing-design.md`：`output_paths` 按序 fallback，`token_paths` 命中求和，`token_fields` 全树递归求和（配 `token_scope` 过滤）；paths 与 fields 同时给时 paths 优先。全部留空 = 完整响应原文 + 不统计 token。
 - 提取后的结果写入 `case.actual_output`，判定逻辑不变。
 
@@ -257,6 +261,7 @@
 {
   "project_id": "proj-01",
   "total_runs": 12,
+  "total_cases": 20,
   "k_values": [1, 2, 3],
   "pass_at_k": [
     { "k": 1, "value": 0.875, "coverage": 20 },
@@ -270,6 +275,8 @@
   ]
 }
 ```
+
+> `total_cases`：跨 run 出现过的唯一 `case_name` 数。前端用它计算 `coverage / total_cases` 判断某 k 点是否采样不足（< 60% 标灰）。`value: null` 表示该 k 值无法计算（无 case 满足 n ≥ k）。
 
 **计算约定**（决议 2026-08-19）：
 - 采样来源：全部历史 run（每次 run 即一次采样），不做采样策略，不改执行引擎。
