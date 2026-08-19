@@ -292,6 +292,18 @@ async def import_evalset(
                 enabled = bool(enabled_raw)
             # task_shape 可选
             task_shape = row.get("task_shape") or None
+            # variables 可选（B-13）：对象或 JSON 字符串两种形态
+            variables = None
+            v_raw = row.get("variables")
+            if v_raw is not None and v_raw != "":
+                if isinstance(v_raw, str):
+                    try:
+                        variables = json.loads(v_raw)
+                    except json.JSONDecodeError:
+                        errors.append({"row": i + 1, "error": f"variables 不是合法 JSON: {v_raw[:50]}"})
+                        continue
+                elif isinstance(v_raw, dict):
+                    variables = v_raw
             kwargs = dict(
                 id=case_id,
                 case_name=row.get("case_name") or f"case-{i}",
@@ -304,6 +316,8 @@ async def import_evalset(
             )
             if task_shape:
                 kwargs["task_shape"] = task_shape
+            if variables is not None:
+                kwargs["variables"] = variables
             new_cases.append(EvalCase(**kwargs))
         except Exception as e:
             errors.append({"row": i + 1, "error": str(e)})

@@ -539,6 +539,35 @@ case-2,测试2,天气,天气好,contains,"{""substring"": ""天气""}",true"""
         assert data["imported"] == 1
         assert len(data["evalset"]["cases"]) == 1
 
+    def test_import_evalset_json_with_variables(self, client):
+        """B-13 回归：后端 import 端点必须保留 variables（对象形态）"""
+        project_response = client.post("/api/projects", json={"name": "variables 导入"})
+        project_id = project_response.json()["id"]
+        evalset_response = client.post(
+            "/api/evalsets",
+            json={"project_id": project_id, "name": "变量评测集"}
+        )
+        evalset_id = evalset_response.json()["id"]
+
+        json_content = json.dumps([
+            {
+                "case_name": "敖煜新-杭开集团",
+                "input": "敖煜新-杭开集团",
+                "expected_output": "true",
+                "eval_type": "exact",
+                "variables": {"leader": "敖煜新", "enterprise": "杭开集团", "content": "新闻\n多行"},
+            }
+        ])
+        response = client.post(
+            f"/api/evalsets/{evalset_id}/import?project_id={project_id}&mode=replace",
+            data={"file_content": json_content}
+        )
+        assert response.status_code == 200
+        imported_case = response.json()["evalset"]["cases"][0]
+        assert imported_case["variables"]["leader"] == "敖煜新"
+        assert imported_case["variables"]["enterprise"] == "杭开集团"
+        assert imported_case["variables"]["content"] == "新闻\n多行"
+
     def test_import_evalset_object_eval_params_and_task_shape(self, client):
         """P2-8: 后端 import 端点支持对象 eval_params + task_shape 字段"""
         project_response = client.post("/api/projects", json={"name": "P2-8 对象"})
