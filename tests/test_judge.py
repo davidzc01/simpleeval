@@ -784,3 +784,38 @@ class TestRenderRequestTemplate:
         template = '{"variables":{"leader":"{leader}"}}'
         with pytest.raises(MissingVariableError):
             render_request_template(template, "ping", variables=None)
+
+
+class TestCallTargetUnpack:
+    """B-14 回归：评测主链路 call_target 必须生效 content 二次解包"""
+
+    @pytest.mark.asyncio
+    async def test_call_target_unpack_result_field(self):
+        """content 是 JSON 字符串 + unpack + output_field=result → 返回 "true" 而非原文"""
+        from app.judge import call_target
+        from app.models import ResponseParsing
+        content_json = json.dumps({"leader": "敖煜新", "result": True}, ensure_ascii=False)
+        api_response = {
+            "choices": [{"message": {"content": content_json}}],
+            "usage": {"total_tokens": 5},
+        }
+        with patch("httpx.AsyncClient") as mock_client:
+            mock_response = MagicMock()
+            mock_response.raise_for_status = MagicMock()
+            mock_response.json.return_value = api_response
+            mock_response.text = json.dumps(api_response)
+            mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
+
+            output, _token, _missing = await call_target(
+                base_url="https://api.example.com/v1",
+                api_key="k",
+                model="m",
+                prompt="测试",
+                request_template='{"messages":[{"content":"{input}"}]}',
+                response_parsing=ResponseParsing(
+                    output_paths=["$.choices[0].message.content"],
+                    output_unpack_json=True,
+                    output_field="result",
+                ),
+            )
+            assert output == "true"

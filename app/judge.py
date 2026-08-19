@@ -6,7 +6,7 @@ import re
 from typing import Optional, Union
 
 from .models import AuthConfig, ResponseMapping, ResponseParsing
-from .parser import extract_output, count_tokens
+from .parser import extract_output, count_tokens, _unpack_output
 
 
 class APIError(Exception):
@@ -253,6 +253,11 @@ async def call_target(
                 out = raw_response
             else:
                 out = "[PARSE_ERROR] 未命中任何输出路径"
+        else:
+            # B-14: content 二次解包（此前只在 parse_response 生效，评测主链路漏接）
+            out = _unpack_output(
+                out, response_parsing.output_unpack_json, response_parsing.output_field
+            )
         token_used, token_missing = count_tokens(
             data, response_parsing.token_paths,
             response_parsing.token_fields, response_parsing.token_scope,
