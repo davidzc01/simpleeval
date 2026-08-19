@@ -63,6 +63,8 @@ uvicorn app.main:app --reload --port 8000
 - **概览指标卡 7 张**：pass rate / 总 token / token 量(K) / 每万 token 完成率 / P50 / P95 / 失败数，与 run 详情对齐
 - **Token 预算 UI**：配置页 `limit` 输入 + `warn_only` checkbox，超限仅提醒不中断（MVP）
 - **导入走后端端点**：`POST /evalsets/{id}/import?mode=merge|replace`，行级错误收集（422 + errors 不保存），支持对象 `eval_params` 与 `task_shape`；前端保留本地预览
+- **导入弹窗双模式**：文件拖拽（.csv/.json）+ 逐条表单添加（按 eval_type 切换 expected/substring/min-max/output_requirement 字段，待导入列表可删，确认时序列化复用后端 import 端点）
+- **侧栏同步**：active 用 URL hash 判断（不依赖异步 state）+ 项目数据缓存，快速连点多个项目高亮始终同步无闪烁
 - **hash 路由**：`#/projects` / `#/project/{id}` / `#/run/{pid}/{rid}`，刷新不丢位置
 - **静默轮询**：run 详情增量 DOM 更新（不整页重绘），指数退避封顶 10s，弹窗打开/页面隐藏时暂停
 - **骨架屏**：列表/详情/run 详情初次加载扫光过渡

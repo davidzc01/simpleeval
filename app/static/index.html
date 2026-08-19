@@ -868,33 +868,58 @@
         }
 
         // ==================== 侧栏项目列表 ====================
-        async function loadSidebarProjects() {
+        // B-11: active 用 URL hash 判断（不依赖 state.currentProject），数据缓存（不每次 fetch）
+        function getActiveProjectIdFromHash() {
+            const parsed = parseHash(location.hash);
+            if (!parsed) return null;
+            if (parsed.page === 'project-detail') return parsed.params?.id || null;
+            if (parsed.page === 'run-detail') return parsed.params?.projectId || null;
+            return null;
+        }
+
+        function renderSidebarProjects() {
             const container = document.getElementById('projectList');
             if (!container) return;
+            const projects = state.sidebarProjects || [];
+            const activeId = getActiveProjectIdFromHash();
+            if (projects.length === 0) {
+                container.innerHTML = '<div style="padding: 10px 16px; color: var(--ink-5); font-size: 12px;">暂无项目</div>';
+                return;
+            }
+            container.innerHTML = projects.map(p => {
+                const hasRunning = p.last_run?.status === 'running' || p.last_run?.status === 'queued';
+                return `
+                    <div class="nav-item project-item ${activeId === p.id ? 'active' : ''}"
+                         data-page="project-detail" data-id="${escapeHtml(p.id)}"
+                         onclick="navigateTo('project-detail', {id: '${escapeHtml(p.id)}'})">
+                        ${hasRunning ? '<span class="status-dot"></span>' : '<span style="width: 6px;"></span>'}
+                        <span style="flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${escapeHtml(p.name)}</span>
+                    </div>
+                `;
+            }).join('');
+        }
 
+        async function loadSidebarProjects(force = false) {
+            const container = document.getElementById('projectList');
+            if (!container) return;
+            // 有缓存且不强制 → 立即渲染（0 延迟，点击同步切换 active）
+            if (state.sidebarProjects && !force) {
+                renderSidebarProjects();
+                return;
+            }
             try {
                 const data = await api('/projects');
-                const projects = data.projects || [];
-
-                if (projects.length === 0) {
-                    container.innerHTML = '<div style="padding: 10px 16px; color: var(--ink-5); font-size: 12px;">暂无项目</div>';
-                    return;
-                }
-
-                container.innerHTML = projects.map(p => {
-                    const hasRunning = p.last_run?.status === 'running' || p.last_run?.status === 'queued';
-                    return `
-                        <div class="nav-item project-item ${state.currentProject?.id === p.id ? 'active' : ''}"
-                             data-page="project-detail" data-id="${escapeHtml(p.id)}"
-                             onclick="navigateTo('project-detail', {id: '${escapeHtml(p.id)}'})">
-                            ${hasRunning ? '<span class="status-dot"></span>' : '<span style="width: 6px;"></span>'}
-                            <span style="flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${escapeHtml(p.name)}</span>
-                        </div>
-                    `;
-                }).join('');
+                state.sidebarProjects = data.projects || [];
+                renderSidebarProjects();
             } catch (err) {
                 container.innerHTML = '<div style="padding: 10px 16px; color: var(--ink-5); font-size: 12px;">加载失败</div>';
             }
+        }
+
+        // 强制刷新侧栏（项目增删后调用）
+        function refreshSidebarProjects() {
+            state.sidebarProjects = null;
+            loadSidebarProjects(true);
         }
 
         // ==================== 页面导航（带 hash 路由）====================
@@ -929,13 +954,13 @@
         }
 
         function runNavigation(page, params = {}) {
-            // 加载侧栏项目列表
+            // 加载侧栏项目列表（B-11: 有缓存时同步渲染，active 用 URL 判断）
             loadSidebarProjects();
 
             document.getElementById('pageTitle').textContent = page === 'projects' ? '项目总览' : page === 'project-detail' ? (state.currentProject?.name || '项目详情') : page === 'run-detail' ? (state.currentRun?.id || 'Run 详情') : page;
 
-            // 清除所有激活状态
-            document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
+            // 清除非侧栏项目的 active（保留侧栏 project-item 的 active，由 loadSidebarProjects 用 URL 同步设好）
+            document.querySelectorAll('.nav-item:not(.project-item)').forEach(el => el.classList.remove('active'));
 
             const content = document.getElementById('mainContent');
             const headerActions = document.getElementById('headerActions');
@@ -2848,6 +2873,7 @@
                 });
                 closeModal('createProjectModal');
                 showToast('创建成功');
+                refreshSidebarProjects();
                 navigateTo('projects');
             } catch (err) {
                 // 错误已由 api 处理
@@ -2867,9 +2893,9 @@
                     </div>
                     <div class="modal-body" style="max-height: 70vh; overflow-y: auto;">
                         <div class="tabs" style="margin-bottom: 16px;">
-                            <div class="tab active" data-tab="file" onclick="switchImportTab('file')">文件导入</div>
-                            <div class="tab" data-tab="manual" onclick="switchImportTab('manual')">手动输入</div>
-                        </div>
+                                <div class="tab active" data-tab="file" onclick="switchImportTab('file')">文件导入</div>
+                                <div class="tab" data-tab="manual" onclick="switchImportTab('manual')">逐条添加</div>
+                            </div>
                         
                         <!-- 文件导入 -->
                         <div id="importFileTab" class="tab-content active">
@@ -2885,16 +2911,50 @@
                             <div id="importProgress" style="display: none; margin-top: 16px;"></div>
                         </div>
                         
-                        <!-- 手动输入 -->
+                        <!-- B-12: 逐条表单添加（替代 JSON 文本域） -->
                         <div id="importManualTab" class="tab-content" style="display: none;">
+                            <div style="margin-bottom: 12px; color: var(--ink-4); font-size: 12px;">
+                                逐条填写用例，字段与用例编辑器一致。需要手写 JSON 的用户请走「文件导入」。
+                            </div>
                             <div class="form-group">
-                                <label class="form-label">输入 JSON 格式的评测数据</label>
-                                <textarea class="form-input mono" id="manualImportData" placeholder='[{"case_name": "测试用例1", "input": "输入文本", "eval_type": "exact", "expected_output": "期望输出"}, ...]' style="min-height: 200px;"></textarea>
-                                <div style="margin-top: 8px; color: var(--ink-4); font-size: 12px;">
-                                    支持格式：JSON 数组，每项包含 case_name、input、eval_type 必填字段
+                                <label class="form-label">case_name *</label>
+                                <input type="text" class="form-input" id="manualCaseName" placeholder="用例名称">
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label">input *（输入文本）</label>
+                                <textarea class="form-input mono" id="manualInput" style="min-height: 80px;" placeholder="输入文本"></textarea>
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label">eval_type</label>
+                                <select class="form-input" id="manualEvalType" onchange="toggleManualEvalFields()">
+                                    <option value="exact">exact（精确匹配）</option>
+                                    <option value="contains">contains（包含子串）</option>
+                                    <option value="not_contains">not_contains（不包含子串）</option>
+                                    <option value="length">length（长度范围）</option>
+                                    <option value="llm_judge">llm_judge（LLM 裁判）</option>
+                                </select>
+                            </div>
+                            <div id="manualExactGroup" class="form-group">
+                                <label class="form-label">expected_output</label>
+                                <textarea class="form-input mono" id="manualExpectedOutput" style="min-height: 60px;" placeholder="期望输出"></textarea>
+                            </div>
+                            <div id="manualContainsGroup" class="form-group" style="display: none;">
+                                <label class="form-label">eval_params.substring</label>
+                                <input type="text" class="form-input" id="manualSubstring" placeholder="子字符串">
+                            </div>
+                            <div id="manualLengthGroup" class="form-group" style="display: none;">
+                <label class="form-label">eval_params（min / max 长度）</label>
+                                <div style="display: flex; gap: 8px;">
+                                    <input type="number" class="form-input" id="manualLenMin" placeholder="min" min="0">
+                                    <input type="number" class="form-input" id="manualLenMax" placeholder="max" min="0">
                                 </div>
                             </div>
-                            <button class="btn btn-secondary" onclick="validateManualInput()">验证格式</button>
+                            <div id="manualLlmGroup" class="form-group" style="display: none;">
+                                <label class="form-label">output_requirement</label>
+                                <textarea class="form-input mono" id="manualOutputRequirement" style="min-height: 60px;" placeholder="裁判判据（如：态度友好，不反驳不防御）"></textarea>
+                            </div>
+                            <button class="btn btn-secondary" onclick="addManualCaseToList()">+ 添加到待导入列表</button>
+                            <div id="manualCaseList" style="margin-top: 16px;"></div>
                             <div id="manualPreview" style="margin-top: 16px;"></div>
                         </div>
                         
@@ -3059,31 +3119,91 @@
             summaryDiv.innerHTML = '总计: ' + importData.total + ' 条，成功: ' + importData.cases.length + '，失败: ' + importData.errors.length;
         }
 
-        function validateManualInput() {
-            const input = document.getElementById('manualImportData').value;
+        // B-12: 逐条表单——按 eval_type 切换字段组
+        function toggleManualEvalFields() {
+            const t = document.getElementById('manualEvalType')?.value;
+            if (!t) return;
+            const show = id => { const el = document.getElementById(id); if (el) el.style.display = ''; };
+            const hide = id => { const el = document.getElementById(id); if (el) el.style.display = 'none'; };
+            // exact / llm_judge → 各自的字段；contains / not_contains → substring；length → min/max
+            hide('manualExactGroup'); hide('manualContainsGroup'); hide('manualLengthGroup'); hide('manualLlmGroup');
+            if (t === 'exact') show('manualExactGroup');
+            else if (t === 'contains' || t === 'not_contains') show('manualContainsGroup');
+            else if (t === 'length') show('manualLengthGroup');
+            else if (t === 'llm_judge') show('manualLlmGroup');
+        }
+
+        // B-12: 从表单收集一条 case 加入待导入列表
+        function addManualCaseToList() {
+            const name = document.getElementById('manualCaseName').value.trim();
+            const input = document.getElementById('manualInput').value;
+            const evalType = document.getElementById('manualEvalType').value;
+            if (!name) { showToast('case_name 必填', 'warning'); return; }
+            if (!input.trim()) { showToast('input 必填', 'warning'); return; }
+            const caseObj = { case_name: name, input, eval_type: evalType, eval_params: {}, enabled: true };
+            if (evalType === 'exact') {
+                caseObj.expected_output = document.getElementById('manualExpectedOutput').value;
+            } else if (evalType === 'contains' || evalType === 'not_contains') {
+                caseObj.eval_params.substring = document.getElementById('manualSubstring').value;
+            } else if (evalType === 'length') {
+                const min = document.getElementById('manualLenMin').value;
+                const max = document.getElementById('manualLenMax').value;
+                if (min) caseObj.eval_params.min = parseInt(min, 10);
+                if (max) caseObj.eval_params.max = parseInt(max, 10);
+            } else if (evalType === 'llm_judge') {
+                caseObj.output_requirement = document.getElementById('manualOutputRequirement').value;
+            }
+            // 加入待导入列表
+            if (!Array.isArray(importData.cases)) importData.cases = [];
+            importData.cases.push(caseObj);
+            importData.total = importData.cases.length;
+            importData.errors = [];
+            renderManualCaseList();
+            // 清空表单（保留 eval_type 选择）
+            document.getElementById('manualCaseName').value = '';
+            document.getElementById('manualInput').value = '';
+            document.getElementById('manualExpectedOutput').value = '';
+            document.getElementById('manualSubstring').value = '';
+            document.getElementById('manualLenMin').value = '';
+            document.getElementById('manualLenMax').value = '';
+            document.getElementById('manualOutputRequirement').value = '';
+            document.getElementById('manualCaseName').focus();
+        }
+
+        // B-12: 渲染待导入列表（可删除）
+        function renderManualCaseList() {
+            const listDiv = document.getElementById('manualCaseList');
             const previewDiv = document.getElementById('manualPreview');
-            if (!input.trim()) {
-                showToast('请输入数据', 'warning');
+            if (!listDiv) return;
+            if (!importData.cases || importData.cases.length === 0) {
+                listDiv.innerHTML = '';
+                if (previewDiv) previewDiv.innerHTML = '';
+                const optsDiv = document.getElementById('importOptions');
+                if (optsDiv) optsDiv.style.display = 'none';
+                const confirmBtn = document.getElementById('confirmImportBtn');
+                if (confirmBtn) confirmBtn.disabled = true;
                 return;
             }
-            try {
-                const data = JSON.parse(input);
-                importData = validateImportData(data);
-                // P2-8: 保留原始内容（手动输入总是 JSON 数组）
-                importData.rawContent = input;
-                importData.format = 'json';
-                showImportPreview();
-                previewDiv.innerHTML = importData.errors.length > 0
-                    ? '<div style="color: var(--red);">验证失败: ' + importData.errors.length + ' 条错误</div>'
-                    : '<div style="color: var(--green);">✓ 验证通过: ' + importData.cases.length + ' 条用例</div>';
-                if (importData.errors.length > 0) {
-                    previewDiv.innerHTML += importData.errors.slice(0, 3).map(e =>
-                        '<div style="font-size: 12px; color: var(--ink-3); margin-top: 4px;">行' + e.row + ': ' + e.errors.join(', ') + '</div>'
-                    ).join('');
-                }
-            } catch (err) {
-                previewDiv.innerHTML = '<div style="color: var(--red);">JSON 解析失败: ' + err.message + '</div>';
-            }
+            listDiv.innerHTML = '<div style="font-size: 12px; color: var(--ink-4); margin-bottom: 8px;">待导入列表（' + importData.cases.length + ' 条，点击 × 删除）</div>' +
+                importData.cases.map((c, i) =>
+                    '<div style="display: flex; align-items: center; gap: 8px; padding: 6px 8px; background: var(--gray-bg); border-radius: 4px; margin-bottom: 4px;">' +
+                        '<span style="flex: 1; font-size: 13px;"><strong>' + escapeHtml(c.case_name) + '</strong> <span style="color: var(--ink-4); font-size: 11px;">[' + c.eval_type + ']</span></span>' +
+                        '<button class="btn btn-sm btn-danger" onclick="removeManualCase(' + i + ')" title="删除">×</button>' +
+                    '</div>'
+                ).join('');
+            // 显示导入选项 + 启用确认按钮
+            const optsDiv = document.getElementById('importOptions');
+            if (optsDiv) optsDiv.style.display = 'block';
+            const confirmBtn = document.getElementById('confirmImportBtn');
+            if (confirmBtn) confirmBtn.disabled = false;
+            if (previewDiv) previewDiv.innerHTML = '<div style="color: var(--green);">✓ 待导入 ' + importData.cases.length + ' 条用例</div>';
+        }
+
+        function removeManualCase(idx) {
+            if (!importData.cases) return;
+            importData.cases.splice(idx, 1);
+            importData.total = importData.cases.length;
+            renderManualCaseList();
         }
 
         async function confirmImport(evalsetId, projectId) {
@@ -3091,9 +3211,10 @@
                 showToast('没有可导入的数据', 'warning');
                 return;
             }
+            // B-12: 表单模式无 rawContent → 序列化 cases 成 JSON 作为 rawContent
             if (!importData.rawContent) {
-                showToast('请先选择文件或输入数据', 'warning');
-                return;
+                importData.rawContent = JSON.stringify(importData.cases);
+                importData.format = 'json';
             }
             const mode = document.querySelector('input[name="importMode"]:checked').value;
             const progressDiv = document.getElementById('importProgress');
@@ -3125,6 +3246,8 @@
                 }
                 progressDiv.innerHTML = '<div style="color: var(--green);">✓ 导入完成（' + result.imported + ' 条，模式: ' + result.mode + '）</div>';
                 showToast('成功导入 ' + result.imported + ' 条用例', 'success');
+                // 重置导入状态，避免下次打开残留
+                importData = { cases: [], errors: [], total: 0 };
                 switchTab('evalsets');
                 setTimeout(() => closeModal('importModal'), 800);
             } catch (err) {
