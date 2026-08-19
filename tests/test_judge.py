@@ -767,3 +767,20 @@ class TestRenderRequestTemplate:
         template = '{"variables":{"leader":"{leader}"}}'
         with pytest.raises(MissingVariableError):
             render_request_template(template, "输入", variables={})
+
+    def test_default_missing_fills_undefined_variables(self):
+        """测试连接宽松模式：default_missing 填充未定义变量，不报错"""
+        from app.judge import render_request_template
+        import json
+        template = '{"variables":{"leader":"{leader}","content":"{content}"}}'
+        rendered = render_request_template(template, "ping", variables=None, default_missing="test")
+        body = json.loads(rendered)
+        assert body["variables"]["leader"] == "test"
+        assert body["variables"]["content"] == "test"
+
+    def test_strict_mode_still_raises_when_no_default(self):
+        """严格模式（评测路径）未定义变量仍报 MissingVariableError"""
+        from app.judge import render_request_template, MissingVariableError
+        template = '{"variables":{"leader":"{leader}"}}'
+        with pytest.raises(MissingVariableError):
+            render_request_template(template, "ping", variables=None)

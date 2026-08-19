@@ -520,6 +520,8 @@ async def test_target(req: TestTargetRequest, project_id: Optional[str] = None):
             response_mapping=req.response_mapping,
             response_parsing=req.response_parsing,
             api_type=req.api_type,
+            # 测试连接宽松模式：模板里的自定义变量用占位值填充（连通性测试不依赖真实变量值）
+            default_missing="test",
         )
         latency_ms = (time.perf_counter() - start) * 1000
         return {

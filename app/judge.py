@@ -37,6 +37,7 @@ def render_request_template(
     variables: Optional[dict] = None,
     case_name: str = "",
     task_shape: str = "",
+    default_missing: Optional[str] = None,
 ) -> str:
     """渲染请求模板：{input}/{case_name}/{task_shape}/{key} 占位符用 JSON 转义后的值替换。
 
@@ -71,11 +72,15 @@ def render_request_template(
                 result = result.replace("{" + k + "}", esc)
             else:
                 result = result.replace("{" + k + "}", _esc(str(v)))
-    # 检测剩余 {identifier} 占位符（未定义变量）→ 报错明确
+    # 检测剩余 {identifier} 占位符（未定义变量）
     import re
     remaining = re.findall(r"\{([A-Za-z_][A-Za-z0-9_]*)\}", result)
     if remaining:
-        # 排除已替换的标准三变量残留（一般不会出现，除非模板本身有 {input} 想保留）
+        if default_missing is not None:
+            # 测试连接等宽松场景：未定义变量用占位值填充
+            for name in remaining:
+                result = result.replace("{" + name + "}", _esc(default_missing))
+            return result
         raise MissingVariableError(
             f"模板含未定义的占位符: {remaining[0]}（variables 缺少该键）。"
             f"如需支持，请在 case.variables 里提供。"
@@ -158,6 +163,7 @@ async def call_target(
     variables: Optional[dict] = None,
     case_name: str = "",
     task_shape: str = "",
+    default_missing: Optional[str] = None,
 ) -> tuple[str, int, bool]:
     """调用被评测 API，返回 (输出文本, 消耗 token 数, token_missing 标志)
 
@@ -178,7 +184,8 @@ async def call_target(
         try:
             rendered = render_request_template(
                 request_template, prompt,
-                variables=variables, case_name=case_name, task_shape=task_shape
+                variables=variables, case_name=case_name, task_shape=task_shape,
+                default_missing=default_missing
             )
             body = json.loads(rendered)
         except json.JSONDecodeError:
@@ -196,7 +203,8 @@ async def call_target(
             try:
                 rendered = render_request_template(
                     request_template, prompt,
-                    variables=variables, case_name=case_name, task_shape=task_shape
+                    variables=variables, case_name=case_name, task_shape=task_shape,
+                    default_missing=default_missing
                 )
                 body = json.loads(rendered)
                 if "model" not in body:
