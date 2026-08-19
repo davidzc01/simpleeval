@@ -365,6 +365,17 @@ async def list_project_runs(project_id: str):
     return {"runs": result}
 
 
+@router.get("/projects/{project_id}/sampling")
+async def get_project_sampling(project_id: str):
+    """项目采样稳定性（pass@k / pass^k，k=1,2,3）"""
+    project = get_project(project_id)
+    if not project:
+        project_not_found(project_id)
+    # 延迟导入避免循环依赖（sampling 依赖 storage，storage 不依赖 routes）
+    from .sampling import compute_project_sampling
+    return compute_project_sampling(project_id)
+
+
 @router.get("/runs/{run_id}/export")
 async def export_run(run_id: str, project_id: str):
     """导出 run 结果为 CSV"""
