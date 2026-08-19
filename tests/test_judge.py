@@ -358,3 +358,158 @@ class TestJudgeWithLLM:
             )
 
             assert score == 0.0
+
+
+class TestCallTargetExtended:
+    """call_target 扩展测试"""
+
+    @pytest.mark.asyncio
+    async def test_json_template_fallback(self):
+        """JSON 模板解析失败时回退"""
+        import httpx
+        api_response = {
+            "choices": [{"message": {"content": "测试回复"}}],
+            "usage": {"total_tokens": 50}
+        }
+        with patch("httpx.AsyncClient") as mock_client:
+            mock_response = MagicMock()
+            mock_response.json.return_value = api_response
+            mock_response.text = json.dumps(api_response)
+            mock_response.raise_for_status = MagicMock()
+            mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
+
+            # 使用无效的 JSON 模板
+            output, token = await call_target(
+                base_url="https://api.example.com/v1",
+                api_key="test-key",
+                model="gpt-3.5-turbo",
+                prompt="你好",
+                request_template="{invalid json"
+            )
+
+            # 应该回退到默认格式
+            assert output == "测试回复"
+
+    @pytest.mark.asyncio
+    async def test_response_format_error_missing_choices(self):
+        """响应缺少 choices 字段"""
+        import httpx
+        with patch("httpx.AsyncClient") as mock_client:
+            mock_response = MagicMock()
+            mock_response.raise_for_status = MagicMock()
+            # 返回没有 choices 字段的响应
+            mock_response.json.return_value = {"usage": {"total_tokens": 50}}
+            mock_response.text = '{"usage": {"total_tokens": 50}}'
+            mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
+
+            with pytest.raises(ResponseFormatError) as exc_info:
+                await call_target(
+                    base_url="https://api.example.com/v1",
+                    api_key="test-key",
+                    model="gpt-3.5-turbo",
+                    prompt="你好"
+                )
+            assert "格式错误" in exc_info.value.message or "解析" in exc_info.value.message
+
+    @pytest.mark.asyncio
+    async def test_response_missing_choices(self):
+        """响应缺少 choices 字段"""
+        import httpx
+        with patch("httpx.AsyncClient") as mock_client:
+            mock_response = MagicMock()
+            mock_response.raise_for_status = MagicMock()
+            mock_response.json.return_value = {"usage": {"total_tokens": 50}}
+            mock_response.text = "{}"
+            mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
+
+            with pytest.raises(ResponseFormatError) as exc_info:
+                await call_target(
+                    base_url="https://api.example.com/v1",
+                    api_key="test-key",
+                    model="gpt-3.5-turbo",
+                    prompt="你好"
+                )
+            assert "格式错误" in exc_info.value.message or "解析" in exc_info.value.message
+
+
+class TestJudgeWithLLMErrors:
+    """Judge API 错误测试"""
+
+    @pytest.mark.asyncio
+    async def test_judge_timeout(self):
+        """Judge 超时"""
+        import httpx
+        with patch("httpx.AsyncClient") as mock_client:
+            mock_client.return_value.__aenter__.return_value.post = AsyncMock(
+                side_effect=httpx.TimeoutException("timeout")
+            )
+
+            with pytest.raises(NetworkError) as exc_info:
+                await judge_with_llm(
+                    base_url="https://api.example.com/v1",
+                    api_key="test-key",
+                    model="gpt-4o-mini",
+                    requirement="测试",
+                    output="测试"
+                )
+            assert "超时" in exc_info.value.message
+
+    @pytest.mark.asyncio
+    async def test_judge_connection_error(self):
+        """Judge 连接错误"""
+        import httpx
+        with patch("httpx.AsyncClient") as mock_client:
+            mock_client.return_value.__aenter__.return_value.post = AsyncMock(
+                side_effect=httpx.ConnectError("connection refused")
+            )
+
+            with pytest.raises(NetworkError) as exc_info:
+                await judge_with_llm(
+                    base_url="https://api.example.com/v1",
+                    api_key="test-key",
+                    model="gpt-4o-mini",
+                    requirement="测试",
+                    output="测试"
+                )
+            assert "连接失败" in exc_info.value.message
+
+    @pytest.mark.asyncio
+    async def test_judge_http_error(self):
+        """Judge HTTP 错误"""
+        import httpx
+        with patch("httpx.AsyncClient") as mock_client:
+            mock_response = MagicMock()
+            mock_response.status_code = 500
+            mock_response.text = "Internal Server Error"
+            error = httpx.HTTPStatusError("500", request=MagicMock(), response=mock_response)
+            mock_client.return_value.__aenter__.return_value.post = AsyncMock(side_effect=error)
+
+            with pytest.raises(APIError) as exc_info:
+                await judge_with_llm(
+                    base_url="https://api.example.com/v1",
+                    api_key="test-key",
+                    model="gpt-4o-mini",
+                    requirement="测试",
+                    output="测试"
+                )
+            assert "500" in exc_info.value.message
+
+    @pytest.mark.asyncio
+    async def test_judge_response_format_error(self):
+        """Judge 响应格式错误"""
+        import httpx
+        with patch("httpx.AsyncClient") as mock_client:
+            mock_response = MagicMock()
+            mock_response.raise_for_status = MagicMock()
+            mock_response.json.return_value = {"usage": {"total_tokens": 50}}
+            mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
+
+            with pytest.raises(ResponseFormatError) as exc_info:
+                await judge_with_llm(
+                    base_url="https://api.example.com/v1",
+                    api_key="test-key",
+                    model="gpt-4o-mini",
+                    requirement="测试",
+                    output="测试"
+                )
+            assert "格式错误" in exc_info.value.message or "解析" in exc_info.value.message

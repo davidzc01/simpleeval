@@ -293,3 +293,172 @@ class TestTokenPerPass:
         )
 
         assert run.summary.token_per_pass == 0.0
+
+
+class TestExecuteRun:
+    """execute_run 异步执行测试"""
+
+    @pytest.mark.asyncio
+    async def test_execute_run_success(self, sample_project, sample_evalset):
+        """成功执行"""
+        from app.runner import execute_run
+        from app.models import EvalRun
+
+        project = Project(**sample_project)
+        evalset = EvalSet(**sample_evalset)
+
+        # 只保留一个 exact case
+        evalset.cases = [c for c in evalset.cases if c.id == "case-001"]
+
+        run = EvalRun(
+            id="run-execute-001",
+            project_id=project.id,
+            evalset_id=evalset.id,
+            status="queued",
+            created_at="2024-01-01T00:00:00Z",
+        )
+
+        with patch("app.runner.call_target", new_callable=AsyncMock) as mock_call, \
+             patch("app.runner.check_judge_available", new_callable=AsyncMock) as mock_check, \
+             patch("app.runner.save_run") as mock_save:
+
+            mock_call.return_value = ("你好！", 50)
+            mock_check.return_value = (True, "")
+
+            result = await execute_run(run, project, evalset)
+
+            assert result.status == "completed"
+            assert len(result.results) == 1
+            assert result.results[0].passed is True
+            # save_run 应该被调用
+            assert mock_save.called
+
+    @pytest.mark.asyncio
+    async def test_execute_run_with_judge(self, sample_project, sample_evalset):
+        """带 LLM Judge 执行"""
+        from app.runner import execute_run
+        from app.models import EvalRun
+
+        project = Project(**sample_project)
+        evalset = EvalSet(**sample_evalset)
+
+        # 只保留一个 llm_judge case
+        evalset.cases = [c for c in evalset.cases if c.id == "case-005"]
+
+        run = EvalRun(
+            id="run-judge-001",
+            project_id=project.id,
+            evalset_id=evalset.id,
+            status="queued",
+            created_at="2024-01-01T00:00:00Z",
+        )
+
+        with patch("app.runner.call_target", new_callable=AsyncMock) as mock_call, \
+             patch("app.runner.judge_with_llm", new_callable=AsyncMock) as mock_judge, \
+             patch("app.runner.check_judge_available", new_callable=AsyncMock) as mock_check, \
+             patch("app.runner.save_run") as mock_save:
+
+            mock_call.return_value = ("礼貌的回复", 50)
+            mock_judge.return_value = 0.8
+            mock_check.return_value = (True, "")
+
+            result = await execute_run(run, project, evalset)
+
+            assert result.status == "completed"
+            assert result.results[0].passed is True  # 0.8 >= 0.5
+
+    @pytest.mark.asyncio
+    async def test_execute_run_judge_unavailable(self, sample_project, sample_evalset):
+        """Judge 不可用时跳过 llm_judge case"""
+        from app.runner import execute_run
+        from app.models import EvalRun
+
+        project = Project(**sample_project)
+        evalset = EvalSet(**sample_evalset)
+
+        # 保留 llm_judge case
+        evalset.cases = [c for c in evalset.cases if c.id == "case-005"]
+
+        run = EvalRun(
+            id="run-judge-skip-001",
+            project_id=project.id,
+            evalset_id=evalset.id,
+            status="queued",
+            created_at="2024-01-01T00:00:00Z",
+        )
+
+        with patch("app.runner.call_target", new_callable=AsyncMock) as mock_call, \
+             patch("app.runner.check_judge_available", new_callable=AsyncMock) as mock_check, \
+             patch("app.runner.save_run"):
+
+            mock_call.return_value = ("回复内容", 50)
+            mock_check.return_value = (False, "llm_unavailable: 网络错误")
+
+            result = await execute_run(run, project, evalset)
+
+            assert result.status == "completed"
+            assert "[SKIPPED]" in result.results[0].actual_output
+            assert result.results[0].skipped_reason is not None
+
+    @pytest.mark.asyncio
+    async def test_execute_run_api_error(self, sample_project, sample_evalset):
+        """API 错误处理"""
+        from app.runner import execute_run
+        from app.models import EvalRun
+        from app.judge import NetworkError
+
+        project = Project(**sample_project)
+        evalset = EvalSet(**sample_evalset)
+
+        evalset.cases = [c for c in evalset.cases if c.id == "case-001"]
+
+        run = EvalRun(
+            id="run-error-001",
+            project_id=project.id,
+            evalset_id=evalset.id,
+            status="queued",
+            created_at="2024-01-01T00:00:00Z",
+        )
+
+        with patch("app.runner.call_target", new_callable=AsyncMock) as mock_call, \
+             patch("app.runner.check_judge_available", new_callable=AsyncMock) as mock_check, \
+             patch("app.runner.save_run"):
+
+            mock_call.side_effect = NetworkError("网络不可达")
+            mock_check.return_value = (True, "")
+
+            result = await execute_run(run, project, evalset)
+
+            assert result.status == "completed"
+            assert "[ERROR]" in result.results[0].actual_output
+
+    @pytest.mark.asyncio
+    async def test_execute_run_failed_status(self, sample_project, sample_evalset):
+        """执行失败状态"""
+        from app.runner import execute_run
+        from app.models import EvalRun
+
+        project = Project(**sample_project)
+        evalset = EvalSet(**sample_evalset)
+
+        evalset.cases = [c for c in evalset.cases if c.id == "case-001"]
+
+        run = EvalRun(
+            id="run-fail-001",
+            project_id=project.id,
+            evalset_id=evalset.id,
+            status="queued",
+            created_at="2024-01-01T00:00:00Z",
+        )
+
+        with patch("app.runner.call_target", new_callable=AsyncMock) as mock_call, \
+             patch("app.runner.check_judge_available", new_callable=AsyncMock) as mock_check, \
+             patch("app.runner.save_run"):
+
+            # 模拟一个未捕获的异常
+            mock_call.side_effect = RuntimeError("未知错误")
+            mock_check.return_value = (True, "")
+
+            with pytest.raises(RuntimeError):
+                await execute_run(run, project, evalset)
+

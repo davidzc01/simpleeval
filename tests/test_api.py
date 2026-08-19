@@ -457,3 +457,205 @@ class TestErrorHandling:
             json={"project_id": "test"}  # 缺少 name
         )
         assert response.status_code == 422
+
+
+class TestRunDetailAPI:
+    """Run 详情接口测试"""
+
+    def test_get_run_detail(self, client):
+        """获取 run 详情"""
+        # 创建项目和评测集
+        project_response = client.post("/api/projects", json={"name": "测试"})
+        project_id = project_response.json()["id"]
+
+        evalset_response = client.post(
+            "/api/evalsets",
+            json={
+                "project_id": project_id,
+                "name": "评测集",
+                "cases": [
+                    {
+                        "id": "case-1",
+                        "case_name": "测试",
+                        "input": "你好",
+                        "expected_output": "你好！",
+                        "eval_type": "exact",
+                        "enabled": True
+                    }
+                ]
+            }
+        )
+        evalset_id = evalset_response.json()["id"]
+
+        # Mock 异步执行
+        with patch("app.routes.execute_run"):
+            create_response = client.post(
+                "/api/runs",
+                json={"project_id": project_id, "evalset_id": evalset_id}
+            )
+        run_id = create_response.json()["run_id"]
+
+        # 获取详情
+        response = client.get(f"/api/runs/{run_id}?project_id={project_id}")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["id"] == run_id
+        assert "results" in data
+
+    def test_get_run_not_found(self, client):
+        """Run 不存在"""
+        response = client.get("/api/runs/nonexistent?project_id=proj-123")
+        assert response.status_code == 404
+
+
+class TestExportEndpoints:
+    """导出接口测试"""
+
+    def test_export_run_csv(self, client):
+        """导出 run 结果"""
+        # 创建项目和评测集
+        project_response = client.post("/api/projects", json={"name": "测试"})
+        project_id = project_response.json()["id"]
+
+        evalset_response = client.post(
+            "/api/evalsets",
+            json={
+                "project_id": project_id,
+                "name": "评测集",
+                "cases": [
+                    {
+                        "id": "case-1",
+                        "case_name": "测试",
+                        "input": "你好",
+                        "expected_output": "你好！",
+                        "eval_type": "exact",
+                        "enabled": True
+                    }
+                ]
+            }
+        )
+        evalset_id = evalset_response.json()["id"]
+
+        # Mock 异步执行
+        with patch("app.routes.execute_run"):
+            create_response = client.post(
+                "/api/runs",
+                json={"project_id": project_id, "evalset_id": evalset_id}
+            )
+        run_id = create_response.json()["run_id"]
+
+        # 导出
+        response = client.get(f"/api/runs/{run_id}/export?project_id={project_id}")
+        assert response.status_code == 200
+        data = response.json()
+        assert "content" in data
+        assert data["filename"] == f"run-{run_id}.csv"
+
+    def test_export_run_not_found(self, client):
+        """导出不存在的 run"""
+        response = client.get("/api/runs/nonexistent/export?project_id=proj-123")
+        assert response.status_code == 404
+
+
+class TestTestEndpointsExtended:
+    """Test 端点扩展测试"""
+
+    def test_test_target_api_error(self, client):
+        """测试目标 API - API 错误"""
+        from app.judge import APIError
+        with patch("app.routes.call_target", new_callable=AsyncMock) as mock_call:
+            mock_call.side_effect = APIError("401 Unauthorized", 401)
+
+            response = client.post(
+                "/api/test/target",
+                json={
+                    "base_url": "https://api.example.com/v1",
+                    "api_key": "test-key",
+                    "model": "gpt-3.5-turbo",
+                    "request_template": "{input}"
+                }
+            )
+            assert response.status_code == 200
+            data = response.json()
+            assert data["ok"] is False
+            assert "error" in data
+
+    def test_test_target_mapping_error(self, client):
+        """测试目标 API - 映射错误"""
+        from app.judge import ResponseFormatError
+        with patch("app.routes.call_target", new_callable=AsyncMock) as mock_call:
+            mock_call.side_effect = ResponseFormatError("映射失败")
+
+            response = client.post(
+                "/api/test/target",
+                json={
+                    "base_url": "https://api.example.com/v1",
+                    "api_key": "test-key",
+                    "model": "gpt-3.5-turbo",
+                    "request_template": "{input}"
+                }
+            )
+            assert response.status_code == 200
+            data = response.json()
+            assert data["ok"] is False
+
+    def test_test_judge_network_error(self, client):
+        """测试 Judge - 网络错误"""
+        from app.judge import NetworkError
+        with patch("app.routes.judge_with_llm", new_callable=AsyncMock) as mock_judge:
+            mock_judge.side_effect = NetworkError("连接超时")
+
+            response = client.post(
+                "/api/test/judge",
+                json={
+                    "base_url": "https://api.example.com/v1",
+                    "api_key": "test-key",
+                    "model": "gpt-4o-mini",
+                    "prompt_template": "判断",
+                    "input": "你好",
+                    "output_requirement": "需要礼貌",
+                    "actual_output": "好的"
+                }
+            )
+            assert response.status_code == 200
+            data = response.json()
+            assert data["ok"] is False
+
+    def test_test_judge_api_error(self, client):
+        """测试 Judge - API 错误"""
+        from app.judge import APIError
+        with patch("app.routes.judge_with_llm", new_callable=AsyncMock) as mock_judge:
+            mock_judge.side_effect = APIError("500 Server Error", 500)
+
+            response = client.post(
+                "/api/test/judge",
+                json={
+                    "base_url": "https://api.example.com/v1",
+                    "api_key": "test-key",
+                    "model": "gpt-4o-mini",
+                    "prompt_template": "判断",
+                    "input": "你好",
+                    "output_requirement": "需要礼貌",
+                    "actual_output": "好的"
+                }
+            )
+            assert response.status_code == 200
+            data = response.json()
+            assert data["ok"] is False
+
+    def test_test_mapping_invalid(self, client):
+        """测试映射 - 无效映射"""
+        from app.judge import ResponseFormatError
+        with patch("app.judge._extract_response") as mock_extract:
+            mock_extract.side_effect = ResponseFormatError("路径不存在")
+
+            response = client.post(
+                "/api/test/mapping",
+                json={
+                    "response_mapping": [
+                        {"name": "reply", "jsonpath": "$.invalid.path"}
+                    ],
+                    "sample_response": json.dumps({"data": {"reply": "测试"}})
+                }
+            )
+            assert response.status_code == 422
