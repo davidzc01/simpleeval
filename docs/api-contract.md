@@ -174,7 +174,7 @@
 }
 ```
 
-- `last_run` 为 null 表示从未跑过；`trend` 返回最近 8 次 run 的 `(run_id, pass_rate)`，不足 8 条按实际数量。
+- `last_run` 为 null 表示从未跑过；`trend` 返回最近 8 次 run 的 `(run_id, pass_rate, total_token)`，不足 8 条按实际数量。用途：列表 sparkline 只取 `pass_rate`（哨兵：变好还是变坏）；概览趋势图双系列（质量 + 成本同屏，token 不单独展示）。
 
 ### 2.2 EvalSets
 
