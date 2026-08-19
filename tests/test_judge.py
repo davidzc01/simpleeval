@@ -744,3 +744,26 @@ class TestRenderRequestTemplate:
         body = json.loads(render_request_template(template, "纯文本"))
         assert body["variables"]["a"] == 1
         assert body["messages"][0]["content"] == "纯文本"
+
+    def test_custom_variables_any_count(self):
+        """自定义变量任意键数（四键）替换，证明不限三变量"""
+        from app.judge import render_request_template
+        import json
+        template = '{"variables":{"leader":"{leader}","enterprise":"{enterprise}","content":"{content}","model":"{model}"},"messages":[{"content":"{input}"}]}'
+        body = json.loads(render_request_template(
+            template, "敖煜新-杭开集团",
+            variables={"leader": "敖煜新", "enterprise": "杭开集团",
+                       "content": "新闻全文\n多行", "model": "deepseek-v4-flash"},
+        ))
+        assert body["variables"]["leader"] == "敖煜新"
+        assert body["variables"]["enterprise"] == "杭开集团"
+        assert body["variables"]["content"] == "新闻全文\n多行"
+        assert body["variables"]["model"] == "deepseek-v4-flash"
+        assert body["messages"][0]["content"] == "敖煜新-杭开集团"
+
+    def test_undefined_variable_raises(self):
+        """模板含未定义占位符 → MissingVariableError 明确报错"""
+        from app.judge import render_request_template, MissingVariableError
+        template = '{"variables":{"leader":"{leader}"}}'
+        with pytest.raises(MissingVariableError):
+            render_request_template(template, "输入", variables={})
