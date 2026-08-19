@@ -1,0 +1,1495 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>simpleEval - LLM 与 Agent 评测工具</title>
+    <style>
+        /* ==================== 设计令牌 ==================== */
+        :root {
+            /* 背景 */
+            --page-bg: #f7f8fa;
+            --card-bg: #ffffff;
+            --light-bg: #f4f5f7;
+            --row-hover: #fafbfc;
+            --code-bg: #1e1e24;
+            --code-inline: #2a2a32;
+
+            /* 文字灰阶 */
+            --ink-1: #1a1d24;
+            --ink-2: #2d3138;
+            --ink-3: #5c6470;
+            --ink-4: #8a919c;
+            --ink-5: #b0b6bf;
+            --ink-6: #d6dae0;
+
+            /* 强调色 */
+            --accent: #3b6fae;
+            --accent-deep: #2f5c91;
+            --accent-pale: #ecf2f9;
+            --accent-bd: #c3d6ea;
+
+            /* 语义色 */
+            --green: #1a7f4b;
+            --green-bg: #effaf3;
+            --green-bd: #c2e7d1;
+            --red: #d13438;
+            --red-bg: #fdf0f0;
+            --red-bd: #f3c9cb;
+            --amber: #b36b00;
+            --amber-bg: #fdf6e8;
+            --amber-bd: #f2dcae;
+            --teal: #0f766e;
+            --teal-bg: #eff9f7;
+            --teal-bd: #b8e0da;
+            --gray: #7d8590;
+            --gray-bg: #f4f5f7;
+            --gray-bd: #dde1e6;
+
+            /* 圆角 */
+            --radius-sm: 4px;
+            --radius-md: 6px;
+            --radius-lg: 8px;
+            --radius-xl: 12px;
+            --radius-pill: 999px;
+
+            /* 阴影 */
+            --shadow-card: 0 1px 2px rgba(16,24,40,.04), 0 1px 3px rgba(16,24,40,.06);
+            --shadow-dropdown: 0 8px 24px rgba(16,24,40,.12);
+            --shadow-modal: 0 16px 48px rgba(16,24,40,.18);
+
+            /* 字体 */
+            --font-ui: "Inter", "PingFang SC", "Microsoft YaHei", sans-serif;
+            --font-mono: "SF Mono", "JetBrains Mono", "Menlo", "Consolas", monospace;
+
+            /* 间距 */
+            --sidebar-width: 220px;
+            --header-height: 56px;
+        }
+
+        /* ==================== 重置 ==================== */
+        *, *::before, *::after {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: var(--font-ui);
+            font-size: 13px;
+            color: var(--ink-2);
+            background: var(--page-bg);
+            line-height: 1.5;
+        }
+
+        .mono {
+            font-family: var(--font-mono);
+            font-size: 12.5px;
+            line-height: 1.6;
+        }
+
+        .num {
+            font-variant-numeric: tabular-nums;
+            font-feature-settings: "tnum";
+        }
+
+        /* ==================== 布局 ==================== */
+        .app {
+            display: flex;
+            min-height: 100vh;
+        }
+
+        .sidebar {
+            width: var(--sidebar-width);
+            background: var(--code-bg);
+            color: #9a9fab;
+            display: flex;
+            flex-direction: column;
+            position: fixed;
+            height: 100vh;
+            z-index: 5;
+        }
+
+        .sidebar-header {
+            padding: 20px 16px;
+            border-bottom: 1px solid #333;
+        }
+
+        .sidebar-logo {
+            color: #fff;
+            font-size: 15px;
+            font-weight: 600;
+        }
+
+        .sidebar-nav {
+            flex: 1;
+            padding: 12px 0;
+            overflow-y: auto;
+        }
+
+        .nav-item {
+            padding: 10px 16px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            transition: all .12s ease;
+            position: relative;
+        }
+
+        .nav-item:hover {
+            color: #fff;
+            background: rgba(255,255,255,0.05);
+        }
+
+        .nav-item.active {
+            color: var(--accent);
+            background: var(--accent-pale);
+        }
+
+        .nav-item.active::before {
+            content: '';
+            position: absolute;
+            left: 0;
+            top: 0;
+            bottom: 0;
+            width: 2px;
+            background: var(--accent);
+        }
+
+        .nav-item .status-dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: var(--amber);
+        }
+
+        .sidebar-footer {
+            padding: 12px 16px;
+            border-top: 1px solid #333;
+            font-size: 12px;
+        }
+
+        .main-content {
+            margin-left: var(--sidebar-width);
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .header {
+            height: var(--header-height);
+            background: var(--card-bg);
+            border-bottom: 1px solid var(--ink-6);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 28px;
+            position: sticky;
+            top: 0;
+            z-index: 4;
+        }
+
+        .header-title {
+            font-size: 17px;
+            font-weight: 600;
+            color: var(--ink-1);
+        }
+
+        .header-actions {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+        }
+
+        .content {
+            padding: 28px;
+            flex: 1;
+        }
+
+        /* ==================== 按钮 ==================== */
+        .btn {
+            padding: 8px 16px;
+            border-radius: var(--radius-md);
+            font-size: 13px;
+            font-weight: 500;
+            cursor: pointer;
+            border: none;
+            transition: all .12s ease;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .btn-primary {
+            background: var(--accent);
+            color: #fff;
+        }
+
+        .btn-primary:hover {
+            background: var(--accent-deep);
+        }
+
+        .btn-secondary {
+            background: var(--card-bg);
+            color: var(--ink-2);
+            border: 1px solid var(--ink-6);
+        }
+
+        .btn-secondary:hover {
+            background: var(--light-bg);
+        }
+
+        .btn-danger {
+            background: var(--red-bg);
+            color: var(--red);
+            border: 1px solid var(--red-bd);
+        }
+
+        .btn-danger:hover {
+            background: var(--red);
+            color: #fff;
+        }
+
+        .btn-sm {
+            padding: 4px 10px;
+            font-size: 12px;
+        }
+
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        /* ==================== 卡片 ==================== */
+        .card {
+            background: var(--card-bg);
+            border-radius: var(--radius-lg);
+            box-shadow: var(--shadow-card);
+            padding: 16px 20px;
+        }
+
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 16px;
+        }
+
+        .card-title {
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--ink-1);
+        }
+
+        .card + .card {
+            margin-top: 12px;
+        }
+
+        /* ==================== 指标卡 ==================== */
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+            gap: 12px;
+        }
+
+        .metric-card {
+            background: var(--card-bg);
+            border-radius: var(--radius-lg);
+            box-shadow: var(--shadow-card);
+            padding: 16px;
+            text-align: center;
+        }
+
+        .metric-value {
+            font-size: 28px;
+            font-weight: 600;
+            color: var(--ink-1);
+            margin-bottom: 4px;
+        }
+
+        .metric-label {
+            font-size: 12px;
+            color: var(--ink-3);
+        }
+
+        /* ==================== 表格 ==================== */
+        .table-wrapper {
+            overflow-x: auto;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        th, td {
+            text-align: left;
+            padding: 10px 12px;
+            border-bottom: 1px solid var(--ink-6);
+        }
+
+        th {
+            font-size: 12px;
+            font-weight: 500;
+            color: var(--ink-3);
+            background: var(--light-bg);
+        }
+
+        tr:hover td {
+            background: var(--row-hover);
+        }
+
+        .truncate {
+            max-width: 200px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        /* ==================== 表单 ==================== */
+        .form-group {
+            margin-bottom: 16px;
+        }
+
+        .form-label {
+            display: block;
+            font-size: 12px;
+            font-weight: 500;
+            color: var(--ink-3);
+            margin-bottom: 6px;
+        }
+
+        .form-input {
+            width: 100%;
+            padding: 8px 12px;
+            border: 1px solid var(--ink-6);
+            border-radius: var(--radius-sm);
+            font-size: 13px;
+            font-family: inherit;
+            transition: border-color .12s ease;
+        }
+
+        .form-input:focus {
+            outline: none;
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px var(--accent-pale);
+        }
+
+        .form-input.mono {
+            font-family: var(--font-mono);
+            font-size: 12.5px;
+            background: var(--card-bg);
+        }
+
+        textarea.form-input {
+            min-height: 100px;
+            resize: vertical;
+        }
+
+        select.form-input {
+            cursor: pointer;
+        }
+
+        /* ==================== 代码块 ==================== */
+        .code-block {
+            background: var(--code-bg);
+            color: #e0e0e0;
+            padding: 12px 16px;
+            border-radius: var(--radius-sm);
+            font-family: var(--font-mono);
+            font-size: 12.5px;
+            line-height: 1.6;
+            overflow-x: auto;
+        }
+
+        .code-block .code-header {
+            color: #888;
+            font-size: 11px;
+            padding-bottom: 8px;
+            margin-bottom: 8px;
+            border-bottom: 1px solid #333;
+        }
+
+        /* ==================== 标签/徽章 ==================== */
+        .tag {
+            display: inline-flex;
+            padding: 2px 8px;
+            border-radius: var(--radius-pill);
+            font-size: 11px;
+            font-weight: 500;
+        }
+
+        .tag-exact { background: var(--accent-pale); color: var(--accent); }
+        .tag-contains { background: var(--teal-bg); color: var(--teal); }
+        .tag-length { background: var(--amber-bg); color: var(--amber); }
+        .tag-judge { background: #f3e8ff; color: #7c3aed; }
+
+        /* ==================== 状态 ==================== */
+        .status-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 10px;
+            border-radius: var(--radius-pill);
+            font-size: 12px;
+            font-weight: 500;
+        }
+
+        .status-dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+        }
+
+        .status-passed { background: var(--green-bg); color: var(--green); }
+        .status-passed .status-dot { background: var(--green); }
+        .status-failed { background: var(--red-bg); color: var(--red); }
+        .status-failed .status-dot { background: var(--red); }
+        .status-running { background: var(--amber-bg); color: var(--amber); }
+        .status-running .status-dot { background: var(--amber); animation: pulse 1.5s infinite; }
+        .status-queued { background: var(--teal-bg); color: var(--teal); }
+        .status-queued .status-dot { background: var(--teal); }
+        .status-disabled { background: var(--gray-bg); color: var(--gray); }
+        .status-disabled .status-dot { background: var(--gray); }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.4; }
+        }
+
+        /* ==================== Tabs ==================== */
+        .tabs {
+            display: flex;
+            gap: 4px;
+            border-bottom: 1px solid var(--ink-6);
+            margin-bottom: 20px;
+        }
+
+        .tab {
+            padding: 10px 16px;
+            cursor: pointer;
+            color: var(--ink-3);
+            border-bottom: 2px solid transparent;
+            margin-bottom: -1px;
+            transition: all .12s ease;
+        }
+
+        .tab:hover {
+            color: var(--ink-2);
+        }
+
+        .tab.active {
+            color: var(--accent);
+            border-bottom-color: var(--accent);
+        }
+
+        .tab-content {
+            display: none;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        /* ==================== 模态框 ==================== */
+        .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(23,26,33,.5);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 100;
+        }
+
+        .modal {
+            background: var(--card-bg);
+            border-radius: var(--radius-xl);
+            box-shadow: var(--shadow-modal);
+            width: 90%;
+            max-width: 600px;
+            max-height: 90vh;
+            overflow: auto;
+        }
+
+        .modal-header {
+            padding: 18px 22px;
+            border-bottom: 1px solid var(--ink-6);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .modal-title {
+            font-size: 15px;
+            font-weight: 600;
+            color: var(--ink-1);
+        }
+
+        .modal-close {
+            background: none;
+            border: none;
+            font-size: 20px;
+            cursor: pointer;
+            color: var(--ink-4);
+        }
+
+        .modal-body {
+            padding: 18px 22px;
+        }
+
+        .modal-footer {
+            padding: 16px 22px;
+            border-top: 1px solid var(--ink-6);
+            display: flex;
+            justify-content: flex-end;
+            gap: 12px;
+        }
+
+        /* ==================== 三栏对比视图 ==================== */
+        .comparison-view {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 16px;
+        }
+
+        .comparison-column {
+            background: var(--code-bg);
+            border-radius: var(--radius-lg);
+            overflow: hidden;
+        }
+
+        .comparison-header {
+            padding: 10px 14px;
+            font-size: 12px;
+            font-weight: 500;
+            color: #888;
+            background: var(--code-inline);
+        }
+
+        .comparison-content {
+            padding: 14px;
+            font-family: var(--font-mono);
+            font-size: 12.5px;
+            color: #e0e0e0;
+            white-space: pre-wrap;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+
+        /* ==================== 进度条 ==================== */
+        .progress-bar {
+            height: 8px;
+            background: var(--light-bg);
+            border-radius: var(--radius-pill);
+            overflow: hidden;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: var(--accent);
+            border-radius: var(--radius-pill);
+            transition: width .4s ease;
+        }
+
+        /* ==================== 空态 ==================== */
+        .empty-state {
+            text-align: center;
+            padding: 48px 24px;
+            color: var(--ink-4);
+        }
+
+        .empty-state-icon {
+            font-size: 48px;
+            margin-bottom: 16px;
+        }
+
+        .empty-state-text {
+            font-size: 14px;
+            margin-bottom: 16px;
+        }
+
+        /* ==================== Toast ==================== */
+        .toast-container {
+            position: fixed;
+            bottom: 24px;
+            right: 24px;
+            z-index: 200;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .toast {
+            padding: 12px 16px;
+            background: var(--card-bg);
+            border-radius: var(--radius-lg);
+            box-shadow: var(--shadow-dropdown);
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            animation: toastIn .2s ease;
+        }
+
+        @keyframes toastIn {
+            from {
+                opacity: 0;
+                transform: translateY(8px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .toast-success { border-left: 3px solid var(--green); }
+        .toast-error { border-left: 3px solid var(--red); }
+        .toast-warning { border-left: 3px solid var(--amber); }
+
+        /* ==================== 任务指示器 ==================== */
+        .task-indicator {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 12px;
+            background: var(--amber-bg);
+            color: var(--amber);
+            border-radius: var(--radius-pill);
+            font-size: 12px;
+            font-weight: 500;
+            cursor: pointer;
+        }
+
+        .task-indicator .status-dot {
+            animation: pulse 1.5s infinite;
+        }
+
+        /* ==================== 隐藏类 ==================== */
+        .hidden { display: none !important; }
+
+        /* ==================== 工具类 ==================== */
+        .mt-4 { margin-top: 16px; }
+        .mb-4 { margin-bottom: 16px; }
+        .flex { display: flex; }
+        .gap-2 { gap: 8px; }
+        .gap-4 { gap: 16px; }
+        .items-center { align-items: center; }
+        .justify-between { justify-content: space-between; }
+        .text-right { text-align: right; }
+        .text-muted { color: var(--ink-4); }
+    </style>
+</head>
+<body>
+    <div class="app">
+        <!-- 侧栏 -->
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <div class="sidebar-logo">simpleEval</div>
+            </div>
+            <nav class="sidebar-nav" id="sidebarNav">
+                <div class="nav-item active" data-page="projects" onclick="navigateTo('projects')">
+                    <span>📁</span> Projects
+                </div>
+            </nav>
+            <div class="sidebar-footer">
+                <div id="runningTasks"></div>
+            </div>
+        </aside>
+
+        <!-- 主内容 -->
+        <main class="main-content">
+            <header class="header">
+                <h1 class="header-title" id="pageTitle">Projects</h1>
+                <div class="header-actions" id="headerActions">
+                    <!-- 动态按钮 -->
+                </div>
+            </header>
+            <div class="content" id="mainContent">
+                <!-- 动态内容 -->
+            </div>
+        </main>
+    </div>
+
+    <!-- Toast 容器 -->
+    <div class="toast-container" id="toastContainer"></div>
+
+    <script>
+        // ==================== 全局状态 ====================
+        const state = {
+            projects: [],
+            currentProject: null,
+            currentRun: null,
+            apiBase: '/api'
+        };
+
+        // ==================== API 客户端 ====================
+        async function api(endpoint, options = {}) {
+            try {
+                const res = await fetch(state.apiBase + endpoint, {
+                    headers: { 'Content-Type': 'application/json', ...options.headers },
+                    ...options
+                });
+                const data = await res.json();
+                if (!res.ok) {
+                    throw new Error(data.detail?.error?.message || data.detail?.message || 'Request failed');
+                }
+                return data;
+            } catch (err) {
+                console.error('API Error:', err);
+                showToast(err.message, 'error');
+                throw err;
+            }
+        }
+
+        // ==================== Toast 提示 ====================
+        function showToast(message, type = 'success') {
+            const container = document.getElementById('toastContainer');
+            const toast = document.createElement('div');
+            toast.className = `toast toast-${type}`;
+            toast.innerHTML = `<span>${type === 'success' ? '✓' : type === 'error' ? '✗' : '⚠'}</span><span>${message}</span>`;
+            container.appendChild(toast);
+            setTimeout(() => toast.remove(), 3000);
+        }
+
+        // ==================== 页面导航 ====================
+        function navigateTo(page, params = {}) {
+            document.getElementById('pageTitle').textContent = page.charAt(0).toUpperCase() + page.slice(1);
+            
+            // 清除侧栏激活状态
+            document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
+            document.querySelector(`.nav-item[data-page="${page}"]`)?.classList.add('active');
+
+            const content = document.getElementById('mainContent');
+            const headerActions = document.getElementById('headerActions');
+            headerActions.innerHTML = '';
+
+            switch(page) {
+                case 'projects':
+                    renderProjectsPage(content, headerActions);
+                    break;
+                case 'project-detail':
+                    renderProjectDetailPage(content, headerActions, params);
+                    break;
+                case 'run-detail':
+                    renderRunDetailPage(content, headerActions, params);
+                    break;
+            }
+        }
+
+        // ==================== Projects 列表页 ====================
+        async function renderProjectsPage(container, headerActions) {
+            headerActions.innerHTML = `<button class="btn btn-primary" onclick="showCreateProjectModal()">+ 新建 Project</button>`;
+
+            try {
+                const data = await api('/projects');
+                state.projects = data.projects || [];
+
+                if (state.projects.length === 0) {
+                    container.innerHTML = `
+                        <div class="empty-state">
+                            <div class="empty-state-icon">📁</div>
+                            <div class="empty-state-text">还没有 Project，点击右上角新建——配置一个 Judge + 一个被评测 API 就能跑第一次评测</div>
+                            <button class="btn btn-primary" onclick="showCreateProjectModal()">+ 新建 Project</button>
+                        </div>
+                    `;
+                    return;
+                }
+
+                container.innerHTML = `
+                    <div class="card">
+                        <div class="table-wrapper">
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th>名称</th>
+                                        <th>最近评测</th>
+                                        <th>pass rate</th>
+                                        <th>token</th>
+                                        <th>趋势</th>
+                                        <th>操作</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    ${state.projects.map(p => `
+                                        <tr>
+                                            <td><strong>${p.name}</strong></td>
+                                            <td>
+                                                ${p.last_run ? `
+                                                    <span class="text-muted">${formatRelativeTime(p.last_run.created_at)}</span><br>
+                                                    <span class="mono" style="font-size:11px">${p.last_run.id}</span>
+                                                ` : '<span class="text-muted">从未评测</span>'}
+                                            </td>
+                                            <td>
+                                                ${p.last_run ? `
+                                                    <span class="num" style="color: ${p.last_run.pass_rate >= 0.8 ? 'var(--green)' : p.last_run.pass_rate >= 0.5 ? 'var(--amber)' : 'var(--red)'}">
+                                                        ${(p.last_run.pass_rate * 100).toFixed(1)}%
+                                                    </span>
+                                                ` : '-'}
+                                            </td>
+                                            <td class="num">${p.last_run ? formatNumber(p.last_run.total_token) : '-'}</td>
+                                            <td>${renderSparkline(p.trend || [])}</td>
+                                            <td>
+                                                <button class="btn btn-sm btn-secondary" onclick="navigateTo('project-detail', {id: '${p.id}'})">查看</button>
+                                            </td>
+                                        </tr>
+                                    `).join('')}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                `;
+            } catch (err) {
+                container.innerHTML = `<div class="empty-state"><div class="empty-state-icon">❌</div><div class="empty-state-text">加载失败: ${err.message}</div></div>`;
+            }
+        }
+
+        function renderSparkline(data) {
+            if (!data.length) return '-';
+            const max = Math.max(...data.map(d => d.pass_rate));
+            const min = Math.min(...data.map(d => d.pass_rate));
+            const range = max - min || 1;
+            const height = 20;
+            const width = 60;
+            const points = data.map((d, i) => {
+                const x = (i / (data.length - 1)) * width;
+                const y = height - ((d.pass_rate - min) / range) * height;
+                return `${x},${y}`;
+            }).join(' ');
+            return `<svg width="${width}" height="${height}"><polyline points="${points}" fill="none" stroke="var(--accent)" stroke-width="2"/></svg>`;
+        }
+
+        // ==================== Project 详情页 ====================
+        async function renderProjectDetailPage(container, headerActions, params) {
+            try {
+                const project = await api(`/projects/${params.id}`);
+                state.currentProject = project;
+
+                document.getElementById('pageTitle').textContent = project.name;
+                headerActions.innerHTML = `
+                    <button class="btn btn-primary" onclick="showRunModal('${project.id}')">▶ 发起评测</button>
+                `;
+
+                container.innerHTML = `
+                    <div class="tabs">
+                        <div class="tab active" data-tab="overview" onclick="switchTab('overview')">概览</div>
+                        <div class="tab" data-tab="evalsets" onclick="switchTab('evalsets')">评测集</div>
+                        <div class="tab" data-tab="config" onclick="switchTab('config')">配置</div>
+                        <div class="tab" data-tab="history" onclick="switchTab('history')">历史</div>
+                    </div>
+
+                    <div id="tabContent">
+                        ${renderProjectOverview(project)}
+                    </div>
+                `;
+
+            } catch (err) {
+                container.innerHTML = `<div class="empty-state"><div class="empty-state-icon">❌</div><div class="empty-state-text">加载失败: ${err.message}</div></div>`;
+            }
+        }
+
+        function switchTab(tab) {
+            document.querySelectorAll('.tab').forEach(el => el.classList.remove('active'));
+            document.querySelector(`.tab[data-tab="${tab}"]`).classList.add('active');
+            
+            const project = state.currentProject;
+            const content = document.getElementById('tabContent');
+
+            switch(tab) {
+                case 'overview':
+                    content.innerHTML = renderProjectOverview(project);
+                    break;
+                case 'evalsets':
+                    renderEvalsetsTab(content, project.id);
+                    break;
+                case 'config':
+                    renderConfigTab(content, project);
+                    break;
+                case 'history':
+                    renderHistoryTab(content, project.id);
+                    break;
+            }
+        }
+
+        function renderProjectOverview(project) {
+            const lastRun = project.last_run;
+            const trend = project.trend || [];
+
+            return `
+                <div class="metrics-grid mb-4">
+                    <div class="metric-card">
+                        <div class="metric-value num">${lastRun ? (lastRun.pass_rate * 100).toFixed(1) + '%' : '-'}</div>
+                        <div class="metric-label">pass rate</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-value num">${lastRun ? formatNumber(lastRun.total_token) : '-'}</div>
+                        <div class="metric-label">总 token</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-value num">${lastRun ? (lastRun.total_token / 10000).toFixed(1) + 'K' : '-'}</div>
+                        <div class="metric-label">成本(约)</div>
+                    </div>
+                </div>
+
+                ${trend.length > 0 ? `
+                <div class="card">
+                    <div class="card-header">
+                        <span class="card-title">变化趋势（近 ${trend.length} 次 run）</span>
+                    </div>
+                    <div style="padding: 20px;">
+                        ${renderSparkline(trend)}
+                    </div>
+                </div>
+                ` : ''}
+            `;
+        }
+
+        async function renderEvalsetsTab(container, projectId) {
+            try {
+                const data = await api('/evalsets/' + projectId + '?project_id=' + projectId);
+                const evalsets = Array.isArray(data) ? data : [data];
+                const currentEvalset = evalsets.find(e => e.project_id === projectId) || evalsets[0];
+
+                if (!currentEvalset) {
+                    container.innerHTML = `
+                        <div class="empty-state">
+                            <div class="empty-state-icon">📋</div>
+                            <div class="empty-state-text">还没有评测集</div>
+                            <button class="btn btn-primary" onclick="showCreateEvalSetModal('${projectId}')">+ 新建评测集</button>
+                        </div>
+                    `;
+                    return;
+                }
+
+                container.innerHTML = `
+                    <div class="card">
+                        <div class="card-header">
+                            <span class="card-title">${currentEvalset.name}</span>
+                            <div class="flex gap-2">
+                                <button class="btn btn-sm btn-secondary" onclick="showImportModal('${currentEvalset.id}', '${projectId}')">⤒ 导入</button>
+                                <button class="btn btn-sm btn-secondary" onclick="exportEvalSet('${currentEvalset.id}', '${projectId}')">⇩ 导出</button>
+                            </div>
+                        </div>
+                        <div class="table-wrapper">
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th>case 名</th>
+                                        <th>输入(截断)</th>
+                                        <th>评测类型</th>
+                                        <th>期望输出</th>
+                                        <th>状态</th>
+                                        <th>操作</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    ${(currentEvalset.cases || []).map(c => `
+                                        <tr style="${c.enabled === false ? 'opacity: 0.5' : ''}">
+                                            <td>${c.case_name}</td>
+                                            <td class="truncate mono">${c.input || '-'}</td>
+                                            <td><span class="tag tag-${c.eval_type}">${c.eval_type}</span></td>
+                                            <td class="truncate mono">${c.expected_output || c.output_requirement || '-'}</td>
+                                            <td>
+                                                <span class="status-badge ${c.enabled ? 'status-passed' : 'status-disabled'}">
+                                                    <span class="status-dot"></span>
+                                                    ${c.enabled ? '启用' : '禁用'}
+                                                </span>
+                                            </td>
+                                            <td>
+                                                <button class="btn btn-sm btn-secondary" onclick="toggleCaseEnabled('${currentEvalset.id}', '${projectId}', '${c.id}', ${!c.enabled})">
+                                                    ${c.enabled ? '禁用' : '启用'}
+                                                </button>
+                                            </td>
+                                        </tr>
+                                    `).join('')}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                `;
+            } catch (err) {
+                container.innerHTML = `<div class="empty-state"><div class="empty-state-icon">❌</div><div class="empty-state-text">加载失败</div></div>`;
+            }
+        }
+
+        function renderConfigTab(container, project) {
+            container.innerHTML = `
+                <div class="card mb-4">
+                    <div class="card-header">
+                        <span class="card-title">Target API 配置</span>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">base_url</label>
+                        <input type="text" class="form-input mono" value="${project.target_config.base_url}" id="targetBaseUrl">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">model</label>
+                        <input type="text" class="form-input mono" value="${project.target_config.model}" id="targetModel">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">请求模板</label>
+                        <textarea class="form-input mono" id="targetTemplate">${project.target_config.request_template}</textarea>
+                    </div>
+                    <button class="btn btn-secondary" onclick="testTargetConfig('${project.id}')">测试连接</button>
+                    <div id="targetTestResult" class="mt-4"></div>
+                </div>
+
+                <div class="card mb-4">
+                    <div class="card-header">
+                        <span class="card-title">LLM Judge 配置</span>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">base_url</label>
+                        <input type="text" class="form-input mono" value="${project.judge_config.base_url}" id="judgeBaseUrl">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">api_key</label>
+                        <input type="password" class="form-input mono" value="••••••••" id="judgeApiKey">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">model</label>
+                        <input type="text" class="form-input mono" value="${project.judge_config.model}" id="judgeModel">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Prompt 模板</label>
+                        <textarea class="form-input mono" id="judgePrompt">${project.judge_config.prompt_template}</textarea>
+                    </div>
+                    <button class="btn btn-secondary" onclick="testJudgeConfig('${project.id}')">测试 Judge</button>
+                    <div id="judgeTestResult" class="mt-4"></div>
+                </div>
+
+                <button class="btn btn-primary" onclick="saveProjectConfig('${project.id}')">保存配置</button>
+            `;
+        }
+
+        async function renderHistoryTab(container, projectId) {
+            try {
+                const data = await api(`/projects/${projectId}/runs`);
+                const runs = data.runs || [];
+
+                if (runs.length === 0) {
+                    container.innerHTML = `
+                        <div class="empty-state">
+                            <div class="empty-state-icon">📜</div>
+                            <div class="empty-state-text">还没有评测记录</div>
+                        </div>
+                    `;
+                    return;
+                }
+
+                container.innerHTML = `
+                    <div class="card">
+                        <div class="table-wrapper">
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th>Run ID</th>
+                                        <th>评测集</th>
+                                        <th>状态</th>
+                                        <th>时间</th>
+                                        <th>pass rate</th>
+                                        <th>token</th>
+                                        <th>操作</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    ${runs.map(r => `
+                                        <tr>
+                                            <td class="mono">${r.id}</td>
+                                            <td>${r.evalset_id}</td>
+                                            <td><span class="status-badge status-${r.status}"><span class="status-dot"></span>${r.status}</span></td>
+                                            <td class="text-muted">${formatRelativeTime(r.created_at)}</td>
+                                            <td class="num">${r.summary ? (r.summary.pass_rate * 100).toFixed(1) + '%' : '-'}</td>
+                                            <td class="num">${r.summary ? formatNumber(r.summary.total_token) : '-'}</td>
+                                            <td><button class="btn btn-sm btn-secondary" onclick="navigateTo('run-detail', {id: '${r.id}', projectId: '${projectId}'})">查看</button></td>
+                                        </tr>
+                                    `).join('')}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                `;
+            } catch (err) {
+                container.innerHTML = `<div class="empty-state"><div class="empty-state-icon">❌</div><div class="empty-state-text">加载失败</div></div>`;
+            }
+        }
+
+        // ==================== Run 详情页 ====================
+        async function renderRunDetailPage(container, headerActions, params) {
+            try {
+                const run = await api(`/runs/${params.id}?project_id=${params.projectId}`);
+                state.currentRun = run;
+
+                document.getElementById('pageTitle').textContent = run.id;
+                headerActions.innerHTML = `<button class="btn btn-secondary" onclick="exportRun('${run.id}', '${params.projectId}')">⇩ 导出</button>`;
+
+                const progress = run.results?.length || 0;
+                const failed = run.results?.filter(r => !r.passed && !r.skipped_reason).length || 0;
+
+                container.innerHTML = `
+                    <div class="card mb-4">
+                        <div style="margin-bottom: 12px;">
+                            <span class="status-badge status-${run.status}" style="margin-right: 12px;">
+                                <span class="status-dot"></span>${run.status}
+                            </span>
+                            ${run.status === 'running' ? `
+                                <div class="progress-bar" style="display: inline-block; width: 200px; vertical-align: middle;">
+                                    <div class="progress-fill" style="width: ${progress * 10}%"></div>
+                                </div>
+                            ` : ''}
+                        </div>
+                        ${run.error ? `<div class="code-block" style="color: var(--red);">Error: ${run.error}</div>` : ''}
+                    </div>
+
+                    <div class="metrics-grid mb-4">
+                        <div class="metric-card">
+                            <div class="metric-value num">${run.summary ? (run.summary.pass_rate * 100).toFixed(1) + '%' : '-'}</div>
+                            <div class="metric-label">pass rate</div>
+                        </div>
+                        <div class="metric-card">
+                            <div class="metric-value num">${run.summary ? formatNumber(run.summary.total_token) : '-'}</div>
+                            <div class="metric-label">总 token</div>
+                        </div>
+                        <div class="metric-card">
+                            <div class="metric-value num">${run.summary ? run.summary.token_per_pass.toFixed(1) : '-'}</div>
+                            <div class="metric-label">每万token完成率</div>
+                        </div>
+                        <div class="metric-card">
+                            <div class="metric-value num">${run.summary ? (run.summary.latency_p50 / 1000).toFixed(1) + 's' : '-'}</div>
+                            <div class="metric-label">P50 延迟</div>
+                        </div>
+                        <div class="metric-card">
+                            <div class="metric-value num">${run.summary ? (run.summary.latency_p95 / 1000).toFixed(1) + 's' : '-'}</div>
+                            <div class="metric-label">P95 延迟</div>
+                        </div>
+                        <div class="metric-card">
+                            <div class="metric-value num" style="color: ${failed > 0 ? 'var(--red)' : 'inherit'}">${failed}</div>
+                            <div class="metric-label">失败</div>
+                        </div>
+                    </div>
+
+                    <div class="card">
+                        <div class="card-header">
+                            <span class="card-title">Case 结果</span>
+                        </div>
+                        <div class="table-wrapper">
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th>状态</th>
+                                        <th>case 名</th>
+                                        <th>评测类型</th>
+                                        <th>得分</th>
+                                        <th>延迟</th>
+                                        <th>token</th>
+                                        <th>操作</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    ${(run.results || []).map((r, i) => `
+                                        <tr>
+                                            <td>
+                                                ${r.skipped_reason ? `
+                                                    <span class="status-badge status-disabled"><span class="status-dot"></span>跳过</span>
+                                                ` : r.passed ? `
+                                                    <span class="status-badge status-passed"><span class="status-dot"></span>通过</span>
+                                                ` : `
+                                                    <span class="status-badge status-failed"><span class="status-dot"></span>失败</span>
+                                                `}
+                                            </td>
+                                            <td>${r.case_name}</td>
+                                            <td>-</td>
+                                            <td class="num">${r.score.toFixed(1)}</td>
+                                            <td class="num">${(r.latency_ms / 1000).toFixed(1)}s</td>
+                                            <td class="num">${r.token_used}</td>
+                                            <td>
+                                                <button class="btn btn-sm btn-secondary" onclick="showCaseDetail(${i})">查看</button>
+                                            </td>
+                                        </tr>
+                                    `).join('')}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <div id="caseModal" class="modal-overlay hidden">
+                        <div class="modal" style="max-width: 900px;">
+                            <div class="modal-header">
+                                <span class="modal-title">Case 对比视图</span>
+                                <button class="modal-close" onclick="closeCaseDetail()">×</button>
+                            </div>
+                            <div class="modal-body" id="caseDetailContent"></div>
+                        </div>
+                    </div>
+                `;
+
+                // 轮询更新
+                if (run.status === 'running' || run.status === 'queued') {
+                    setTimeout(() => {
+                        navigateTo('run-detail', {id: params.id, projectId: params.projectId});
+                    }, 2000);
+                }
+
+            } catch (err) {
+                container.innerHTML = `<div class="empty-state"><div class="empty-state-icon">❌</div><div class="empty-state-text">加载失败: ${err.message}</div></div>`;
+            }
+        }
+
+        function showCaseDetail(index) {
+            const run = state.currentRun;
+            const result = run.results[index];
+
+            document.getElementById('caseDetailContent').innerHTML = `
+                <div class="comparison-view">
+                    <div class="comparison-column">
+                        <div class="comparison-header">INPUT</div>
+                        <div class="comparison-content">${result.case_name}</div>
+                    </div>
+                    <div class="comparison-column">
+                        <div class="comparison-header">ACTUAL OUTPUT</div>
+                        <div class="comparison-content">${escapeHtml(result.actual_output)}</div>
+                    </div>
+                </div>
+                <div style="margin-top: 16px;">
+                    <span class="status-badge ${result.passed ? 'status-passed' : result.skipped_reason ? 'status-disabled' : 'status-failed'}">
+                        <span class="status-dot"></span>
+                        ${result.passed ? '通过' : result.skipped_reason ? '跳过: ' + result.skipped_reason : '失败'}
+                    </span>
+                    <span style="margin-left: 16px; color: var(--ink-4);">得分: ${result.score}</span>
+                    <span style="margin-left: 16px; color: var(--ink-4);">延迟: ${(result.latency_ms / 1000).toFixed(2)}s</span>
+                    <span style="margin-left: 16px; color: var(--ink-4);">token: ${result.token_used}</span>
+                </div>
+            `;
+            document.getElementById('caseModal').classList.remove('hidden');
+        }
+
+        function closeCaseDetail() {
+            document.getElementById('caseModal').classList.add('hidden');
+        }
+
+        // ==================== 模态框 ====================
+        function showCreateProjectModal() {
+            const modal = document.createElement('div');
+            modal.className = 'modal-overlay';
+            modal.id = 'createProjectModal';
+            modal.innerHTML = `
+                <div class="modal">
+                    <div class="modal-header">
+                        <span class="modal-title">新建 Project</span>
+                        <button class="modal-close" onclick="closeModal('createProjectModal')">×</button>
+                    </div>
+                    <div class="modal-body">
+                        <div class="form-group">
+                            <label class="form-label">名称</label>
+                            <input type="text" class="form-input" id="projectName" placeholder="例如：客服Agent评测">
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">任务类型</label>
+                            <select class="form-input" id="projectTaskShape">
+                                <option value="general">通用</option>
+                                <option value="customer_service">客服</option>
+                                <option value="coding">编码</option>
+                                <option value="multi_turn">多轮对话</option>
+                                <option value="custom">自定义</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button class="btn btn-secondary" onclick="closeModal('createProjectModal')">取消</button>
+                        <button class="btn btn-primary" onclick="createProject()">创建</button>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(modal);
+        }
+
+        async function createProject() {
+            const name = document.getElementById('projectName').value;
+            const taskShape = document.getElementById('projectTaskShape').value;
+
+            if (!name) {
+                showToast('请输入名称', 'error');
+                return;
+            }
+
+            try {
+                await api('/projects', {
+                    method: 'POST',
+                    body: JSON.stringify({ name, task_shape: taskShape })
+                });
+                closeModal('createProjectModal');
+                showToast('创建成功');
+                navigateTo('projects');
+            } catch (err) {
+                // 错误已由 api 处理
+            }
+        }
+
+        function showRunModal(projectId) {
+            state.currentProject && switchTab('evalsets');
+            showToast('请先保存评测集配置', 'warning');
+        }
+
+        async function testTargetConfig(projectId) {
+            const resultDiv = document.getElementById('targetTestResult');
+            resultDiv.innerHTML = '<span class="text-muted">测试中...</span>';
+
+            try {
+                const res = await api('/test/target', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        base_url: document.getElementById('targetBaseUrl').value,
+                        api_key: 'test',
+                        model: document.getElementById('targetModel').value,
+                        request_template: document.getElementById('targetTemplate').value
+                    })
+                });
+
+                if (res.ok) {
+                    resultDiv.innerHTML = `<span style="color: var(--green);">✓ ${res.latency_ms}ms · ${res.token_used} tokens</span>`;
+                } else {
+                    resultDiv.innerHTML = `<span style="color: var(--red);">✗ ${res.error?.message || '失败'}</span>`;
+                }
+            } catch (err) {
+                resultDiv.innerHTML = `<span style="color: var(--red);">✗ ${err.message}</span>`;
+            }
+        }
+
+        async function testJudgeConfig(projectId) {
+            const resultDiv = document.getElementById('judgeTestResult');
+            resultDiv.innerHTML = '<span class="text-muted">测试中...</span>';
+
+            try {
+                const res = await api('/test/judge', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        base_url: document.getElementById('judgeBaseUrl').value,
+                        api_key: document.getElementById('judgeApiKey').value,
+                        model: document.getElementById('judgeModel').value,
+                        prompt_template: document.getElementById('judgePrompt').value,
+                        input: '测试输入',
+                        output_requirement: '测试要求',
+                        actual_output: '测试输出'
+                    })
+                });
+
+                if (res.ok) {
+                    resultDiv.innerHTML = `<span style="color: var(--green);">✓ 得分: ${res.score} · ${res.passed ? '通过' : '不通过'}</span>`;
+                } else {
+                    resultDiv.innerHTML = `<span style="color: var(--red);">✗ ${res.error?.message || '失败'}</span>`;
+                }
+            } catch (err) {
+                resultDiv.innerHTML = `<span style="color: var(--red);">✗ ${err.message}</span>`;
+            }
+        }
+
+        async function saveProjectConfig(projectId) {
+            const config = {
+                id: projectId,
+                name: state.currentProject.name,
+                task_shape: state.currentProject.task_shape,
+                judge_config: {
+                    base_url: document.getElementById('judgeBaseUrl').value,
+                    api_key: document.getElementById('judgeApiKey').value,
+                    model: document.getElementById('judgeModel').value,
+                    prompt_template: document.getElementById('judgePrompt').value
+                },
+                target_config: {
+                    base_url: document.getElementById('targetBaseUrl').value,
+                    api_key: 'test',
+                    model: document.getElementById('targetModel').value,
+                    request_template: document.getElementById('targetTemplate').value,
+                    auth: { type: 'none' },
+                    response_mapping: []
+                }
+            };
+
+            try {
+                await api(`/projects/${projectId}`, {
+                    method: 'PUT',
+                    body: JSON.stringify(config)
+                });
+                showToast('保存成功');
+            } catch (err) {}
+        }
+
+        async function toggleCaseEnabled(evalsetId, projectId, caseId, enabled) {
+            try {
+                const evalset = await api(`/evalsets/${evalsetId}?project_id=${projectId}`);
+                const cases = evalset.cases || [];
+                const caseIndex = cases.findIndex(c => c.id === caseId);
+                if (caseIndex >= 0) {
+                    cases[caseIndex].enabled = enabled;
+                    await api(`/evalsets/${evalsetId}`, {
+                        method: 'PUT',
+                        body: JSON.stringify({ ...evalset, cases })
+                    });
+                    showToast(enabled ? '已启用' : '已禁用');
+                    switchTab('evalsets');
+                }
+            } catch (err) {}
+        }
+
+        async function exportEvalSet(evalsetId, projectId) {
+            try {
+                const data = await api(`/evalsets/${evalsetId}/export?project_id=${projectId}`);
+                downloadCSV(data.content, data.filename);
+            } catch (err) {}
+        }
+
+        async function exportRun(runId, projectId) {
+            try {
+                const data = await api(`/runs/${runId}/export?project_id=${projectId}`);
+                downloadCSV(data.content, data.filename);
+            } catch (err) {}
+        }
+
+        function downloadCSV(content, filename) {
+            const blob = new Blob([content], { type: 'text/csv;charset=utf-8' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            a.click();
+            URL.revokeObjectURL(url);
+        }
+
+        function closeModal(id) {
+            document.getElementById(id)?.remove();
+        }
+
+        // ==================== 工具函数 ====================
+        function formatRelativeTime(isoString) {
+            if (!isoString) return '-';
+            const date = new Date(isoString.replace('Z', '+00:00'));
+            const now = new Date();
+            const diff = Math.floor((now - date) / 1000);
+
+            if (diff < 60) return '刚刚';
+            if (diff < 3600) return Math.floor(diff / 60) + ' 分钟前';
+            if (diff < 86400) return Math.floor(diff / 3600) + ' 小时前';
+            return Math.floor(diff / 86400) + ' 天前';
+        }
+
+        function formatNumber(num) {
+            if (!num && num !== 0) return '-';
+            if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
+            if (num >= 1000) return (num / 1000).toFixed(1) + 'K';
+            return num.toString();
+        }
+
+        function escapeHtml(str) {
+            if (!str) return '';
+            return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+        }
+
+        // ==================== 初始化 ====================
+        document.addEventListener('DOMContentLoaded', () => {
+            navigateTo('projects');
+        });
+    </script>
+</body>
+</html>

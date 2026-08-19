@@ -16,7 +16,40 @@ pip install -r requirements.txt
 uvicorn app.main:app --reload --port 8000
 ```
 
-服务启动后访问 http://localhost:8000/docs 查看 API 文档。
+启动后访问：
+- Web UI: http://localhost:8000
+- API 文档: http://localhost:8000/docs
+
+---
+
+## 功能特性
+
+- **4 种评测类型**：exact / contains / not_contains / length / llm_judge
+- **成本分析**：pass rate + token 消耗 + 每万 token 完成率
+- **异步执行**：发起评测不阻塞，支持长任务
+- **JSON 存储**：评测集和结果可版本管理
+
+---
+
+## Web UI
+
+### 页面结构
+
+```
+/                           Projects 列表（入口）
+/p/:pid                  Project 详情
+   ├── 概览 tab           最近 run + 趋势图 + 指标卡
+   ├── 评测集 tab         用例表格 + 导入/导出
+   ├── 配置 tab           Target API / Judge 配置
+   └── 历史 tab           全部 run 列表
+/r/:rid                    Run 详情（三栏对比视图）
+```
+
+### 设计风格
+
+- 开发者工具风 · 中性灰底 · 单强调色（#3b6fae）
+- 代码类内容暗色块 + 等宽字体
+- 语义色状态：✅ passed / ❌ failed / ⚡ running / ⏳ queued
 
 ---
 
@@ -59,23 +92,14 @@ Coverage: 90%
 
 ```
 tests/
-├── conftest.py           # 测试 fixtures 和配置
+├── conftest.py           # 测试 fixtures
 ├── test_eval_types.py    # 评测类型函数测试
-├── test_judge.py        # API 调用测试（含边界情况）
-├── test_runner.py        # 评测执行器测试（含异步执行）
-├── test_storage.py       # 存储模块测试
-├── test_errors.py        # 错误处理测试
-└── test_api.py          # API 接口测试
+├── test_judge.py        # API 调用测试
+├── test_runner.py       # 评测执行器测试
+├── test_storage.py      # 存储模块测试
+├── test_errors.py       # 错误处理测试
+└── test_api.py         # API 接口测试
 ```
-
-### 测试说明
-
-- **eval_types**: 纯函数，测试 exact/contains/not_contains/length 等评测逻辑（100% 覆盖）
-- **judge**: 使用 mock 测试 API 调用、错误处理、响应映射、JSON 模板等（93% 覆盖）
-- **runner**: 测试评测执行流程、分位数计算、异步执行、Judge 可用性检查等（95% 覆盖）
-- **storage**: 测试项目、评测集、Run 的增删改查（81% 覆盖）
-- **errors**: 测试所有错误码和错误格式（100% 覆盖）
-- **api**: 使用 FastAPI TestClient 测试 REST API 端点（83% 覆盖）
 
 ---
 
@@ -84,17 +108,19 @@ tests/
 ```
 simpleeval/
 ├── app/
-│   ├── main.py          # FastAPI 入口
-│   ├── models.py        # Pydantic 数据模型
-│   ├── eval_types.py    # 评测类型实现
-│   ├── judge.py         # LLM-as-Judge 调用
-│   ├── runner.py        # 评测执行器
-│   ├── storage.py       # JSON 文件存储
-│   ├── errors.py        # 统一错误处理
-│   └── routes.py        # API 路由
-├── tests/               # 测试文件（141 个测试）
-├── data/                # 数据存储目录
-├── docs/                # 文档
+│   ├── main.py          # FastAPI 入口 + 静态文件
+│   ├── models.py       # Pydantic 数据模型
+│   ├── eval_types.py   # 评测类型实现
+│   ├── judge.py        # LLM-as-Judge 调用
+│   ├── runner.py       # 评测执行器
+│   ├── storage.py      # JSON 文件存储
+│   ├── errors.py       # 统一错误处理
+│   ├── routes.py       # API 路由
+│   └── static/
+│       └── index.html  # Web UI（单文件应用）
+├── tests/               # 测试文件
+├── data/               # 数据存储目录
+├── docs/               # 文档（API 契约、UI 规范）
 └── requirements.txt
 ```
 
@@ -125,3 +151,4 @@ simpleeval/
 | `GET /api/health` | 健康检查 |
 
 详细 API 契约见 [docs/api-contract.md](docs/api-contract.md)。
+UI 设计规范见 [docs/ui-spec.md](docs/ui-spec.md)。
