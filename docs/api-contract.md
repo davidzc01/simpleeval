@@ -54,17 +54,20 @@
       "cookies": [ { "name": "session", "value": { "masked": true } } ],
       "headers": [ { "name": "X-Env", "value": "test" } ]
     },
-    "response_mapping": [
-      { "name": "reply", "jsonpath": "$.data.reply" }
-    ]
+    "response_parsing": {
+      "output_paths": ["$.data.reply", "$.choices[0].message.content"],
+      "token_paths": ["$.usage.total_tokens"],
+      "token_fields": [],
+      "token_scope": null
+    }
   },
   "token_budget": { "limit": 100000, "warn_only": true }
 }
 ```
 
 - `auth.type` 决定哪些子字段生效；其余子字段允许为空。
-- `response_mapping` 为空数组 = 默认行为（完整返回作为 actual_output）。
-- 映射提取结果写入 `case.actual_output`，判定逻辑不变。
+- `response_parsing` 四个键的语义与冲突规则见 `docs/response-parsing-design.md`：`output_paths` 按序 fallback，`token_paths` 命中求和，`token_fields` 全树递归求和（配 `token_scope` 过滤）；paths 与 fields 同时给时 paths 优先。全部留空 = 完整响应原文 + 不统计 token。
+- 提取后的结果写入 `case.actual_output`，判定逻辑不变。
 
 ### 1.2 EvalSet / EvalCase（🔧 扩展 enabled）
 
@@ -219,7 +222,7 @@
 | 接口 | 状态 | 说明 |
 |---|---|---|
 | `POST /api/test/target` | ➕ | 用 project 的 target 配置发一个最小请求（内容 "ping"），返回耗时/token/错误。**body 直接携带完整 target_config**（不依赖已保存状态，方便未保存时测试） |
-| `POST /api/test/mapping` | ➕ | body `{response_mapping: [...], sample_response: "<JSON 字符串>"}`，返回每个映射的提取结果/错误 |
+| `POST /api/test/parsing` | ➕ | body 携带 `{response_parsing: {...}, sample_response: "<JSON 字符串>"}`，返回输出提取结果 + token 计数/错误。替代原 test/mapping 设计 |
 | `POST /api/test/judge` | ➕ | body 携带 judge_config + 一条样例 `{input, output_requirement, actual_output}`，返回判定输出 |
 
 **`POST /api/test/target` 响应**：`{"ok": true, "latency_ms": 812.4, "token_used": 12, "status_code": 200}` 或 `{"ok": false, "error": {"code": "target_api_error", "message": "401 Unauthorized"}}`
@@ -275,7 +278,7 @@ POST /api/runs → queued（落库）
 
 | # | 改动 | 涉及 | 状态 |
 |---|---|---|---|
-| 1 | `TargetConfig` 增 `auth` + `response_mapping`；`JudgeConfig` 增 `prompt_template`；`EvalCase` 增 `id` + `enabled`；`EvalRun` 增 `status/started_at/finished_at/error` | models.py | 🔧 |
+| 1 | `TargetConfig` 增 `auth` + `response_parsing`（四键模型，见 `docs/response-parsing-design.md`）；`JudgeConfig` 增 `prompt_template`；`EvalCase` 增 `id` + `enabled`；`EvalRun` 增 `status/started_at/finished_at/error` | models.py | 🔧 |
 | 2 | run 落库 `data/runs/{pid}/{rid}.json` + 读写工具函数 | 新增 storage 模块 | ➕ |
 | 3 | `POST /api/runs` 异步化：落库 + BackgroundTasks + 状态推进 | main.py + runner.py | 🔧 |
 | 4 | `GET /api/projects`（含 last_run + trend）、`GET/PUT /api/projects/{pid}`、`POST /api/projects`（DELETE 不入 v0.1） | 新增 routes | ➕ |

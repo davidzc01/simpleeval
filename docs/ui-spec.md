@@ -269,23 +269,33 @@ model         [deepseek-chat                     ]
 - **测试连接按钮是必配项**：这是配置页的"保存前验证"，防止把错误的配置带到 run 里烧 token。结果内联展示在按钮右侧，成功绿色 / 失败红色 + 原始错误。
 - 所有 secret 字段：`type=password` + 右侧眼睛 toggle；**服务端永不回显明文**（返回 `•••`）。
 
-#### 4.4.2 响应映射（检查字段提取）
+#### 4.4.2 响应解析（输出与 token 路径配置）
 
 ```
-说明：被评测 API 的返回如果是 JSON 结构（如 {"code":0,"data":{"reply":"..."}}），
-      用 JSONPath 提取字段后再与评测集比对；留空则比对完整返回。
+说明：被评测 API 的返回结构各异。这里配置：哪个路径是输出结果、哪些路径/字段算 token 消耗。
+不设解析器类型——给路径走精确提取，给字段名走全树递归求和。详见 docs/response-parsing-design.md
 
-字段名          JSONPath 表达式             映射目标
-reply           $.data.reply               → case.actual_output
-score           $.data.score               → (供 llm_judge / 记录)
-[+ 添加映射]
+输出路径（按序 fallback，第一个命中生效）
+  [$.choices[0].message.content      ] [×]
+  [$.data[-1].pluginOutput.text     ] [×]
+  [+ 添加路径]      [⌁ 从样例响应点选生成路径]
 
-[用示例返回测试映射] → 粘贴一段真实返回 JSON，即时高亮提取结果
+Token 统计（二选一，paths 优先于 fields）
+  ○ 路径求和：[$.usage.total_tokens        ] [×]
+              [+ 添加路径]
+  ○ 字段递归：[total_tokens                ] [×]
+              [toolCallInputTokens          ] [×]
+              [+ 添加字段]
+     过滤（可选）：[moduleType] = [tools]
+
+[用样例返回测试解析] → 粘贴一段真实返回 JSON：
+  左側 JSON 树（可点选节点 → 自动生成路径）｜右侧提取结果 + token 计数
 ```
 
-- 映射结果写入 `case.actual_output`，比对逻辑不变——**映射是前置提取层，不侵入评测类型**。
-- JSONPath 输入非法即时标红（行级校验）；「测试映射」面板左贴返回、右显示提取值，匹配失败字段标红。
-- 空映射 = 默认行为（完整返回作为 actual_output），与 MVP 兼容。
+- **样例响应点选是核心辅助**：粘贴一段真实返回，JSON 树展开，点击任意节点自动生成 JSONPath 填入路径框。用户不手写 JSONPath。
+- 路径非法即时标红（行级校验）；「测试解析」面板显示：输出提取结果（或 ✗ 未命中列表）+ token 计数（或 ⚠ token 字段未命中 → `token_missing` 提示）。
+- 全部留空 = 默认行为（完整返回作为 actual_output，不统计 token），与 MVP 兼容。
+- 交互语义固定不可配：`output_paths` 永远按序 fallback；`token_paths` 永远命中求和；`token_fields` 永远全树递归求和。**语法决定语义，无 mode 开关。**
 
 #### 4.4.3 LLM Judge 配置
 
@@ -398,7 +408,7 @@ Judge Prompt  [JSON 编辑区（系统提示词模板）      ]
 | # | UI 需求 | 现状 | 需要的后端变更 | 影响 |
 |---|---|---|---|---|
 | 1 | 测试 API 支持 bearer/header/cookie 多配置 | `TargetConfig` 只有 `base_url/api_key/model` | `auth: {type: none\|bearer\|api_key\|cookie\|headers, ...}` 结构化字段 | models.py + runner.py |
-| 2 | 返回映射到检查字段 | 无 | `TargetConfig` 增 `response_mapping: list[{name, jsonpath}]`，runner 执行前提取 | models.py + runner.py |
+| 2 | 返回解析（输出路径 + token 路径/字段可配置） | 无 | `TargetConfig` 增 `response_parsing`（四键模型，见 `docs/response-parsing-design.md`），runner 执行前提取 | models.py + parser.py + runner.py |
 | 3 | Judge Prompt 可配置 | `judge_config` 无 prompt 字段 | `JudgeConfig` 增 `prompt_template` | models.py + judge.py |
 | 4 | 用例禁用/硬删除 | `EvalCase` 无状态字段 | `EvalCase` 增 `enabled: bool = True`；删除=物理删（JSON 存储下软删需快照策略） | models.py + 评测集读写 |
 | 5 | 最近测试/趋势/历史列表 | `EvalRun` 是瞬时对象，无持久化 | run 落库：`data/runs/{project_id}/{run_id}.json`，增 `GET /projects/:pid/runs`、`GET /runs/:rid` | **新增存储层** |
