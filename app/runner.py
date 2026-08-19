@@ -1,12 +1,25 @@
 """评测执行器：跑一个评测集，产出结果 + 性能统计 + 成本对比"""
 
 import time
+import uuid
+from datetime import datetime, timezone
 
 from .models import Project, EvalSet, CaseResult, EvalSummary, EvalRun
 from .eval_types import run_rule_based
 from .judge import call_target, judge_with_llm, APIError, NetworkError, ResponseFormatError
+from .storage import save_run
 
 JUDGE_THRESHOLD = 0.5  # llm_judge 分数超过该阈值判为通过
+
+
+def _utc_now() -> str:
+    """获取当前 UTC 时间（ISO 8601 格式）"""
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _generate_run_id() -> str:
+    """生成唯一的 run id（UUID + 时间戳前缀）"""
+    return f"run-{int(time.time() * 1000)}-{uuid.uuid4().hex[:8]}"
 
 
 def percentile(data: list[float], p: float) -> float:
@@ -24,7 +37,6 @@ def percentile(data: list[float], p: float) -> float:
 async def check_judge_available(project: Project) -> tuple[bool, str]:
     """测试 Judge LLM 是否可用，返回 (可用, 错误信息)"""
     try:
-        # 用一个简单的测试请求验证 Judge API 是否可用
         await judge_with_llm(
             base_url=project.judge_config.base_url,
             api_key=project.judge_config.api_key,
@@ -43,23 +55,31 @@ async def check_judge_available(project: Project) -> tuple[bool, str]:
 
 
 async def run_evalset(project: Project, evalset: EvalSet) -> EvalRun:
+    """同步执行评测（保留用于直接调用）"""
+    # 过滤启用的 case
+    enabled_cases = [c for c in evalset.cases if c.enabled]
+    if not enabled_cases:
+        raise ValueError("评测集没有启用的 case")
+
     # 0. 检查 Judge LLM 是否可用
     judge_available, judge_error = await check_judge_available(project)
-    llm_case_skipped = False
 
     results: list[CaseResult] = []
 
-    for case in evalset.cases:
+    for case in enabled_cases:
         # 1. 调用被评测 API
         prompt = project.target_config.request_template.format(input=case.input)
         start = time.perf_counter()
-        
+
         try:
             actual, token = await call_target(
-                project.target_config.base_url,
-                project.target_config.api_key,
-                project.target_config.model,
-                prompt,
+                base_url=project.target_config.base_url,
+                api_key=project.target_config.api_key,
+                model=project.target_config.model,
+                prompt=prompt,
+                request_template=project.target_config.request_template,
+                auth=project.target_config.auth,
+                response_mapping=project.target_config.response_mapping,
             )
             latency_ms = (time.perf_counter() - start) * 1000
 
@@ -67,22 +87,21 @@ async def run_evalset(project: Project, evalset: EvalSet) -> EvalRun:
             passed = False
             score = 0.0
             skipped_reason = None
-            
+
             if case.eval_type == "llm_judge":
                 if not judge_available:
-                    # Judge 不可用，跳过该 case
                     skipped_reason = judge_error
-                    llm_case_skipped = True
                     actual = f"[SKIPPED] {skipped_reason}"
                     token = 0
                 else:
                     requirement = case.output_requirement or case.expected_output or ""
                     score = await judge_with_llm(
-                        project.judge_config.base_url,
-                        project.judge_config.api_key,
-                        project.judge_config.model,
-                        requirement,
-                        actual,
+                        base_url=project.judge_config.base_url,
+                        api_key=project.judge_config.api_key,
+                        model=project.judge_config.model,
+                        requirement=requirement,
+                        output=actual,
+                        judge_prompt=project.judge_config.prompt_template,
                     )
                     passed = score >= JUDGE_THRESHOLD
             else:
@@ -92,7 +111,6 @@ async def run_evalset(project: Project, evalset: EvalSet) -> EvalRun:
                 score = 1.0 if passed else 0.0
 
         except (APIError, NetworkError, ResponseFormatError) as e:
-            # API 调用失败，该 case 标记为失败
             latency_ms = (time.perf_counter() - start) * 1000
             actual = f"[ERROR] {type(e).__name__}: {e.message}"
             passed = False
@@ -113,6 +131,23 @@ async def run_evalset(project: Project, evalset: EvalSet) -> EvalRun:
         )
 
     # 3. 汇总
+    return _build_run_result(
+        run_id=_generate_run_id(),
+        project_id=project.id,
+        evalset_id=evalset.id,
+        results=results,
+    )
+
+
+def _build_run_result(
+    run_id: str,
+    project_id: str,
+    evalset_id: str,
+    results: list[CaseResult],
+    status: str = "completed",
+    error: str = None,
+) -> EvalRun:
+    """构建评测结果"""
     total = len(results)
     passed_count = sum(1 for r in results if r.passed)
     skipped_count = sum(1 for r in results if r.skipped_reason is not None)
@@ -120,12 +155,9 @@ async def run_evalset(project: Project, evalset: EvalSet) -> EvalRun:
     total_latency = sum(r.latency_ms for r in results)
     latencies = [r.latency_ms for r in results]
 
-    # 只计算有效 case 的通过率（排除跳过的）
     valid_count = total - skipped_count
     pass_rate = passed_count / valid_count if valid_count > 0 else 0.0
-    token_per_pass = (
-        passed_count / (total_token / 10000) if total_token > 0 else 0.0
-    )
+    token_per_pass = passed_count / (total_token / 10000) if total_token > 0 else 0.0
     latency_p50 = percentile(latencies, 50)
     latency_p95 = percentile(latencies, 95)
 
@@ -139,10 +171,109 @@ async def run_evalset(project: Project, evalset: EvalSet) -> EvalRun:
     )
 
     return EvalRun(
-        id=f"run-{int(time.time())}",
-        project_id=project.id,
-        evalset_id=evalset.id,
-        created_at=time.strftime("%Y-%m-%d %H:%M:%S"),
+        id=run_id,
+        project_id=project_id,
+        evalset_id=evalset_id,
+        status=status,
+        created_at=_utc_now(),
+        finished_at=_utc_now(),
+        error=error,
         results=results,
         summary=summary,
     )
+
+
+async def execute_run(run: EvalRun, project: Project, evalset: EvalSet) -> EvalRun:
+    """异步执行评测（供 BackgroundTasks 调用）"""
+    enabled_cases = [c for c in evalset.cases if c.enabled]
+
+    # 更新状态为 running
+    run.status = "running"
+    run.started_at = _utc_now()
+    save_run(run)
+
+    try:
+        # 检查 Judge 可用性
+        judge_available, judge_error = await check_judge_available(project)
+
+        results: list[CaseResult] = []
+
+        for case in enabled_cases:
+            prompt = project.target_config.request_template.format(input=case.input)
+            start = time.perf_counter()
+
+            try:
+                actual, token = await call_target(
+                    base_url=project.target_config.base_url,
+                    api_key=project.target_config.api_key,
+                    model=project.target_config.model,
+                    prompt=prompt,
+                    request_template=project.target_config.request_template,
+                    auth=project.target_config.auth,
+                    response_mapping=project.target_config.response_mapping,
+                )
+                latency_ms = (time.perf_counter() - start) * 1000
+
+                passed = False
+                score = 0.0
+                skipped_reason = None
+
+                if case.eval_type == "llm_judge":
+                    if not judge_available:
+                        skipped_reason = judge_error
+                        actual = f"[SKIPPED] {skipped_reason}"
+                        token = 0
+                    else:
+                        requirement = case.output_requirement or case.expected_output or ""
+                        score = await judge_with_llm(
+                            base_url=project.judge_config.base_url,
+                            api_key=project.judge_config.api_key,
+                            model=project.judge_config.model,
+                            requirement=requirement,
+                            output=actual,
+                            judge_prompt=project.judge_config.prompt_template,
+                        )
+                        passed = score >= JUDGE_THRESHOLD
+                else:
+                    passed = run_rule_based(
+                        case.eval_type, actual, case.expected_output, case.eval_params or {}
+                    )
+                    score = 1.0 if passed else 0.0
+
+            except (APIError, NetworkError, ResponseFormatError) as e:
+                latency_ms = (time.perf_counter() - start) * 1000
+                actual = f"[ERROR] {type(e).__name__}: {e.message}"
+                passed = False
+                score = 0.0
+                token = 0
+                skipped_reason = None
+
+            results.append(
+                CaseResult(
+                    case_name=case.case_name,
+                    actual_output=actual,
+                    passed=passed,
+                    score=score,
+                    latency_ms=latency_ms,
+                    token_used=token,
+                    skipped_reason=skipped_reason,
+                )
+            )
+
+        # 构建结果并保存
+        completed_run = _build_run_result(
+            run_id=run.id,
+            project_id=run.project_id,
+            evalset_id=run.evalset_id,
+            results=results,
+        )
+        save_run(completed_run)
+        return completed_run
+
+    except Exception as e:
+        # Run 级异常
+        run.status = "failed"
+        run.error = str(e)
+        run.finished_at = _utc_now()
+        save_run(run)
+        raise

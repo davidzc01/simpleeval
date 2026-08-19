@@ -1,7 +1,59 @@
 """simpleEval 数据模型（pydantic）"""
 
+from datetime import datetime
 from typing import Literal, Optional
 from pydantic import BaseModel, Field
+
+
+# ============== 枚举类型 ==============
+
+class AuthType(str):
+    NONE = "none"
+    BEARER = "bearer"
+    API_KEY = "api_key"
+    COOKIE = "cookie"
+    HEADERS = "headers"
+
+
+class EvalType(str):
+    EXACT = "exact"
+    CONTAINS = "contains"
+    NOT_CONTAINS = "not_contains"
+    LENGTH = "length"
+    LLM_JUDGE = "llm_judge"
+
+
+class TaskShape(str):
+    CODING = "coding"
+    CUSTOMER_SERVICE = "customer_service"
+    MULTI_TURN = "multi_turn"
+    GENERAL = "general"
+    CUSTOM = "custom"
+
+
+class RunStatus(str):
+    QUEUED = "queued"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+# ============== 配置模型 ==============
+
+class AuthConfig(BaseModel):
+    """认证配置"""
+    type: Literal["none", "bearer", "api_key", "cookie", "headers"] = "none"
+    bearer_token: Optional[str] = None
+    api_key_header: Optional[str] = "X-API-Key"
+    api_key_value: Optional[str] = None
+    cookies: list[dict] = Field(default_factory=list)  # [{"name": "...", "value": "..."}]
+    headers: list[dict] = Field(default_factory=list)  # [{"name": "...", "value": "..."}]
+
+
+class ResponseMapping(BaseModel):
+    """响应字段映射"""
+    name: str
+    jsonpath: str  # 如 "$.data.reply"
 
 
 class JudgeConfig(BaseModel):
@@ -9,6 +61,12 @@ class JudgeConfig(BaseModel):
     base_url: str
     api_key: str
     model: str
+    prompt_template: str = (
+        "你是一个评测者。请判断被评测模型的输出是否满足要求。\n"
+        "要求：{requirement}\n"
+        "被评测输出：{output}\n"
+        "只回答一个 0 到 1 之间的数字，表示满足程度（1 为完全满足，0 为完全不满足）。不要输出其他内容。"
+    )
 
 
 class TargetConfig(BaseModel):
@@ -17,6 +75,8 @@ class TargetConfig(BaseModel):
     api_key: str
     model: str
     request_template: str = "{input}"  # 默认直接把 case.input 塞进 prompt
+    auth: AuthConfig = Field(default_factory=AuthConfig)
+    response_mapping: list[ResponseMapping] = Field(default_factory=list)
 
 
 class TokenBudget(BaseModel):
@@ -24,6 +84,8 @@ class TokenBudget(BaseModel):
     limit: int
     warn_only: bool = True
 
+
+# ============== 核心模型 ==============
 
 class Project(BaseModel):
     id: str
@@ -36,6 +98,7 @@ class Project(BaseModel):
 
 class EvalCase(BaseModel):
     """评测集里的单条 case"""
+    id: str
     case_name: str
     input: str
     expected_output: Optional[str] = None       # exact / contains 用
@@ -43,6 +106,7 @@ class EvalCase(BaseModel):
     eval_type: Literal["exact", "contains", "not_contains", "length", "llm_judge"]
     eval_params: Optional[dict] = Field(default_factory=dict)  # 如 contains 的 substring、length 的 min/max
     task_shape: Optional[str] = None            # 覆盖项目默认值
+    enabled: bool = True
 
 
 class EvalSet(BaseModel):
@@ -51,6 +115,8 @@ class EvalSet(BaseModel):
     name: str
     cases: list[EvalCase]
 
+
+# ============== 结果模型 ==============
 
 class CaseResult(BaseModel):
     """单条 case 的评测结果"""
@@ -74,9 +140,73 @@ class EvalSummary(BaseModel):
 
 
 class EvalRun(BaseModel):
+    """评测运行记录"""
     id: str
     project_id: str
     evalset_id: str
+    status: Literal["queued", "running", "completed", "failed"] = "queued"
     created_at: str
-    results: list[CaseResult]
-    summary: EvalSummary
+    started_at: Optional[str] = None
+    finished_at: Optional[str] = None
+    error: Optional[str] = None
+    results: list[CaseResult] = Field(default_factory=list)
+    summary: Optional[EvalSummary] = None
+
+
+# ============== API 请求/响应模型 ==============
+
+class CreateProjectRequest(BaseModel):
+    """创建项目请求"""
+    name: str
+    task_shape: Literal["coding", "customer_service", "multi_turn", "general", "custom"] = "general"
+
+
+class CreateEvalSetRequest(BaseModel):
+    """创建评测集请求"""
+    project_id: str
+    name: str
+    cases: list[EvalCase] = Field(default_factory=list)
+
+
+class RunEvalRequest(BaseModel):
+    """发起评测请求"""
+    project_id: str
+    evalset_id: str
+
+
+class TestTargetRequest(BaseModel):
+    """测试目标 API 请求"""
+    base_url: str
+    api_key: str
+    model: str
+    request_template: str = "{input}"
+    auth: AuthConfig = Field(default_factory=AuthConfig)
+    response_mapping: list[ResponseMapping] = Field(default_factory=list)
+
+
+class TestMappingRequest(BaseModel):
+    """测试映射提取请求"""
+    response_mapping: list[ResponseMapping]
+    sample_response: str
+
+
+class TestJudgeRequest(BaseModel):
+    """测试 Judge 请求"""
+    base_url: str
+    api_key: str
+    model: str
+    prompt_template: str
+    input: str
+    output_requirement: str
+    actual_output: str
+
+
+class ErrorDetail(BaseModel):
+    """错误详情"""
+    code: str
+    message: str
+
+
+class ErrorResponse(BaseModel):
+    """统一错误响应"""
+    error: ErrorDetail

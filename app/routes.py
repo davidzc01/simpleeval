@@ -1,0 +1,447 @@
+"""API 路由定义"""
+
+import csv
+import io
+import json
+import uuid
+from datetime import datetime, timezone
+from typing import Optional
+
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Form
+
+from .models import (
+    Project, EvalSet, EvalRun, EvalCase,
+    CreateProjectRequest, CreateEvalSetRequest, RunEvalRequest,
+    TestTargetRequest, TestMappingRequest, TestJudgeRequest,
+    CaseResult, ErrorResponse,
+)
+from .storage import (
+    list_projects, get_project, save_project,
+    list_evalsets, get_evalset, save_evalset,
+    list_runs, get_run, save_run,
+    get_project_last_run, get_project_trend,
+)
+from .runner import execute_run, _utc_now, _generate_run_id
+from .judge import call_target, judge_with_llm, NetworkError, APIError, ResponseFormatError
+from .errors import (
+    project_not_found, evalset_not_found, run_not_found,
+    no_enabled_cases, import_format_error, mapping_invalid,
+    target_api_error, judge_api_error, network_error,
+)
+
+
+router = APIRouter(prefix="/api")
+
+
+# ============== 辅助函数 ==============
+
+def _mask_secret(value: str) -> dict:
+    """掩码敏感信息"""
+    return {"masked": True}
+
+
+def _project_to_response(project: Project) -> dict:
+    """转换项目为 API 响应（掩码敏感字段）"""
+    data = project.model_dump()
+    # 掩码 judge_config 的 api_key
+    data["judge_config"]["api_key"] = _mask_secret(project.judge_config.api_key)
+    # 掩码 target_config 的 api_key
+    data["target_config"]["api_key"] = _mask_secret(project.target_config.api_key)
+    # 掩码 auth 中的敏感信息
+    if data["target_config"].get("auth"):
+        auth = data["target_config"]["auth"]
+        if auth.get("bearer_token"):
+            auth["bearer_token"] = _mask_secret(auth["bearer_token"])
+        if auth.get("api_key_value"):
+            auth["api_key_value"] = _mask_secret(auth["api_key_value"])
+        if auth.get("cookies"):
+            for cookie in auth["cookies"]:
+                if cookie.get("value"):
+                    cookie["value"] = _mask_secret(cookie["value"])
+    return data
+
+
+def _generate_id(prefix: str) -> str:
+    """生成 ID"""
+    return f"{prefix}-{uuid.uuid4().hex[:8]}"
+
+
+# ============== Projects ==============
+
+@router.get("/projects")
+async def list_all_projects():
+    """列出所有项目（含 last_run + trend）"""
+    projects = list_projects()
+    result = []
+    for p in projects:
+        data = _project_to_response(p)
+        last_run = get_project_last_run(p.id)
+        trend = get_project_trend(p.id, limit=8)
+
+        data["last_run"] = None
+        if last_run:
+            data["last_run"] = {
+                "id": last_run.id,
+                "status": last_run.status,
+                "created_at": last_run.created_at,
+                "pass_rate": last_run.summary.pass_rate if last_run.summary else 0,
+                "total_token": last_run.summary.total_token if last_run.summary else 0,
+            }
+        data["trend"] = trend
+        result.append(data)
+
+    return {"projects": result}
+
+
+@router.post("/projects", status_code=201)
+async def create_project(req: CreateProjectRequest):
+    """新建项目"""
+    project_id = _generate_id("proj")
+    project = Project(
+        id=project_id,
+        name=req.name,
+        task_shape=req.task_shape,
+        judge_config={"base_url": "", "api_key": "", "model": ""},
+        target_config={"base_url": "", "api_key": "", "model": ""},
+    )
+    save_project(project)
+    return _project_to_response(project)
+
+
+@router.get("/projects/{project_id}")
+async def get_project_detail(project_id: str):
+    """获取项目详情"""
+    project = get_project(project_id)
+    if not project:
+        project_not_found(project_id)
+    return _project_to_response(project)
+
+
+@router.put("/projects/{project_id}")
+async def update_project(project_id: str, project: Project):
+    """全量更新项目配置"""
+    existing = get_project(project_id)
+    if not existing:
+        project_not_found(project_id)
+
+    # 保持 ID 不变
+    project.id = project_id
+    save_project(project)
+    return _project_to_response(project)
+
+
+# ============== EvalSets ==============
+
+@router.post("/evalsets", status_code=201)
+async def create_evalset(req: CreateEvalSetRequest):
+    """新建评测集"""
+    # 验证项目存在
+    project = get_project(req.project_id)
+    if not project:
+        project_not_found(req.project_id)
+
+    evalset_id = _generate_id("evalset")
+    # 为没有 id 的 case 生成 id
+    cases = []
+    for i, case in enumerate(req.cases):
+        if not case.id:
+            case.id = _generate_id("case")
+        cases.append(case)
+
+    evalset = EvalSet(
+        id=evalset_id,
+        project_id=req.project_id,
+        name=req.name,
+        cases=cases,
+    )
+    save_evalset(evalset)
+    return evalset.model_dump()
+
+
+@router.get("/evalsets/{evalset_id}")
+async def get_evalset_detail(evalset_id: str, project_id: str):
+    """获取评测集详情"""
+    evalset = get_evalset(evalset_id, project_id)
+    if not evalset:
+        evalset_not_found(evalset_id)
+    return evalset.model_dump()
+
+
+@router.put("/evalsets/{evalset_id}")
+async def update_evalset(evalset_id: str, evalset: EvalSet):
+    """全量替换评测集"""
+    existing = get_evalset(evalset_id, evalset.project_id)
+    if not existing:
+        evalset_not_found(evalset_id)
+
+    # 保持 ID 不变，为没有 id 的 case 生成 id
+    evalset.id = evalset_id
+    for i, case in enumerate(evalset.cases):
+        if not case.id:
+            case.id = _generate_id("case")
+    save_evalset(evalset)
+    return evalset.model_dump()
+
+
+@router.post("/evalsets/{evalset_id}/import")
+async def import_evalset(
+    evalset_id: str,
+    project_id: str,
+    file_content: str = Form(...),
+    mode: str = "merge",
+):
+    """导入 CSV/JSON 评测集"""
+    evalset = get_evalset(evalset_id, project_id)
+    if not evalset:
+        evalset_not_found(evalset_id)
+
+    # 解析文件内容（简单实现，支持 CSV 和 JSON）
+    try:
+        if file_content.strip().startswith("["):
+            # JSON 格式
+            new_cases_data = json.loads(file_content)
+        else:
+            # CSV 格式
+            reader = csv.DictReader(io.StringIO(file_content))
+            new_cases_data = list(reader)
+    except Exception as e:
+        import_format_error(f"文件解析失败: {e}")
+
+    new_cases = []
+    for i, row in enumerate(new_cases_data):
+        try:
+            # 生成 case id
+            case_id = row.get("id", _generate_id("case"))
+            eval_params_str = row.get("eval_params", "{}")
+            eval_params = json.loads(eval_params_str) if eval_params_str and eval_params_str != "{}" else {}
+            new_cases.append(EvalCase(
+                id=case_id,
+                case_name=row.get("case_name", f"case-{i}"),
+                input=row.get("input", ""),
+                expected_output=row.get("expected_output") or None,
+                output_requirement=row.get("output_requirement") or None,
+                eval_type=row.get("eval_type", "exact"),
+                eval_params=eval_params,
+                enabled=row.get("enabled", "true").lower() == "true",
+            ))
+        except Exception as e:
+            import_format_error(f"第 {i+1} 行解析失败: {e}")
+
+    if mode == "replace":
+        evalset.cases = new_cases
+    else:  # merge
+        existing_ids = {c.id for c in evalset.cases}
+        for case in new_cases:
+            if case.id not in existing_ids:
+                evalset.cases.append(case)
+
+    save_evalset(evalset)
+    return evalset.model_dump()
+
+
+@router.get("/evalsets/{evalset_id}/export")
+async def export_evalset(evalset_id: str, project_id: str):
+    """导出评测集为 CSV"""
+    evalset = get_evalset(evalset_id, project_id)
+    if not evalset:
+        evalset_not_found(evalset_id)
+
+    # 生成 CSV
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["id", "case_name", "input", "expected_output", "output_requirement", "eval_type", "eval_params", "enabled"])
+
+    for case in evalset.cases:
+        writer.writerow([
+            case.id,
+            case.case_name,
+            case.input,
+            case.expected_output or "",
+            case.output_requirement or "",
+            case.eval_type,
+            json.dumps(case.eval_params) if case.eval_params else "{}",
+            "true" if case.enabled else "false",
+        ])
+
+    # 添加 UTF-8 BOM 以支持 Excel
+    content = "\ufeff" + output.getvalue()
+    return {"content": content, "filename": f"{evalset.name}.csv"}
+
+
+# ============== Runs ==============
+
+@router.post("/runs", status_code=201)
+async def create_run(req: RunEvalRequest, background_tasks: BackgroundTasks):
+    """发起评测（异步）"""
+    # 验证项目存在
+    project = get_project(req.project_id)
+    if not project:
+        project_not_found(req.project_id)
+
+    # 验证评测集存在
+    evalset = get_evalset(req.evalset_id, req.project_id)
+    if not evalset:
+        evalset_not_found(req.evalset_id)
+
+    # 检查是否有启用的 case
+    enabled_cases = [c for c in evalset.cases if c.enabled]
+    if not enabled_cases:
+        no_enabled_cases()
+
+    # 创建 run 记录
+    run_id = _generate_run_id()
+    run = EvalRun(
+        id=run_id,
+        project_id=req.project_id,
+        evalset_id=req.evalset_id,
+        status="queued",
+        created_at=_utc_now(),
+    )
+    save_run(run)
+
+    # 后台执行
+    background_tasks.add_task(execute_run, run, project, evalset)
+
+    return {"run_id": run_id, "status": "queued"}
+
+
+@router.get("/runs/{run_id}")
+async def get_run_detail(run_id: str, project_id: str):
+    """获取 run 详情"""
+    run = get_run(run_id, project_id)
+    if not run:
+        run_not_found(run_id)
+    return run.model_dump()
+
+
+@router.get("/projects/{project_id}/runs")
+async def list_project_runs(project_id: str):
+    """列出项目的历史 runs"""
+    project = get_project(project_id)
+    if not project:
+        project_not_found(project_id)
+
+    runs = list_runs(project_id)
+
+    # 只返回摘要（不含 results）
+    result = []
+    for r in runs:
+        result.append({
+            "id": r.id,
+            "evalset_id": r.evalset_id,
+            "status": r.status,
+            "created_at": r.created_at,
+            "summary": r.summary.model_dump() if r.summary else None,
+        })
+
+    return {"runs": result}
+
+
+@router.get("/runs/{run_id}/export")
+async def export_run(run_id: str, project_id: str):
+    """导出 run 结果为 CSV"""
+    run = get_run(run_id, project_id)
+    if not run:
+        run_not_found(run_id)
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["case_name", "input", "expected_output", "actual_output", "passed", "score", "latency_ms", "token_used", "skipped_reason"])
+
+    # 获取评测集获取 input 和 expected_output
+    evalset = get_evalset(run.evalset_id, project_id)
+    case_map = {c.case_name: c for c in evalset.cases} if evalset else {}
+
+    for result in run.results:
+        case = case_map.get(result.case_name, {})
+        writer.writerow([
+            result.case_name,
+            case.input if hasattr(case, 'input') else "",
+            case.expected_output if hasattr(case, 'expected_output') else "",
+            result.actual_output,
+            "true" if result.passed else "false",
+            result.score,
+            result.latency_ms,
+            result.token_used,
+            result.skipped_reason or "",
+        ])
+
+    content = "\ufeff" + output.getvalue()
+    return {"content": content, "filename": f"run-{run_id}.csv"}
+
+
+# ============== Test 端点 ==============
+
+@router.post("/test/target")
+async def test_target(req: TestTargetRequest):
+    """测试目标 API"""
+    try:
+        import time
+        start = time.perf_counter()
+        output, token = await call_target(
+            base_url=req.base_url,
+            api_key=req.api_key,
+            model=req.model,
+            prompt="ping",
+            request_template=req.request_template,
+            auth=req.auth,
+            response_mapping=req.response_mapping,
+        )
+        latency_ms = (time.perf_counter() - start) * 1000
+        return {
+            "ok": True,
+            "latency_ms": round(latency_ms, 2),
+            "token_used": token,
+            "status_code": 200,
+            "output": output[:200],  # 截断显示
+        }
+    except NetworkError as e:
+        return {"ok": False, "error": {"code": "network_error", "message": e.message}}
+    except APIError as e:
+        return {"ok": False, "error": {"code": "target_api_error", "message": e.message}}
+    except ResponseFormatError as e:
+        return {"ok": False, "error": {"code": "mapping_invalid", "message": e.message}}
+
+
+@router.post("/test/mapping")
+async def test_mapping(req: TestMappingRequest):
+    """测试响应映射提取"""
+    try:
+        from .judge import _extract_response
+        result = _extract_response(req.sample_response, req.response_mapping)
+        return {"ok": True, "result": result}
+    except Exception as e:
+        mapping_invalid(f"映射提取失败: {e}")
+
+
+@router.post("/test/judge")
+async def test_judge(req: TestJudgeRequest):
+    """测试 Judge"""
+    try:
+        score = await judge_with_llm(
+            base_url=req.base_url,
+            api_key=req.api_key,
+            model=req.model,
+            requirement=req.output_requirement,
+            output=req.actual_output,
+            judge_prompt=req.prompt_template,
+        )
+        return {
+            "ok": True,
+            "score": score,
+            "passed": score >= 0.5,
+        }
+    except NetworkError as e:
+        return {"ok": False, "error": {"code": "network_error", "message": e.message}}
+    except APIError as e:
+        return {"ok": False, "error": {"code": "judge_api_error", "message": e.message}}
+    except ResponseFormatError as e:
+        return {"ok": False, "error": {"code": "mapping_invalid", "message": e.message}}
+
+
+# ============== Health ==============
+
+@router.get("/health")
+async def health():
+    """健康检查"""
+    return {"status": "ok"}
