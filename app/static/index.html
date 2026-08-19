@@ -756,6 +756,13 @@
         .rp-path-row .btn-sm { padding: 4px 10px; line-height: 1.4; }
         .rp-toolbar { display: flex; gap: 8px; margin-top: 6px; flex-wrap: wrap; }
 
+        /* B-13: 变量 kv 行编辑器 */
+        .kv-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 6px; }
+        .kv-row { display: flex; gap: 6px; align-items: center; }
+        .kv-row .kv-key { flex: 1; font-size: 13px; }
+        .kv-row .kv-val { flex: 2; font-size: 13px; }
+        .kv-row .btn-sm { padding: 4px 10px; line-height: 1.4; }
+
         .json-tree { font-family: var(--font-mono); font-size: 12px; line-height: 1.7; color: var(--ink-2); }
         .json-tree .jt-row { margin-left: 18px; border-left: 1px dashed var(--gray-bd); padding-left: 8px; }
         .json-tree .jt-key { color: var(--accent); cursor: pointer; }
@@ -1301,15 +1308,27 @@
                         <div class="metric-label">pass rate</div>
                     </div>
                     <div class="metric-card">
-                        <div class="metric-value num">${lastRun ? formatNumber(lastRun.total_token) : '-'}</div>
+                        <div class="metric-value num">${lastRun
+                            ? (lastRun.token_missing
+                                ? `<span style="font-size: 12px; color: var(--ink-4);" title="响应未配置 token 统计路径，或路径未命中">token 不可得</span>`
+                                : formatNumber(lastRun.total_token))
+                            : '-'}</div>
                         <div class="metric-label">总 token</div>
                     </div>
                     <div class="metric-card">
-                        <div class="metric-value num">${lastRun ? (lastRun.total_token / 10000).toFixed(1) + 'K' : '-'}</div>
+                        <div class="metric-value num">${lastRun
+                            ? (lastRun.token_missing
+                                ? `<span style="font-size: 12px; color: var(--ink-4);" title="token 不可得">token 不可得</span>`
+                                : (lastRun.total_token / 10000).toFixed(1) + 'K')
+                            : '-'}</div>
                         <div class="metric-label">token 量(K)</div>
                     </div>
                     <div class="metric-card">
-                        <div class="metric-value num">${lastRun ? lastRun.token_per_pass.toFixed(1) : '-'}</div>
+                        <div class="metric-value num">${lastRun
+                            ? (lastRun.token_missing
+                                ? `<span style="font-size: 12px; color: var(--ink-4);" title="token 不可得，完成率无法计算">token 不可得</span>`
+                                : lastRun.token_per_pass.toFixed(1))
+                            : '-'}</div>
                         <div class="metric-label">每万 token 完成率</div>
                     </div>
                     <div class="metric-card">
@@ -1637,10 +1656,17 @@
                         <div style="padding: 8px 16px; color: var(--ink-4); font-size: 12px;">
                             共 ${cases.length} 条 · 启用 ${enabledCount} 条
                         </div>
+                        <div id="batchOpsBar" style="display: none; padding: 8px 16px; background: var(--gray-bg); border-bottom: 1px solid var(--border); align-items: center; gap: 8px;">
+                            <span id="batchSelectedCount" style="font-size: 13px; color: var(--ink-3);">已选 0 条</span>
+                            <button class="btn btn-sm btn-secondary" onclick="batchToggleCases('${evalset.id}', '${projectId}', true)">批量启用</button>
+                            <button class="btn btn-sm btn-secondary" onclick="batchToggleCases('${evalset.id}', '${projectId}', false)">批量禁用</button>
+                            <button class="btn btn-sm btn-danger" onclick="showBatchDeleteModal('${evalset.id}', '${projectId}')">批量删除</button>
+                        </div>
                         <div class="table-wrapper">
                             <table>
                                 <thead>
                                     <tr>
+                                        <th style="width: 32px;"><input type="checkbox" id="batchSelectAll" onchange="toggleBatchSelectAll()"></th>
                                         <th>case 名</th>
                                         <th>输入(截断)</th>
                                         <th>评测类型</th>
@@ -1650,8 +1676,9 @@
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    ${cases.length === 0 ? `<tr><td colspan="6" style="text-align: center; color: var(--ink-4); padding: 24px;">暂无用例，点击「+ 新增用例」或「导入」添加</td></tr>` : cases.map(c => `
+                                    ${cases.length === 0 ? `<tr><td colspan="7" style="text-align: center; color: var(--ink-4); padding: 24px;">暂无用例，点击「+ 新增用例」或「导入」添加</td></tr>` : cases.map(c => `
                                         <tr style="${c.enabled === false ? 'opacity: 0.5' : ''}">
+                                            <td><input type="checkbox" class="batch-case-cb" value="${escapeHtml(c.id)}" onchange="updateBatchOpsBar()"></td>
                                             <td>${escapeHtml(c.case_name)}</td>
                                             <td class="truncate mono">${escapeHtml(c.input || '-')}</td>
                                             <td><span class="tag tag-${c.eval_type}">${escapeHtml(c.eval_type)}</span></td>
@@ -1677,6 +1704,85 @@
                     </div>
                 </div>
             `;
+        }
+
+        // B-16: 批量操作辅助函数
+        function getSelectedCaseIds() {
+            return Array.from(document.querySelectorAll('.batch-case-cb:checked')).map(cb => cb.value);
+        }
+
+        function updateBatchOpsBar() {
+            const bar = document.getElementById('batchOpsBar');
+            const countEl = document.getElementById('batchSelectedCount');
+            const selected = getSelectedCaseIds();
+            if (bar) bar.style.display = selected.length > 0 ? 'flex' : 'none';
+            if (countEl) countEl.textContent = '已选 ' + selected.length + ' 条';
+            // 联动表头全选状态
+            const selectAll = document.getElementById('batchSelectAll');
+            const allCbs = document.querySelectorAll('.batch-case-cb');
+            if (selectAll && allCbs.length > 0) {
+                selectAll.checked = Array.from(allCbs).every(cb => cb.checked);
+            }
+        }
+
+        function toggleBatchSelectAll() {
+            const selectAll = document.getElementById('batchSelectAll');
+            if (!selectAll) return;
+            document.querySelectorAll('.batch-case-cb').forEach(cb => { cb.checked = selectAll.checked; });
+            updateBatchOpsBar();
+        }
+
+        async function batchToggleCases(evalsetId, projectId, enable) {
+            const ids = getSelectedCaseIds();
+            if (ids.length === 0) { showToast('未选中用例', 'warning'); return; }
+            try {
+                const evalset = await api(`/evalsets/${evalsetId}?project_id=${projectId}`);
+                const cases = (evalset.cases || []).map(c => ids.includes(c.id) ? { ...c, enabled: enable } : c);
+                await api(`/evalsets/${evalsetId}`, { method: 'PUT', body: JSON.stringify({ ...evalset, cases }) });
+                showToast('已' + (enable ? '启用' : '禁用') + ' ' + ids.length + ' 条用例');
+                switchTab('evalsets');
+            } catch (err) {}
+        }
+
+        function showBatchDeleteModal(evalsetId, projectId) {
+            const ids = getSelectedCaseIds();
+            if (ids.length === 0) { showToast('未选中用例', 'warning'); return; }
+            const modal = document.createElement('div');
+            modal.className = 'modal-overlay';
+            modal.id = 'batchDeleteModal';
+            modal.innerHTML = `
+                <div class="modal" style="max-width: 480px;">
+                    <div class="modal-header">
+                        <span class="modal-title" style="color: var(--red);">确认批量删除</span>
+                        <button class="modal-close" onclick="closeModal('batchDeleteModal')">×</button>
+                    </div>
+                    <div class="modal-body">
+                        <div style="margin-bottom: 12px;">
+                            将永久删除选中的 <strong>${ids.length}</strong> 条用例。
+                        </div>
+                        <div style="background: var(--red-bg); color: var(--red); padding: 12px; border-radius: 6px; font-size: 13px;">
+                            删除后无法恢复；历史 run 中这些 case 的结果保留。
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button class="btn btn-secondary" onclick="closeModal('batchDeleteModal')">取消</button>
+                        <button class="btn btn-danger" onclick="confirmBatchDelete('${evalsetId}', '${projectId}')">永久删除</button>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(modal);
+        }
+
+        async function confirmBatchDelete(evalsetId, projectId) {
+            const ids = getSelectedCaseIds();
+            try {
+                const evalset = await api(`/evalsets/${evalsetId}?project_id=${projectId}`);
+                const cases = (evalset.cases || []).filter(c => !ids.includes(c.id));
+                await api(`/evalsets/${evalsetId}`, { method: 'PUT', body: JSON.stringify({ ...evalset, cases }) });
+                closeModal('batchDeleteModal');
+                showToast('已删除 ' + ids.length + ' 条用例');
+                switchTab('evalsets');
+            } catch (err) {}
         }
 
         function showCreateEvalSetModal(projectId) {
@@ -1795,6 +1901,12 @@
                             <label class="form-label">task_shape（可选，覆盖项目默认）</label>
                             <input type="text" class="form-input mono" id="ceTaskShape" value="${escapeHtml(c.task_shape || '')}">
                         </div>
+                        <div class="form-group">
+                            <label class="form-label">variables（可选，模板 {key} 占位符变量）</label>
+                            <div id="ceVariablesList" class="kv-list"></div>
+                            <button class="btn btn-sm btn-secondary" onclick="addCaseVarRow()">+ 添加变量</button>
+                            <div style="font-size: 11px; color: var(--ink-4); margin-top: 4px;">键名任意，模板里用 {key} 引用；值会 JSON 转义后替换</div>
+                        </div>
                     </div>
                     <div class="modal-footer">
                         <button class="btn btn-secondary" onclick="closeModal('caseEditorModal')">取消</button>
@@ -1803,7 +1915,59 @@
                 </div>
             `;
             document.body.appendChild(modal);
+            // B-13: 填充 variables kv 行
+            initCaseVarRows(c.variables);
             toggleCaseEditorFields();
+        }
+
+        // B-13: 变量 kv 行编辑器（case 编辑器 + 导入表单共用）
+        function kvRowHTML(k, v) {
+            return `
+                <div class="kv-row">
+                    <input type="text" class="form-input mono kv-key" value="${escapeHtml(k || '')}" placeholder="键名">
+                    <input type="text" class="form-input mono kv-val" value="${escapeHtml(v ?? '')}" placeholder="值">
+                    <button class="btn btn-sm btn-danger kv-del" onclick="removeKvRow(this)" title="删除">×</button>
+                </div>
+            `;
+        }
+
+        function initCaseVarRows(variables) {
+            const list = document.getElementById('ceVariablesList');
+            if (!list) return;
+            list.innerHTML = '';
+            const vars = variables && typeof variables === 'object' ? variables : {};
+            const entries = Object.keys(vars);
+            if (entries.length === 0) {
+                list.insertAdjacentHTML('beforeend', kvRowHTML('', ''));
+            } else {
+                entries.forEach(key => list.insertAdjacentHTML('beforeend', kvRowHTML(key, vars[key])));
+            }
+        }
+
+        function addCaseVarRow() {
+            const list = document.getElementById('ceVariablesList');
+            if (!list) return;
+            list.insertAdjacentHTML('beforeend', kvRowHTML('', ''));
+        }
+
+        function removeKvRow(btn) {
+            const row = btn.closest('.kv-row');
+            if (row) row.remove();
+        }
+
+        // B-13: 从 kv 行收集成 dict（空键跳过；全空返回 null）
+        function collectKvRows(listId) {
+            const list = document.getElementById(listId);
+            if (!list) return null;
+            const rows = list.querySelectorAll('.kv-row');
+            const result = {};
+            let any = false;
+            rows.forEach(r => {
+                const k = r.querySelector('.kv-key')?.value.trim();
+                const v = r.querySelector('.kv-val')?.value;
+                if (k) { result[k] = v; any = true; }
+            });
+            return any ? result : null;
         }
 
         function toggleCaseEditorFields() {
@@ -1855,6 +2019,7 @@
                     eval_type: evalType,
                     eval_params: evalParams,
                     task_shape: taskShape,
+                    variables: collectKvRows('ceVariablesList'),
                     enabled: idx >= 0 ? cases[idx].enabled : true
                 };
                 if (idx >= 0) {
@@ -1998,6 +2163,19 @@
                         <div class="rp-toolbar">
                             <button class="btn btn-sm btn-secondary" onclick="addRpPathRow('output_paths')">+ 添加路径</button>
                             <button class="btn btn-sm btn-secondary" onclick="parseSampleToTree()">⌁ 从样例渲染 JSON 树</button>
+                        </div>
+                    </div>
+
+                    <div class="form-group" style="background: var(--gray-bg); padding: 12px; border-radius: 6px;">
+                        <label class="form-label">content 二次解包（B-14）</label>
+                        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+                            <input type="checkbox" id="rpOutputUnpackJson" ${rp.output_unpack_json ? 'checked' : ''} onchange="toggleRpUnpackField()">
+                            <span style="font-size: 13px;">提取的 output 是 JSON 字符串 → 再 json.loads 一次</span>
+                        </div>
+                        <div id="rpOutputFieldGroup" style="${rp.output_unpack_json ? '' : 'display: none;'}">
+                            <label class="form-label" style="font-size: 12px;">output_field（解包后取该键，支持点路径 a.b；留空 = 用解包后对象原文）</label>
+                            <input type="text" class="form-input mono" id="rpOutputField" value="${escapeHtml(rp.output_field || '')}" placeholder="如 result 或 a.b.c">
+                            <div style="font-size: 11px; color: var(--ink-4); margin-top: 4px;">取到的布尔/数字会统一 stringify（true/false）供 exact 匹配</div>
                         </div>
                     </div>
 
@@ -2449,12 +2627,23 @@
                 catch (e) { /* 留空，save 时由后端兜底；test 时单独报错 */ }
             }
             const mode = document.querySelector('input[name="rpTokenMode"]:checked')?.value || 'none';
+            const unpackEl = document.getElementById('rpOutputUnpackJson');
+            const fieldEl = document.getElementById('rpOutputField');
             return {
                 output_paths: readList('output_paths'),
                 token_paths: mode === 'paths' ? readList('token_paths') : [],
                 token_fields: mode === 'fields' ? readList('token_fields') : [],
-                token_scope: tokenScope
+                token_scope: tokenScope,
+                output_unpack_json: unpackEl ? unpackEl.checked : false,
+                output_field: (fieldEl && fieldEl.value.trim()) ? fieldEl.value.trim() : null
             };
+        }
+
+        // B-14: 开关 content 解包时联动显示 output_field 输入
+        function toggleRpUnpackField() {
+            const cb = document.getElementById('rpOutputUnpackJson');
+            const grp = document.getElementById('rpOutputFieldGroup');
+            if (cb && grp) grp.style.display = cb.checked ? '' : 'none';
         }
 
         // P2-6: 收集 token_budget（limit 留空 = null = 不限预算）
@@ -2565,7 +2754,7 @@
                 state.currentRunParams = params;
 
                 document.getElementById('pageTitle').textContent = run.id;
-                headerActions.innerHTML = `<button class="btn btn-secondary" onclick="exportRun('${run.id}', '${params.projectId}')">⇩ 导出</button>`;
+                headerActions.innerHTML = `<button class="btn btn-secondary" onclick="navigateTo('project-detail', {id: '${params.projectId}'})">‹ 返回项目</button><button class="btn btn-secondary" onclick="exportRun('${run.id}', '${params.projectId}')">⇩ 导出</button>`;
 
                 // 一次性建骨架，后续轮询只更新数据区
                 container.innerHTML = `
@@ -2652,17 +2841,26 @@
             const metrics = document.getElementById('metricsGrid');
             if (metrics) {
                 const s = run.summary;
+                // B-18: 全部 case 的 token 都不可得时，token 类指标卡显示「token 不可得」
+                const anyMissing = (run.results || []).some(r => r.token_missing);
+                const allMissing = anyMissing && (run.results || []).every(r => r.token_missing);
+                const tokenVal = !s ? '-' : (allMissing
+                    ? `<span style="font-size: 12px; color: var(--ink-4);" title="响应未配置 token 统计路径，或路径未命中">token 不可得</span>`
+                    : formatNumber(s.total_token));
+                const tppVal = !s ? '-' : (allMissing
+                    ? `<span style="font-size: 12px; color: var(--ink-4);" title="token 不可得，完成率无法计算">token 不可得</span>`
+                    : s.token_per_pass.toFixed(1));
                 metrics.innerHTML = `
                     <div class="metric-card">
                         <div class="metric-value num">${s ? (s.pass_rate * 100).toFixed(1) + '%' : '-'}</div>
                         <div class="metric-label">pass rate</div>
                     </div>
                     <div class="metric-card">
-                        <div class="metric-value num">${s ? formatNumber(s.total_token) : '-'}</div>
+                        <div class="metric-value num">${tokenVal}</div>
                         <div class="metric-label">总 token</div>
                     </div>
                     <div class="metric-card">
-                        <div class="metric-value num">${s ? s.token_per_pass.toFixed(1) : '-'}</div>
+                        <div class="metric-value num">${tppVal}</div>
                         <div class="metric-label">每万 token 完成率</div>
                     </div>
                     <div class="metric-card">
@@ -2700,7 +2898,9 @@
                             <td><span class="tag tag-${evalType}">${escapeHtml(evalType)}</span></td>
                             <td class="num">${(r.score ?? 0).toFixed(1)}</td>
                             <td class="num">${((r.latency_ms || 0) / 1000).toFixed(1)}s</td>
-                            <td class="num">${r.token_used}${r.token_missing ? '*' : ''}</td>
+                            <td class="num">${r.token_missing
+                                ? `<span style="font-size: 11px; color: var(--ink-4);" title="响应未配置 token 统计路径，或路径未命中">token 不可得</span>`
+                                : r.token_used}</td>
                             <td>
                                 <button class="btn btn-sm btn-secondary" onclick="showCaseDetail(${i})">查看</button>
                             </td>
@@ -2810,7 +3010,7 @@
                     </span>
                     <span style="margin-left: 16px; color: var(--ink-4);">得分: ${result.score}</span>
                     <span style="margin-left: 16px; color: var(--ink-4);">延迟: ${((result.latency_ms || 0) / 1000).toFixed(2)}s</span>
-                    <span style="margin-left: 16px; color: var(--ink-4);">token: ${result.token_used}${result.token_missing ? ' (无法统计)' : ''}</span>
+                    <span style="margin-left: 16px; color: var(--ink-4);" title="${result.token_missing ? '响应未配置 token 统计路径，或路径未命中' : ''}">token: ${result.token_missing ? '不可得' : result.token_used}</span>
                 </div>
             `;
             document.getElementById('caseModal').classList.remove('hidden');
@@ -2953,6 +3153,11 @@
                                 <label class="form-label">output_requirement</label>
                                 <textarea class="form-input mono" id="manualOutputRequirement" style="min-height: 60px;" placeholder="裁判判据（如：态度友好，不反驳不防御）"></textarea>
                             </div>
+                            <div class="form-group">
+                                <label class="form-label">variables（可选，模板 {key} 变量）</label>
+                                <div id="manualVariablesList" class="kv-list"></div>
+                                <button class="btn btn-sm btn-secondary" onclick="addManualVarRow()">+ 添加变量</button>
+                            </div>
                             <button class="btn btn-secondary" onclick="addManualCaseToList()">+ 添加到待导入列表</button>
                             <div id="manualCaseList" style="margin-top: 16px;"></div>
                             <div id="manualPreview" style="margin-top: 16px;"></div>
@@ -2983,6 +3188,18 @@
                 </div>
             `;
             document.body.appendChild(modal);
+            // B-13: 初始化导入表单的变量 kv 行（一条空行）
+            const mvList = document.getElementById('manualVariablesList');
+            if (mvList && mvList.children.length === 0) {
+                mvList.innerHTML = kvRowHTML('', '');
+            }
+        }
+
+        // B-13: 导入表单加变量行
+        function addManualVarRow() {
+            const list = document.getElementById('manualVariablesList');
+            if (!list) return;
+            list.insertAdjacentHTML('beforeend', kvRowHTML('', ''));
         }
 
         function switchImportTab(tab) {
@@ -3074,6 +3291,16 @@
                 if (item.eval_type && !validTypes.includes(item.eval_type)) {
                     caseErrors.push('eval_type 无效: ' + item.eval_type);
                 }
+                // B-13: 解析 variables（CSV 列为 JSON 字符串；JSON 文件导入直接是对象）
+                let variables = null;
+                if (item.variables) {
+                    if (typeof item.variables === 'string' && item.variables.trim()) {
+                        try { variables = JSON.parse(item.variables); }
+                        catch (e) { caseErrors.push('variables 不是合法 JSON'); }
+                    } else if (typeof item.variables === 'object') {
+                        variables = item.variables;
+                    }
+                }
                 if (caseErrors.length > 0) {
                     errors.push({ row: rowNum, errors: caseErrors });
                 } else {
@@ -3085,6 +3312,7 @@
                         output_requirement: item.output_requirement || null,
                         eval_type: item.eval_type || 'exact',
                         eval_params: typeof item.eval_params === 'object' ? item.eval_params : {},
+                        variables: variables,
                         enabled: item.enabled !== false
                     });
                 }
@@ -3153,6 +3381,9 @@
             } else if (evalType === 'llm_judge') {
                 caseObj.output_requirement = document.getElementById('manualOutputRequirement').value;
             }
+            // B-13: 收集 variables kv 行
+            const vars = collectKvRows('manualVariablesList');
+            if (vars) caseObj.variables = vars;
             // 加入待导入列表
             if (!Array.isArray(importData.cases)) importData.cases = [];
             importData.cases.push(caseObj);
@@ -3167,6 +3398,9 @@
             document.getElementById('manualLenMin').value = '';
             document.getElementById('manualLenMax').value = '';
             document.getElementById('manualOutputRequirement').value = '';
+            // 重置变量行（保留一条空行）
+            const mvList = document.getElementById('manualVariablesList');
+            if (mvList) mvList.innerHTML = kvRowHTML('', '');
             document.getElementById('manualCaseName').focus();
         }
 

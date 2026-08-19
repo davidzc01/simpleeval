@@ -27,16 +27,60 @@ class ResponseFormatError(APIError):
     pass
 
 
-def render_request_template(template: str, prompt: str) -> str:
-    """渲染请求模板：{input} 占位符用 JSON 转义后的值替换。
+class MissingVariableError(ValueError):
+    """模板含未定义的 {占位符} 且 variables 没有对应键"""
+
+
+def render_request_template(
+    template: str,
+    prompt: str,
+    variables: Optional[dict] = None,
+    case_name: str = "",
+    task_shape: str = "",
+) -> str:
+    """渲染请求模板：{input}/{case_name}/{task_shape}/{key} 占位符用 JSON 转义后的值替换。
+
+    - {input} → prompt（case.input）
+    - {case_name} → case_name
+    - {task_shape} → task_shape
+    - {key} → variables[key]（键名任意，数量任意，由用户在模板里决定）
 
     直接 replace 会把原始换行符/引号拼进 JSON 字符串值，导致 json.loads
     报 Invalid control character；用 json.dumps 转义后去掉首尾引号，
     得到可安全嵌入 JSON 模板的字符串。模板含其它花括号（如 FastGPT
     的 variables 结构）不受影响。
+
+    缺少变量（模板有 {key} 但 variables 无对应键）抛 MissingVariableError，
+    由调用方决定是否阻断。
     """
-    escaped = json.dumps(prompt, ensure_ascii=False)[1:-1]
-    return template.replace("{input}", escaped)
+    def _esc(v: str) -> str:
+        return json.dumps(v, ensure_ascii=False)[1:-1]
+
+    result = template
+    # 标准三变量
+    result = result.replace("{input}", _esc(prompt))
+    result = result.replace("{case_name}", _esc(case_name))
+    result = result.replace("{task_shape}", _esc(task_shape))
+    # 自定义变量：{key}
+    if variables:
+        for k, v in variables.items():
+            # 值统一 stringify（dict/list 用 json.dumps 后去引号；标量直接 str）
+            if isinstance(v, (dict, list)):
+                esc = json.dumps(v, ensure_ascii=False)
+                # dict/list 嵌入模板应是结构而非字符串，不剥引号
+                result = result.replace("{" + k + "}", esc)
+            else:
+                result = result.replace("{" + k + "}", _esc(str(v)))
+    # 检测剩余 {identifier} 占位符（未定义变量）→ 报错明确
+    import re
+    remaining = re.findall(r"\{([A-Za-z_][A-Za-z0-9_]*)\}", result)
+    if remaining:
+        # 排除已替换的标准三变量残留（一般不会出现，除非模板本身有 {input} 想保留）
+        raise MissingVariableError(
+            f"模板含未定义的占位符: {remaining[0]}（variables 缺少该键）。"
+            f"如需支持，请在 case.variables 里提供。"
+        )
+    return result
 
 
 def _build_headers(api_key: str, auth: AuthConfig) -> dict:
@@ -111,6 +155,9 @@ async def call_target(
     response_mapping: Optional[list[ResponseMapping]] = None,
     response_parsing: Optional[ResponseParsing] = None,
     api_type: str = "openai_compatible",
+    variables: Optional[dict] = None,
+    case_name: str = "",
+    task_shape: str = "",
 ) -> tuple[str, int, bool]:
     """调用被评测 API，返回 (输出文本, 消耗 token 数, token_missing 标志)
 
@@ -118,6 +165,9 @@ async def call_target(
     1. response_parsing（四键模型，parser 层接管）
     2. response_mapping（旧设计，_extract_response 兼容）
     3. OpenAI 兼容默认（choices[0].message.content + usage.total_tokens）
+
+    B-13/B-21: variables + case_name + task_shape 传给 render_request_template，
+    模板里的 {key}/{case_name}/{task_shape} 占位符被替换。
     """
     auth = auth or AuthConfig()
     response_mapping = response_mapping or []
@@ -126,7 +176,11 @@ async def call_target(
     if api_type == "custom":
         # custom 模式：纯模板渲染，不注入 model/messages，URL 不补 /chat/completions
         try:
-            body = json.loads(render_request_template(request_template, prompt))
+            rendered = render_request_template(
+                request_template, prompt,
+                variables=variables, case_name=case_name, task_shape=task_shape
+            )
+            body = json.loads(rendered)
         except json.JSONDecodeError:
             raise ResponseFormatError(f"custom 模式 request_template 不是合法 JSON")
         url = base_url
@@ -140,7 +194,11 @@ async def call_target(
             }
         else:
             try:
-                body = json.loads(render_request_template(request_template, prompt))
+                rendered = render_request_template(
+                    request_template, prompt,
+                    variables=variables, case_name=case_name, task_shape=task_shape
+                )
+                body = json.loads(rendered)
                 if "model" not in body:
                     body["model"] = model
                 if "messages" not in body and "prompt" not in body:

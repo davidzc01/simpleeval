@@ -280,6 +280,43 @@ def count_tokens(
 
 # ============== 顶层便捷函数 ==============
 
+def _unpack_output(output: str, unpack_json: bool, output_field: Optional[str]) -> str:
+    """B-14: content 二次 JSON 解包。
+
+    - unpack_json=False → 原值返回
+    - unpack_json=True + output_field=None → json.loads 成功则用解包后对象的 JSON 字符串
+    - unpack_json=True + output_field="a.b" → 在解包后对象上按点路径取值，标量统一 stringify
+
+    解包失败（非 JSON）不报错，按未解包值处理。
+    """
+    if not unpack_json or not output:
+        return output
+    try:
+        unpacked = json.loads(output)
+    except (json.JSONDecodeError, TypeError):
+        # 不是合法 JSON，保持原值
+        return output
+    if output_field:
+        # 按点路径取值
+        cur = unpacked
+        for seg in output_field.split("."):
+            if isinstance(cur, dict) and seg in cur:
+                cur = cur[seg]
+            else:
+                # 路径未命中，保持解包后对象原文
+                return json.dumps(unpacked, ensure_ascii=False)
+        # 标量统一 stringify：bool → "true"/"false"，数字 → str，str 原样
+        if isinstance(cur, bool):
+            return "true" if cur else "false"
+        if isinstance(cur, (dict, list)):
+            return json.dumps(cur, ensure_ascii=False)
+        return str(cur)
+    # 无 output_field → 解包后对象 JSON 字符串
+    if isinstance(unpacked, str):
+        return unpacked
+    return json.dumps(unpacked, ensure_ascii=False)
+
+
 def parse_response(raw: str, parsing: Optional[ResponseParsing]) -> dict:
     """解析原始响应字符串，返回输出、token 统计与缺失标记。
 
@@ -307,6 +344,9 @@ def parse_response(raw: str, parsing: Optional[ResponseParsing]) -> dict:
     if not output_found and not parsing.output_paths:
         output = raw
         output_found = True
+    # B-14: content 二次解包（output_unpack_json + output_field）
+    if output_found and parsing.output_unpack_json:
+        output = _unpack_output(output, parsing.output_unpack_json, parsing.output_field)
     token, token_missing = count_tokens(
         data, parsing.token_paths, parsing.token_fields, parsing.token_scope
     )

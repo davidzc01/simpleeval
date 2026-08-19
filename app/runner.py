@@ -91,6 +91,9 @@ async def run_evalset(project: Project, evalset: EvalSet) -> EvalRun:
                 response_mapping=project.target_config.response_mapping,
                 response_parsing=project.target_config.response_parsing,
                 api_type=project.target_config.api_type,
+                variables=case.variables,
+                case_name=case.case_name,
+                task_shape=case.task_shape or project.task_shape,
             )
             latency_ms = (time.perf_counter() - start) * 1000
 
@@ -227,6 +230,9 @@ async def execute_run(run: EvalRun, project: Project, evalset: EvalSet) -> EvalR
                     response_mapping=project.target_config.response_mapping,
                     response_parsing=project.target_config.response_parsing,
                     api_type=project.target_config.api_type,
+                    variables=case.variables,
+                    case_name=case.case_name,
+                    task_shape=case.task_shape or project.task_shape,
                 )
                 latency_ms = (time.perf_counter() - start) * 1000
 
@@ -277,6 +283,9 @@ async def execute_run(run: EvalRun, project: Project, evalset: EvalSet) -> EvalR
                     token_missing=token_missing,
                 )
             )
+            # B-20: 每 case 落盘，前端轮询能看到 results 增长（status 保持 running）
+            run.results = list(results)
+            save_run(run)
 
         # 构建结果并保存
         completed_run = _build_run_result(

@@ -68,6 +68,39 @@ def _generate_id(prefix: str) -> str:
 
 # ============== Projects ==============
 
+def _last_run_summary(last_run):
+    """B-15: 提取 last_run 摘要（列表接口和详情接口共用）"""
+    if not last_run:
+        return None
+    s = last_run.summary
+    failed_count = sum(
+        1 for r in (last_run.results or [])
+        if not r.passed and not r.skipped_reason
+    )
+    # B-18: 全部 case 的 token 都不可得时标记，供前端显示「token 不可得」
+    results = last_run.results or []
+    token_missing = bool(results) and all(r.token_missing for r in results)
+    return {
+        "id": last_run.id,
+        "status": last_run.status,
+        "created_at": last_run.created_at,
+        "pass_rate": s.pass_rate if s else 0,
+        "total_token": s.total_token if s else 0,
+        "token_per_pass": s.token_per_pass if s else 0,
+        "latency_p50": s.latency_p50 if s else 0,
+        "latency_p95": s.latency_p95 if s else 0,
+        "failed_count": failed_count,
+        "token_missing": token_missing,
+    }
+
+
+def _attach_run_summary(data: dict, project_id: str) -> dict:
+    """B-15: 给项目响应附 last_run + trend（列表/详情共用）"""
+    data["last_run"] = _last_run_summary(get_project_last_run(project_id))
+    data["trend"] = get_project_trend(project_id, limit=8)
+    return data
+
+
 @router.get("/projects")
 async def list_all_projects():
     """列出所有项目（含 last_run + trend）"""
@@ -75,28 +108,7 @@ async def list_all_projects():
     result = []
     for p in projects:
         data = _project_to_response(p)
-        last_run = get_project_last_run(p.id)
-        trend = get_project_trend(p.id, limit=8)
-
-        data["last_run"] = None
-        if last_run:
-            s = last_run.summary
-            failed_count = sum(
-                1 for r in (last_run.results or [])
-                if not r.passed and not r.skipped_reason
-            )
-            data["last_run"] = {
-                "id": last_run.id,
-                "status": last_run.status,
-                "created_at": last_run.created_at,
-                "pass_rate": s.pass_rate if s else 0,
-                "total_token": s.total_token if s else 0,
-                "token_per_pass": s.token_per_pass if s else 0,
-                "latency_p50": s.latency_p50 if s else 0,
-                "latency_p95": s.latency_p95 if s else 0,
-                "failed_count": failed_count,
-            }
-        data["trend"] = trend
+        _attach_run_summary(data, p.id)
         result.append(data)
 
     return {"projects": result}
@@ -119,11 +131,13 @@ async def create_project(req: CreateProjectRequest):
 
 @router.get("/projects/{project_id}")
 async def get_project_detail(project_id: str):
-    """获取项目详情"""
+    """获取项目详情（B-15: 附 last_run + trend，与列表接口对齐）"""
     project = get_project(project_id)
     if not project:
         project_not_found(project_id)
-    return _project_to_response(project)
+    data = _project_to_response(project)
+    _attach_run_summary(data, project_id)
+    return data
 
 
 @router.put("/projects/{project_id}")

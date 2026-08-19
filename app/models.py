@@ -57,17 +57,22 @@ class ResponseMapping(BaseModel):
 
 
 class ResponseParsing(BaseModel):
-    """响应解析配置（四键模型，无 mode 概念）
+    """响应解析配置（四键模型 + content 二次解包，无 mode 概念）
 
     - output_paths: 输出候选路径列表，从上到下依次尝试，第一个命中生效
     - token_paths: token 路径列表，所有命中值求和
     - token_fields: token 字段名列表，全树递归匹配同名字段并求和
     - token_scope: 可选过滤条件，与 token_fields 配合
+    - output_unpack_json: 提取 output 后尝试 json.loads，成功则在解包后对象上继续取 output_field
+    - output_field: 解包后取该键（支持点路径 a.b）；空 = 用解包后对象原文；
+      取到的布尔/数字统一 stringify 供 exact 匹配
     """
     output_paths: list[str] = Field(default_factory=list)
     token_paths: list[str] = Field(default_factory=list)
     token_fields: list[str] = Field(default_factory=list)
     token_scope: Optional[dict] = None
+    output_unpack_json: bool = False
+    output_field: Optional[str] = None
 
 
 class JudgeConfig(BaseModel):
@@ -129,6 +134,9 @@ class EvalCase(BaseModel):
     eval_params: Optional[dict] = Field(default_factory=dict)  # 如 contains 的 substring、length 的 min/max
     task_shape: Optional[str] = None            # 覆盖项目默认值
     enabled: bool = True
+    # B-13: 模板多占位符变量。键名任意，数量任意，由用户在 request_template 里用 {key} 引用
+    # 默认 None（不增字段语义），无 variables 时 {key} 占位符会触发"缺少变量"报错
+    variables: Optional[dict] = None
 
 
 class EvalSet(BaseModel):

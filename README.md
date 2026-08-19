@@ -33,6 +33,9 @@ uvicorn app.main:app --reload --port 8000
 - **5 种评测类型**：exact / contains / not_contains / length / llm_judge
 - **成本分析**：pass rate + token 消耗 + 每万 token 完成率 + P50/P95 延迟
 - **异步执行**：发起评测落库即返回，BackgroundTasks 后台执行，关页面不打断
+- **多占位符模板**（B-13/B-21）：`{input}` / `{case_name}` / `{task_shape}` + 自定义 `{key}`（键名数量任意，从 case.variables 取值），JSON 转义替换；未定义占位符报错明确
+- **僵尸 run 回收**（B-19）：服务启动时扫描把 running/queued 状态的 run 置 failed，避免服务重启导致永久停滞
+- **实时进度**（B-20）：执行中每完成一个 case 落盘，前端轮询可见 results 数组增长
 - **JSON 存储**：评测集和结果可版本管理，无数据库依赖
 - **用例 CRUD**：可视化新增/编辑弹窗（按 eval_type 动态切换字段：exact→expected_output、contains/not_contains→substring、length→min/max、llm_judge→output_requirement）+ 硬删除（红色入口 + 二次确认 + 影响说明）
 
@@ -48,25 +51,29 @@ uvicorn app.main:app --reload --port 8000
 
 - **JSONPath 子集**：点分路径 `$.a.b.c` + 数组索引 `$.choices[0]` + 负索引 `$.data[-1]` + 通配符 `$.items[*].name`
 - **四键模型**：`output_paths`（按序 fallback）/ `token_paths`（命中求和）/ `token_fields`（全树递归求和）/ `token_scope`（过滤）
+- **content 二次解包**（B-14）：`output_unpack_json` 提取后 `json.loads` 一次 + `output_field` 点路径取值（标量统一 stringify，bool→"true"/"false"）；解包失败按原值兜底
 - **测试面板**：粘贴样例响应即可验证解析配置，无需发起评测
 
 ### 配置与安全
 
 - **Target API 双模式**：`openai_compatible`（自动注入 model + `/chat/completions`，model 必填）/ `custom`（纯模板渲染，不注入 model/messages，`request_template` 必填）；两种模式共享同一份 auth 与 response_parsing
-- **响应解析可视化**（B-7）：四键行编辑器（output_paths / token_paths / token_fields / token_scope，每行 input + [×] 删除 + [+ 添加]）+ paths/fields/none 模式 radio 切换；**无需手写 JSONPath**——粘贴样例响应 → 渲染可折叠 JSON 树 → 点击节点自动生成路径填入"激活的"路径框（key/叶子/括号均可点选，括号点击折叠/展开子树）
+- **响应解析可视化**（B-7）：四键行编辑器（output_paths / token_paths / token_fields / token_scope，每行 input + [×] 删除 + [+ 添加]）+ paths/fields/none 模式 radio 切换 + **content 二次解包开关**（B-14，unpack_json + output_field）；**无需手写 JSONPath**——粘贴样例响应 → 渲染可折叠 JSON 树 → 点击节点自动生成路径填入"激活的"路径框（key/叶子/括号均可点选，括号点击折叠/展开子树）
 - **多种认证方式**：none / bearer / api_key（自定义 header）/ cookie / headers
 - **密钥哨兵值**：`__UNCHANGED__` 保留原值，掩码字符串不会覆盖真实 secret
 - **XSS 防护**：所有用户输入（项目名、case 名等）经 `escapeHtml` 转义；删除按钮调用通过内部状态查找，不在 HTML 属性拼接用户输入
 
 ### 前端体验
 
-- **概览指标卡 7 张**：pass rate / 总 token / token 量(K) / 每万 token 完成率 / P50 / P95 / 失败数，与 run 详情对齐
+- **概览指标卡 7 张**：pass rate / 总 token / token 量(K) / 每万 token 完成率 / P50 / P95 / 失败数，与 run 详情对齐；token 不可得时显示「token 不可得」（B-18）
+- **变量 kv 行编辑器**（B-13）：case 编辑器 + 导入表单加「变量」可选区（键名任意、数量任意），模板用 `{key}` 引用；CSV 导入支持 `variables` 列（JSON 字符串）
+- **评测集批量操作**（B-16）：用例表格 checkbox 列（表头全选 + 行多选），选中后显示批量启用/禁用/删除操作条（危险操作二次确认 + 影响说明）
+- **run 详情返回入口**（B-17）：header 加「‹ 返回项目」按钮，一键回到所属项目概览
 - **Token 预算 UI**：配置页 `limit` 输入 + `warn_only` checkbox，超限仅提醒不中断（MVP）
 - **导入走后端端点**：`POST /evalsets/{id}/import?mode=merge|replace`，行级错误收集（422 + errors 不保存），支持对象 `eval_params` 与 `task_shape`；前端保留本地预览
 - **导入弹窗双模式**：文件拖拽（.csv/.json）+ 逐条表单添加（按 eval_type 切换 expected/substring/min-max/output_requirement 字段，待导入列表可删，确认时序列化复用后端 import 端点）
 - **侧栏同步**：active 用 URL hash 判断（不依赖异步 state）+ 项目数据缓存，快速连点多个项目高亮始终同步无闪烁
 - **hash 路由**：`#/projects` / `#/project/{id}` / `#/run/{pid}/{rid}`，刷新不丢位置
-- **静默轮询**：run 详情增量 DOM 更新（不整页重绘），指数退避封顶 10s，弹窗打开/页面隐藏时暂停
+- **静默轮询**：run 详情增量 DOM 更新（不整页重绘），指数退避封顶 10s，弹窗打开/页面隐藏时暂停；执行中每 case 落盘（B-20），轮询可见 results 增长
 - **骨架屏**：列表/详情/run 详情初次加载扫光过渡
 - **运行中任务胶囊**：侧栏底部全局指示器，点击跳转对应 run
 
@@ -117,8 +124,8 @@ node tests/test_parsing_ui.js
 ### 测试结果
 
 ```
-后端：249 passed in 1.9s   Coverage: 91%
-UI 组件：82 passed（采样稳定性 26 + 评测集 CRUD 27 + 响应解析 JSON 树 29）
+后端：260 passed in 2.1s   Coverage: 90%
+UI 组件：153 passed（采样稳定性 26 + 评测集 CRUD 27 + 响应解析 JSON 树 29 + B-13~B-21 组件 71）
 ```
 
 ### 测试覆盖
@@ -128,13 +135,13 @@ UI 组件：82 passed（采样稳定性 26 + 评测集 CRUD 27 + 响应解析 JS
 | errors.py | 100% |
 | eval_types.py | 100% |
 | models.py | 100% |
-| parser.py | 97% |
 | sampling.py | 97% |
-| runner.py | 96% |
-| judge.py | 92% |
-| routes.py | 80% |
+| parser.py | 96% |
+| runner.py | 95% |
+| judge.py | 88% |
+| routes.py | 86% |
 | storage.py | 81% |
-| main.py | 73% |
+| main.py | 52% |
 
 ### 测试结构
 
@@ -151,6 +158,7 @@ tests/
 ├── test_sampling_ui.js      # 采样卡片 UI 组件测试（SVG 渲染）
 ├── test_evalset_ui.js       # 评测集用例 CRUD UI 组件测试（B-5）
 ├── test_parsing_ui.js       # 响应解析 JSON 树 UI 组件测试（B-7）
+├── test_b13_b21_ui.js       # B-13~B-21 组件测试（变量 kv/解包开关/批量操作/返回按钮/token 不可得）
 └── test_api.py              # API 接口测试
 ```
 

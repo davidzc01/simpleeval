@@ -337,3 +337,99 @@ class TestParseResponse:
         raw = json.dumps({"a": 1})
         result = parse_response(raw, None)
         assert result["token_missing"] is True
+
+
+# ============== B-14: content 二次 JSON 解包 ==============
+
+class TestOutputUnpackJson:
+    """B-14: output_unpack_json + output_field 二次解包"""
+
+    def test_unpack_disabled_returns_raw(self):
+        """unpack_json=False → 原值返回"""
+        raw = json.dumps({"choices": [{"message": {"content": '{"result": true}'}}]})
+        p = ResponseParsing(
+            output_paths=["$.choices[0].message.content"],
+            output_unpack_json=False,
+            output_field="result",
+        )
+        result = parse_response(raw, p)
+        assert result["output"] == '{"result": true}'
+
+    def test_unpack_with_field_bool_to_string(self):
+        """unpack + output_field=result → bool true 统一 stringify 为 "true" """
+        raw = json.dumps({"choices": [{"message": {"content": '{"result": true}'}}]})
+        p = ResponseParsing(
+            output_paths=["$.choices[0].message.content"],
+            output_unpack_json=True,
+            output_field="result",
+        )
+        result = parse_response(raw, p)
+        assert result["output"] == "true"
+
+    def test_unpack_with_field_number(self):
+        """unpack + output_field=score → 数字 stringify"""
+        raw = json.dumps({"choices": [{"message": {"content": '{"score": 0.95}'}}]})
+        p = ResponseParsing(
+            output_paths=["$.choices[0].message.content"],
+            output_unpack_json=True,
+            output_field="score",
+        )
+        result = parse_response(raw, p)
+        assert result["output"] == "0.95"
+
+    def test_unpack_with_nested_field(self):
+        """unpack + output_field=a.b → 点路径取值"""
+        raw = json.dumps({"choices": [{"message": {"content": '{"a": {"b": "hello"}}'}}]})
+        p = ResponseParsing(
+            output_paths=["$.choices[0].message.content"],
+            output_unpack_json=True,
+            output_field="a.b",
+        )
+        result = parse_response(raw, p)
+        assert result["output"] == "hello"
+
+    def test_unpack_no_field_returns_json_string(self):
+        """unpack=True + output_field=None → 解包后对象 JSON 字符串"""
+        raw = json.dumps({"choices": [{"message": {"content": '{"a": 1, "b": 2}'}}]})
+        p = ResponseParsing(
+            output_paths=["$.choices[0].message.content"],
+            output_unpack_json=True,
+            output_field=None,
+        )
+        result = parse_response(raw, p)
+        assert result["output"] == '{"a": 1, "b": 2}'
+
+    def test_unpack_invalid_json_returns_raw(self):
+        """unpack=True 但 content 不是合法 JSON → 保持原值不报错"""
+        raw = json.dumps({"choices": [{"message": {"content": "not json text"}}]})
+        p = ResponseParsing(
+            output_paths=["$.choices[0].message.content"],
+            output_unpack_json=True,
+            output_field="result",
+        )
+        result = parse_response(raw, p)
+        assert result["output"] == "not json text"
+
+    def test_unpack_field_miss_returns_unpacked_object(self):
+        """unpack + output_field 路径未命中 → 解包后对象 JSON"""
+        raw = json.dumps({"choices": [{"message": {"content": '{"result": true}'}}]})
+        p = ResponseParsing(
+            output_paths=["$.choices[0].message.content"],
+            output_unpack_json=True,
+            output_field="nonexistent",
+        )
+        result = parse_response(raw, p)
+        assert result["output"] == '{"result": true}'
+
+    def test_unpack_false_to_true_exact_match(self):
+        """B-14 验收：unpack + field=result → actual_output="true"，与 expected="true" exact 匹配"""
+        raw = json.dumps({"choices": [{"message": {"content": '{"result": true, "reason": "ok"}'}}]})
+        p = ResponseParsing(
+            output_paths=["$.choices[0].message.content"],
+            output_unpack_json=True,
+            output_field="result",
+        )
+        result = parse_response(raw, p)
+        assert result["output"] == "true"
+        # exact 匹配会通过
+        assert result["output"] == "true"
