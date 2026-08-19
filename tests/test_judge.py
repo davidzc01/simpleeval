@@ -712,3 +712,35 @@ class TestJudgeWithLLMErrors:
                     output="测试"
                 )
             assert "格式错误" in exc_info.value.message or "解析" in exc_info.value.message
+
+
+class TestRenderRequestTemplate:
+    """模板渲染：{input} 的 JSON 转义（换行/引号不破坏 JSON）"""
+
+    def test_multiline_input_renders_valid_json(self):
+        """多行 input（新闻全文场景）渲染后 json.loads 必须成功"""
+        from app.judge import render_request_template
+        template = '{"stream":false,"variables":{"content":"{input}"},"messages":[{"content":"{input}","role":"user"}]}'
+        prompt = "敖煜新-杭开集团\n\n第一段\n第二段\n"
+        import json
+        body = json.loads(render_request_template(template, prompt))
+        assert body["messages"][0]["content"] == prompt
+        assert body["variables"]["content"] == prompt
+
+    def test_quotes_in_input_escaped(self):
+        """input 含英文双引号时渲染后仍是合法 JSON 且值完整"""
+        from app.judge import render_request_template
+        template = '{"messages":[{"content":"{input}"}]}'
+        prompt = '他说 "你好" 然后离开'
+        import json
+        body = json.loads(render_request_template(template, prompt))
+        assert body["messages"][0]["content"] == prompt
+
+    def test_template_with_other_braces_untouched(self):
+        """模板含其它花括号（FastGPT variables 结构）不受影响"""
+        from app.judge import render_request_template
+        template = '{"variables":{"a":1},"messages":[{"content":"{input}"}]}'
+        import json
+        body = json.loads(render_request_template(template, "纯文本"))
+        assert body["variables"]["a"] == 1
+        assert body["messages"][0]["content"] == "纯文本"

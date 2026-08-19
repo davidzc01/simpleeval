@@ -27,6 +27,18 @@ class ResponseFormatError(APIError):
     pass
 
 
+def render_request_template(template: str, prompt: str) -> str:
+    """渲染请求模板：{input} 占位符用 JSON 转义后的值替换。
+
+    直接 replace 会把原始换行符/引号拼进 JSON 字符串值，导致 json.loads
+    报 Invalid control character；用 json.dumps 转义后去掉首尾引号，
+    得到可安全嵌入 JSON 模板的字符串。模板含其它花括号（如 FastGPT
+    的 variables 结构）不受影响。
+    """
+    escaped = json.dumps(prompt, ensure_ascii=False)[1:-1]
+    return template.replace("{input}", escaped)
+
+
 def _build_headers(api_key: str, auth: AuthConfig) -> dict:
     """构建请求头（认证语义：一次只生效一种认证）
 
@@ -114,7 +126,7 @@ async def call_target(
     if api_type == "custom":
         # custom 模式：纯模板渲染，不注入 model/messages，URL 不补 /chat/completions
         try:
-            body = json.loads(request_template.replace("{input}", prompt))
+            body = json.loads(render_request_template(request_template, prompt))
         except json.JSONDecodeError:
             raise ResponseFormatError(f"custom 模式 request_template 不是合法 JSON")
         url = base_url
@@ -128,7 +140,7 @@ async def call_target(
             }
         else:
             try:
-                body = json.loads(request_template.replace("{input}", prompt))
+                body = json.loads(render_request_template(request_template, prompt))
                 if "model" not in body:
                     body["model"] = model
                 if "messages" not in body and "prompt" not in body:

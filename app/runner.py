@@ -76,8 +76,8 @@ async def run_evalset(project: Project, evalset: EvalSet) -> EvalRun:
     results: list[CaseResult] = []
 
     for case in enabled_cases:
-        # 1. 调用被评测 API
-        prompt = project.target_config.request_template.format(input=case.input)
+        # 1. 调用被评测 API（模板渲染在 call_target 内统一处理，防 JSON 花括号/换行问题）
+        prompt = case.input
         start = time.perf_counter()
 
         try:
@@ -212,7 +212,8 @@ async def execute_run(run: EvalRun, project: Project, evalset: EvalSet) -> EvalR
         results: list[CaseResult] = []
 
         for case in enabled_cases:
-            prompt = project.target_config.request_template.format(input=case.input)
+            # 模板渲染在 call_target 内统一处理（run_evalset 同构）
+            prompt = case.input
             start = time.perf_counter()
 
             try:
