@@ -8,10 +8,11 @@ from app.runner import (
     check_judge_available,
     run_evalset,
     _build_run_result,
+    _compute_token_missing,
     _utc_now,
     _generate_run_id,
 )
-from app.models import Project, EvalSet, CaseResult, EvalSummary
+from app.models import Project, EvalSet, CaseResult, EvalSummary, ResponseParsing
 
 
 class TestPercentile:
@@ -461,4 +462,82 @@ class TestExecuteRun:
 
             with pytest.raises(RuntimeError):
                 await execute_run(run, project, evalset)
+
+
+class TestTokenMissing:
+    """token_missing 标记测试"""
+
+    def test_no_response_parsing_not_missing(self, sample_project):
+        """未配置 response_parsing：不标记缺失"""
+        project = Project(**sample_project)
+        assert _compute_token_missing(project, token_used=50) is False
+
+    def test_empty_token_config_missing(self, sample_project):
+        """配置了 response_parsing 但无 token 配置：标记缺失"""
+        sample_project["target_config"]["response_parsing"] = {
+            "output_paths": ["$.choices[0].message.content"],
+        }
+        project = Project(**sample_project)
+        assert _compute_token_missing(project, token_used=0) is True
+
+    def test_token_paths_hit_not_missing(self, sample_project):
+        """token_paths 命中（token>0）：不缺失"""
+        sample_project["target_config"]["response_parsing"] = {
+            "output_paths": ["$.choices[0].message.content"],
+            "token_paths": ["$.usage.total_tokens"],
+        }
+        project = Project(**sample_project)
+        assert _compute_token_missing(project, token_used=100) is False
+
+    def test_token_paths_miss_missing(self, sample_project):
+        """token_paths 配了但未命中（token=0）：缺失"""
+        sample_project["target_config"]["response_parsing"] = {
+            "output_paths": ["$.choices[0].message.content"],
+            "token_paths": ["$.usage.total_tokens"],
+        }
+        project = Project(**sample_project)
+        assert _compute_token_missing(project, token_used=0) is True
+
+    def test_token_fields_hit_not_missing(self, sample_project):
+        """token_fields 命中：不缺失"""
+        sample_project["target_config"]["response_parsing"] = {
+            "output_paths": ["$.output"],
+            "token_fields": ["total_tokens"],
+        }
+        project = Project(**sample_project)
+        assert _compute_token_missing(project, token_used=70) is False
+
+    @pytest.mark.asyncio
+    async def test_run_sets_token_missing(self, sample_project, sample_evalset):
+        """run_evalset 在 CaseResult 上设置 token_missing"""
+        sample_project["target_config"]["response_parsing"] = {
+            "output_paths": ["$.choices[0].message.content"],
+        }
+        project = Project(**sample_project)
+        evalset = EvalSet(**sample_evalset)
+        # 只保留一个 enabled exact case
+        evalset.cases = [c for c in evalset.cases if c.id == "case-001"]
+
+        with patch("app.runner.call_target", new_callable=AsyncMock) as mock_call, \
+             patch("app.runner.check_judge_available", new_callable=AsyncMock) as mock_check:
+            mock_call.return_value = ("你好！", 0)
+            mock_check.return_value = (True, "")
+
+            run = await run_evalset(project, evalset)
+            assert run.results[0].token_missing is True
+
+    @pytest.mark.asyncio
+    async def test_run_no_parsing_not_missing(self, sample_project, sample_evalset):
+        """未配置 response_parsing 时 token_missing 为 False"""
+        project = Project(**sample_project)
+        evalset = EvalSet(**sample_evalset)
+        evalset.cases = [c for c in evalset.cases if c.id == "case-001"]
+
+        with patch("app.runner.call_target", new_callable=AsyncMock) as mock_call, \
+             patch("app.runner.check_judge_available", new_callable=AsyncMock) as mock_check:
+            mock_call.return_value = ("你好！", 50)
+            mock_check.return_value = (True, "")
+
+            run = await run_evalset(project, evalset)
+            assert run.results[0].token_missing is False
 

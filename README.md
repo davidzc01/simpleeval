@@ -13,6 +13,10 @@ pip install -r requirements.txt
 ### 启动服务
 
 ```bash
+# 方式1：使用 Python 模块
+python3 -m uvicorn app.main:app --reload --port 8000
+
+# 方式2：直接运行 uvicorn（需先安装）
 uvicorn app.main:app --reload --port 8000
 ```
 

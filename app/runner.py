@@ -12,6 +12,23 @@ from .storage import save_run
 JUDGE_THRESHOLD = 0.5  # llm_judge 分数超过该阈值判为通过
 
 
+def _compute_token_missing(project: Project, token_used: int) -> bool:
+    """根据 response_parsing 配置判断 token 是否缺失。
+
+    - 未配置 response_parsing：按 OpenAI 默认，不标记缺失
+    - 配置了但 token_paths/token_fields 均空：未配置统计 → missing
+    - 配置了 token 统计但结果为 0：路径未命中 → missing
+    - 否则：不缺失
+    """
+    rp = project.target_config.response_parsing
+    if rp is None:
+        return False
+    has_token_config = bool(rp.token_paths) or bool(rp.token_fields)
+    if not has_token_config:
+        return True
+    return token_used == 0
+
+
 def _utc_now() -> str:
     """获取当前 UTC 时间（ISO 8601 格式）"""
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -80,6 +97,7 @@ async def run_evalset(project: Project, evalset: EvalSet) -> EvalRun:
                 request_template=project.target_config.request_template,
                 auth=project.target_config.auth,
                 response_mapping=project.target_config.response_mapping,
+                response_parsing=project.target_config.response_parsing,
             )
             latency_ms = (time.perf_counter() - start) * 1000
 
@@ -87,6 +105,7 @@ async def run_evalset(project: Project, evalset: EvalSet) -> EvalRun:
             passed = False
             score = 0.0
             skipped_reason = None
+            token_missing = _compute_token_missing(project, token)
 
             if case.eval_type == "llm_judge":
                 if not judge_available:
@@ -117,6 +136,7 @@ async def run_evalset(project: Project, evalset: EvalSet) -> EvalRun:
             score = 0.0
             token = 0
             skipped_reason = None
+            token_missing = _compute_token_missing(project, 0)
 
         results.append(
             CaseResult(
@@ -127,6 +147,7 @@ async def run_evalset(project: Project, evalset: EvalSet) -> EvalRun:
                 latency_ms=latency_ms,
                 token_used=token,
                 skipped_reason=skipped_reason,
+                token_missing=token_missing,
             )
         )
 
@@ -211,12 +232,14 @@ async def execute_run(run: EvalRun, project: Project, evalset: EvalSet) -> EvalR
                     request_template=project.target_config.request_template,
                     auth=project.target_config.auth,
                     response_mapping=project.target_config.response_mapping,
+                    response_parsing=project.target_config.response_parsing,
                 )
                 latency_ms = (time.perf_counter() - start) * 1000
 
                 passed = False
                 score = 0.0
                 skipped_reason = None
+                token_missing = _compute_token_missing(project, token)
 
                 if case.eval_type == "llm_judge":
                     if not judge_available:
@@ -247,6 +270,7 @@ async def execute_run(run: EvalRun, project: Project, evalset: EvalSet) -> EvalR
                 score = 0.0
                 token = 0
                 skipped_reason = None
+                token_missing = _compute_token_missing(project, 0)
 
             results.append(
                 CaseResult(
@@ -257,6 +281,7 @@ async def execute_run(run: EvalRun, project: Project, evalset: EvalSet) -> EvalR
                     latency_ms=latency_ms,
                     token_used=token,
                     skipped_reason=skipped_reason,
+                    token_missing=token_missing,
                 )
             )
 

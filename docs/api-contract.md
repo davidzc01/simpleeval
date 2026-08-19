@@ -181,12 +181,30 @@
 | 接口 | 状态 | 说明 |
 |---|---|---|
 | `POST /api/evalsets` | ➕ | 新建空评测集，绑定 `project_id` |
-| `GET /api/evalsets/{eid}` | ➕ | 详情（含全部 cases） |
+| `GET /api/projects/{pid}/evalsets` | ✅ | **列出 project 下全部评测集**。返回 `{"evalsets": [...]}`，每项含完整 cases（前端表格需要）。项目不存在 → 404 |
+| `GET /api/evalsets/{eid}?project_id={pid}` | ➕ | 详情（含全部 cases） |
 | `PUT /api/evalsets/{eid}` | ➕ | **全量替换 cases**。前端持有完整状态提交；后端负责 case id 补发 |
 | `POST /api/evalsets/{eid}/import` | ➕ | multipart 上传（`.csv` / `.json`），字段 `file` + `mode`（`merge` 默认 / `replace`） |
 | `GET /api/evalsets/{eid}/export` | ➕ | 导出 CSV（带 UTF-8 BOM，Excel 兼容），列与 UI 表格一致，`eval_params` 序列化为 JSON 字符串 |
 
 > 设计决策：**用例级 CRUD 用全量 PUT，不做单 case 端点**。JSON 文件存储下，前端每次编辑后整体提交最简单、无并发合并问题。前端 agent 注意：禁用 toggle、单条编辑都走同一条 PUT。
+
+**`GET /api/projects/{pid}/evalsets` 响应示例**：
+
+```json
+{
+  "evalsets": [
+    {
+      "id": "evalset-01",
+      "project_id": "proj-01",
+      "name": "客服意图评测集",
+      "cases": [ { "id": "case-01", "case_name": "...", "enabled": true, ... } ]
+    }
+  ]
+}
+```
+
+> 前端用法：评测集 tab 与「发起评测」弹窗均先调此接口拿到列表，再用下拉选择具体评测集。**不要**把 `projectId` 当 `evalset_id` 调旧的 `GET /evalsets/{eid}`——那是单评测集详情接口。
 
 **CSV 导入列约定**：`case_name, input, expected_output, output_requirement, eval_type, eval_params(JSON), enabled`。缺列报 `import_format_error`。
 

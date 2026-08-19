@@ -14,7 +14,7 @@ from app.judge import (
     _build_cookies,
     _extract_response,
 )
-from app.models import AuthConfig, ResponseMapping
+from app.models import ResponseParsing, ResponseMapping, AuthConfig
 
 
 class TestBuildHeaders:
@@ -430,6 +430,117 @@ class TestCallTargetExtended:
                     prompt="你好"
                 )
             assert "格式错误" in exc_info.value.message or "解析" in exc_info.value.message
+
+
+class TestCallTargetResponseParsing:
+    """call_target 使用 response_parsing（四键模型）的测试"""
+
+    @pytest.mark.asyncio
+    async def test_response_parsing_extract_output(self):
+        """response_parsing 提取输出与 token"""
+        api_response = {
+            "choices": [{"message": {"content": "解析输出"}}],
+            "usage": {"total_tokens": 77},
+        }
+        with patch("httpx.AsyncClient") as mock_client:
+            mock_response = MagicMock()
+            mock_response.json.return_value = api_response
+            mock_response.text = json.dumps(api_response)
+            mock_response.raise_for_status = MagicMock()
+            mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
+
+            output, token = await call_target(
+                base_url="https://api.example.com/v1",
+                api_key="test-key",
+                model="gpt-3.5-turbo",
+                prompt="你好",
+                response_parsing=ResponseParsing(
+                    output_paths=["$.choices[0].message.content"],
+                    token_paths=["$.usage.total_tokens"],
+                ),
+            )
+            assert output == "解析输出"
+            assert token == 77
+
+    @pytest.mark.asyncio
+    async def test_response_parsing_output_miss(self):
+        """response_parsing 输出路径全部未命中"""
+        api_response = {"other": "x"}
+        with patch("httpx.AsyncClient") as mock_client:
+            mock_response = MagicMock()
+            mock_response.json.return_value = api_response
+            mock_response.text = json.dumps(api_response)
+            mock_response.raise_for_status = MagicMock()
+            mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
+
+            output, token = await call_target(
+                base_url="https://api.example.com/v1",
+                api_key="test-key",
+                model="gpt-3.5-turbo",
+                prompt="你好",
+                response_parsing=ResponseParsing(
+                    output_paths=["$.choices[0].message.content"],
+                    token_paths=["$.usage.total_tokens"],
+                ),
+            )
+            assert "[PARSE_ERROR]" in output
+            assert token == 0
+
+    @pytest.mark.asyncio
+    async def test_response_parsing_token_fields(self):
+        """response_parsing 使用 token_fields 递归求和"""
+        api_response = {
+            "output": "回复",
+            "trace": [{"total_tokens": 30}, {"total_tokens": 40}],
+        }
+        with patch("httpx.AsyncClient") as mock_client:
+            mock_response = MagicMock()
+            mock_response.json.return_value = api_response
+            mock_response.text = json.dumps(api_response)
+            mock_response.raise_for_status = MagicMock()
+            mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
+
+            output, token = await call_target(
+                base_url="https://api.example.com/v1",
+                api_key="test-key",
+                model="gpt-3.5-turbo",
+                prompt="你好",
+                response_parsing=ResponseParsing(
+                    output_paths=["$.output"],
+                    token_fields=["total_tokens"],
+                ),
+            )
+            assert output == "回复"
+            assert token == 70
+
+    @pytest.mark.asyncio
+    async def test_response_parsing_priority_over_mapping(self):
+        """response_parsing 优先于 response_mapping"""
+        api_response = {
+            "choices": [{"message": {"content": "parsing 输出"}}],
+            "usage": {"total_tokens": 50},
+        }
+        with patch("httpx.AsyncClient") as mock_client:
+            mock_response = MagicMock()
+            mock_response.json.return_value = api_response
+            mock_response.text = json.dumps(api_response)
+            mock_response.raise_for_status = MagicMock()
+            mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
+
+            output, token = await call_target(
+                base_url="https://api.example.com/v1",
+                api_key="test-key",
+                model="gpt-3.5-turbo",
+                prompt="你好",
+                response_mapping=[ResponseMapping(name="x", jsonpath="$.choices[0].message.content")],
+                response_parsing=ResponseParsing(
+                    output_paths=["$.choices[0].message.content"],
+                    token_paths=["$.usage.total_tokens"],
+                ),
+            )
+            # parsing 优先，输出是纯内容而非 "x: ..." 格式
+            assert output == "parsing 输出"
+            assert token == 50
 
 
 class TestJudgeWithLLMErrors:

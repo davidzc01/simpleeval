@@ -51,9 +51,23 @@ class AuthConfig(BaseModel):
 
 
 class ResponseMapping(BaseModel):
-    """响应字段映射"""
+    """响应字段映射（旧设计，兼容保留；自动转为 output_paths）"""
     name: str
     jsonpath: str  # 如 "$.data.reply"
+
+
+class ResponseParsing(BaseModel):
+    """响应解析配置（四键模型，无 mode 概念）
+
+    - output_paths: 输出候选路径列表，从上到下依次尝试，第一个命中生效
+    - token_paths: token 路径列表，所有命中值求和
+    - token_fields: token 字段名列表，全树递归匹配同名字段并求和
+    - token_scope: 可选过滤条件，与 token_fields 配合
+    """
+    output_paths: list[str] = Field(default_factory=list)
+    token_paths: list[str] = Field(default_factory=list)
+    token_fields: list[str] = Field(default_factory=list)
+    token_scope: Optional[dict] = None
 
 
 class JudgeConfig(BaseModel):
@@ -77,6 +91,7 @@ class TargetConfig(BaseModel):
     request_template: str = "{input}"  # 默认直接把 case.input 塞进 prompt
     auth: AuthConfig = Field(default_factory=AuthConfig)
     response_mapping: list[ResponseMapping] = Field(default_factory=list)
+    response_parsing: Optional[ResponseParsing] = None  # 新增：四键模型，优先于 response_mapping
 
 
 class TokenBudget(BaseModel):
@@ -127,6 +142,7 @@ class CaseResult(BaseModel):
     latency_ms: float = 0.0
     token_used: int = 0
     skipped_reason: Optional[str] = None  # 跳过原因，如 "llm_unavailable"
+    token_missing: bool = False  # token 无法统计时显式标记
 
 
 class EvalSummary(BaseModel):
@@ -182,11 +198,18 @@ class TestTargetRequest(BaseModel):
     request_template: str = "{input}"
     auth: AuthConfig = Field(default_factory=AuthConfig)
     response_mapping: list[ResponseMapping] = Field(default_factory=list)
+    response_parsing: Optional[ResponseParsing] = None
 
 
 class TestMappingRequest(BaseModel):
-    """测试映射提取请求"""
+    """测试映射提取请求（旧设计，兼容保留）"""
     response_mapping: list[ResponseMapping]
+    sample_response: str
+
+
+class TestParsingRequest(BaseModel):
+    """测试响应解析请求（四键模型）"""
+    response_parsing: ResponseParsing
     sample_response: str
 
 

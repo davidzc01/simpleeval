@@ -422,8 +422,9 @@
 
         .tag-exact { background: var(--accent-pale); color: var(--accent); }
         .tag-contains { background: var(--teal-bg); color: var(--teal); }
+        .tag-not_contains { background: var(--red-bg); color: var(--red); }
         .tag-length { background: var(--amber-bg); color: var(--amber); }
-        .tag-judge { background: #f3e8ff; color: #7c3aed; }
+        .tag-llm_judge, .tag-judge { background: #f3e8ff; color: #7c3aed; }
 
         /* ==================== 状态 ==================== */
         .status-badge {
@@ -490,6 +491,18 @@
 
         .tab-content.active {
             display: block;
+        }
+
+        /* ==================== 导入拖拽区 ==================== */
+        .import-drop-zone {
+            border: 2px dashed var(--ink-6);
+            border-radius: var(--radius-md);
+            cursor: pointer;
+            transition: border-color .12s ease, background .12s ease;
+        }
+        .import-drop-zone:hover {
+            background: var(--row-hover);
+            border-color: var(--accent-bd);
         }
 
         /* ==================== 模态框 ==================== */
@@ -654,18 +667,72 @@
         .task-indicator {
             display: flex;
             align-items: center;
-            gap: 8px;
+            gap: 6px;
             padding: 6px 12px;
             background: var(--amber-bg);
             color: var(--amber);
+            border: 1px solid var(--amber-bd);
             border-radius: var(--radius-pill);
             font-size: 12px;
             font-weight: 500;
             cursor: pointer;
+            transition: background .12s ease;
+            max-width: 100%;
+            overflow: hidden;
+        }
+
+        .task-indicator:hover {
+            background: var(--amber-bd);
         }
 
         .task-indicator .status-dot {
             animation: pulse 1.5s infinite;
+            flex-shrink: 0;
+        }
+
+        .task-indicator .task-name {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .task-list {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        /* ==================== 骨架屏 ==================== */
+        .skeleton {
+            background: linear-gradient(90deg, var(--light-bg) 0%, var(--row-hover) 50%, var(--light-bg) 100%);
+            background-size: 200% 100%;
+            animation: skeleton-shimmer 1.4s infinite linear;
+            border-radius: var(--radius-sm);
+            display: block;
+        }
+
+        @keyframes skeleton-shimmer {
+            0% { background-position: 200% 0; }
+            100% { background-position: -200% 0; }
+        }
+
+        .skeleton-row td, .skeleton-cell {
+            padding: 10px 12px;
+        }
+
+        .skeleton-line {
+            height: 12px;
+            width: 100%;
+        }
+
+        .skeleton-line.w-60 { width: 60%; }
+        .skeleton-line.w-40 { width: 40%; }
+        .skeleton-line.w-30 { width: 30%; }
+        .skeleton-line.w-80 { width: 80%; }
+
+        .skeleton-card {
+            height: 80px;
+            border-radius: var(--radius-lg);
         }
 
         /* ==================== 隐藏类 ==================== */
@@ -691,8 +758,14 @@
                 <div class="sidebar-logo">simpleEval</div>
             </div>
             <nav class="sidebar-nav" id="sidebarNav">
-                <div class="nav-item active" data-page="projects" onclick="navigateTo('projects')">
-                    <span>📁</span> Projects
+                <div class="nav-item" data-page="projects" onclick="navigateTo('projects')">
+                    <span>📁</span> 项目总览
+                </div>
+                <div style="flex: 1; overflow-y: auto;">
+                    <div id="projectList"></div>
+                </div>
+                <div style="padding: 8px 16px; border-top: 1px solid #333;">
+                    <button class="btn btn-sm" style="width: 100%; background: transparent; color: #9a9fab; border: 1px dashed #444;" onclick="showCreateProjectModal()">+ 新建项目</button>
                 </div>
             </nav>
             <div class="sidebar-footer">
@@ -723,8 +796,19 @@
             projects: [],
             currentProject: null,
             currentRun: null,
+            currentEvalsets: null,
+            currentEvalsetId: null,
             apiBase: '/api'
         };
+
+        // ==================== 辅助函数 ====================
+        function isProjectReady(project) {
+            // 检查项目是否配置完整（Target API 和 Judge）
+            if (!project) return false;
+            const tc = project.target_config || {};
+            const jc = project.judge_config || {};
+            return !!(tc.base_url && tc.model && jc.base_url && jc.model);
+        }
 
         // ==================== API 客户端 ====================
         async function api(endpoint, options = {}) {
@@ -755,13 +839,75 @@
             setTimeout(() => toast.remove(), 3000);
         }
 
-        // ==================== 页面导航 ====================
+        // ==================== 侧栏项目列表 ====================
+        async function loadSidebarProjects() {
+            const container = document.getElementById('projectList');
+            if (!container) return;
+
+            try {
+                const data = await api('/projects');
+                const projects = data.projects || [];
+
+                if (projects.length === 0) {
+                    container.innerHTML = '<div style="padding: 10px 16px; color: var(--ink-5); font-size: 12px;">暂无项目</div>';
+                    return;
+                }
+
+                container.innerHTML = projects.map(p => {
+                    const hasRunning = p.last_run?.status === 'running' || p.last_run?.status === 'queued';
+                    return `
+                        <div class="nav-item project-item ${state.currentProject?.id === p.id ? 'active' : ''}"
+                             data-page="project-detail" data-id="${escapeHtml(p.id)}"
+                             onclick="navigateTo('project-detail', {id: '${escapeHtml(p.id)}'})">
+                            ${hasRunning ? '<span class="status-dot"></span>' : '<span style="width: 6px;"></span>'}
+                            <span style="flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${escapeHtml(p.name)}</span>
+                        </div>
+                    `;
+                }).join('');
+            } catch (err) {
+                container.innerHTML = '<div style="padding: 10px 16px; color: var(--ink-5); font-size: 12px;">加载失败</div>';
+            }
+        }
+
+        // ==================== 页面导航（带 hash 路由）====================
+        // 程序化改 hash 时设此 flag，避免 hashchange 再触发一次 navigateTo 造成循环
+        let _programmaticHash = false;
+
+        function buildHash(page, params = {}) {
+            if (page === 'projects') return '#/projects';
+            if (page === 'project-detail') return `#/project/${encodeURIComponent(params.id || '')}`;
+            if (page === 'run-detail') return `#/run/${encodeURIComponent(params.projectId || '')}/${encodeURIComponent(params.id || '')}`;
+            return '#/projects';
+        }
+
+        function parseHash(hash) {
+            const h = (hash || '').replace(/^#\/?/, '');
+            if (!h) return null;
+            const parts = h.split('/').map(decodeURIComponent);
+            if (parts[0] === 'projects') return { page: 'projects' };
+            if (parts[0] === 'project' && parts[1]) return { page: 'project-detail', params: { id: parts[1] } };
+            if (parts[0] === 'run' && parts[1] && parts[2]) return { page: 'run-detail', params: { id: parts[2], projectId: parts[1] } };
+            return null;
+        }
+
         function navigateTo(page, params = {}) {
-            document.getElementById('pageTitle').textContent = page.charAt(0).toUpperCase() + page.slice(1);
-            
-            // 清除侧栏激活状态
+            // 同步 hash（静默：不触发 hashchange 二次导航）
+            const newHash = buildHash(page, params);
+            if (location.hash !== newHash) {
+                _programmaticHash = true;
+                location.hash = newHash;
+            }
+            runNavigation(page, params);
+        }
+
+        function runNavigation(page, params = {}) {
+            // 加载侧栏项目列表
+            loadSidebarProjects();
+
+            document.getElementById('pageTitle').textContent = page === 'projects' ? '项目总览' : page === 'project-detail' ? (state.currentProject?.name || '项目详情') : page === 'run-detail' ? (state.currentRun?.id || 'Run 详情') : page;
+
+            // 清除所有激活状态
             document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
-            document.querySelector(`.nav-item[data-page="${page}"]`)?.classList.add('active');
 
             const content = document.getElementById('mainContent');
             const headerActions = document.getElementById('headerActions');
@@ -780,9 +926,89 @@
             }
         }
 
+        window.addEventListener('hashchange', () => {
+            if (_programmaticHash) { _programmaticHash = false; return; }
+            const parsed = parseHash(location.hash);
+            if (!parsed) { runNavigation('projects'); return; }
+            runNavigation(parsed.page, parsed.params || {});
+        });
+
+        // ==================== 骨架屏工具 ====================
+        function skeletonRows(n, cols, widths) {
+            // widths: 数组，每列宽度比例（如 ['w-60', 'w-40']），缺省用 'w-80'
+            return Array.from({length: n}).map(() => {
+                const tds = Array.from({length: cols}).map((_, i) => {
+                    const w = (widths && widths[i]) || 'w-80';
+                    return `<td class="skeleton-cell"><div class="skeleton skeleton-line ${w}"></div></td>`;
+                }).join('');
+                return `<tr class="skeleton-row">${tds}</tr>`;
+            }).join('');
+        }
+
+        function skeletonMetrics(n) {
+            return Array.from({length: n}).map(() =>
+                `<div class="metric-card"><div class="skeleton skeleton-line w-60" style="height: 24px; margin-bottom: 6px;"></div><div class="skeleton skeleton-line w-40"></div></div>`
+            ).join('');
+        }
+
+        // ==================== 运行中任务胶囊 ====================
+        async function loadRunningTasks() {
+            const container = document.getElementById('runningTasks');
+            if (!container) return;
+            try {
+                const data = await api('/projects');
+                const projects = data.projects || [];
+                const running = [];
+                for (const p of projects) {
+                    const lr = p.last_run;
+                    if (lr && (lr.status === 'running' || lr.status === 'queued')) {
+                        running.push({ projectId: p.id, projectName: p.name, runId: lr.id, status: lr.status });
+                    }
+                }
+                state.runningTasks = running;
+                if (running.length === 0) {
+                    container.innerHTML = '';
+                    return;
+                }
+                container.innerHTML = `<div class="task-list">${running.map(t => `
+                    <div class="task-indicator" title="${escapeHtml(t.status === 'running' ? '运行中' : '排队中')}：${escapeHtml(t.projectName)} — ${escapeHtml(t.runId)}"
+                         onclick="navigateTo('run-detail', {id: '${escapeHtml(t.runId)}', projectId: '${escapeHtml(t.projectId)}'})">
+                        <span class="status-dot"></span>
+                        <span class="task-name">${escapeHtml(t.projectName)}</span>
+                    </div>
+                `).join('')}</div>`;
+            } catch (err) {
+                // 静默失败，不打扰用户
+                container.innerHTML = '';
+            }
+        }
+
         // ==================== Projects 列表页 ====================
         async function renderProjectsPage(container, headerActions) {
-            headerActions.innerHTML = `<button class="btn btn-primary" onclick="showCreateProjectModal()">+ 新建 Project</button>`;
+            headerActions.innerHTML = '';
+
+            // 骨架屏：API 拉取前先填充表格骨架，避免空白闪烁
+            container.innerHTML = `
+                <div class="card">
+                    <div class="table-wrapper">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>名称</th>
+                                    <th>最近评测</th>
+                                    <th>pass rate</th>
+                                    <th>token</th>
+                                    <th>趋势</th>
+                                    <th>操作</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${skeletonRows(4, 6, ['w-60', 'w-40', 'w-40', 'w-30', 'w-40', 'w-30'])}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            `;
 
             try {
                 const data = await api('/projects');
@@ -816,11 +1042,11 @@
                                 <tbody>
                                     ${state.projects.map(p => `
                                         <tr>
-                                            <td><strong>${p.name}</strong></td>
+                                            <td><strong>${escapeHtml(p.name)}</strong></td>
                                             <td>
                                                 ${p.last_run ? `
                                                     <span class="text-muted">${formatRelativeTime(p.last_run.created_at)}</span><br>
-                                                    <span class="mono" style="font-size:11px">${p.last_run.id}</span>
+                                                    <span class="mono" style="font-size:11px">${escapeHtml(p.last_run.id)}</span>
                                                 ` : '<span class="text-muted">从未评测</span>'}
                                             </td>
                                             <td>
@@ -833,7 +1059,12 @@
                                             <td class="num">${p.last_run ? formatNumber(p.last_run.total_token) : '-'}</td>
                                             <td>${renderSparkline(p.trend || [])}</td>
                                             <td>
-                                                <button class="btn btn-sm btn-secondary" onclick="navigateTo('project-detail', {id: '${p.id}'})">查看</button>
+                                                ${isProjectReady(p) ? `
+                                                    <button class="btn btn-sm btn-secondary" onclick="runProjectEval('${escapeHtml(p.id)}')" ${p.last_run?.status === 'running' || p.last_run?.status === 'queued' ? 'disabled' : ''}>▶ 运行</button>
+                                                ` : `
+                                                    <button class="btn btn-sm" disabled title="请先配置 Target API 和 Judge">▶ 配置不完整</button>
+                                                `}
+                                                <button class="btn btn-sm btn-secondary" onclick="navigateTo('project-detail', {id: '${escapeHtml(p.id)}'})">查看</button>
                                             </td>
                                         </tr>
                                     `).join('')}
@@ -843,7 +1074,7 @@
                     </div>
                 `;
             } catch (err) {
-                container.innerHTML = `<div class="empty-state"><div class="empty-state-icon">❌</div><div class="empty-state-text">加载失败: ${err.message}</div></div>`;
+                container.innerHTML = `<div class="empty-state"><div class="empty-state-icon">❌</div><div class="empty-state-text">加载失败: ${escapeHtml(err.message)}</div></div>`;
             }
         }
 
@@ -864,9 +1095,31 @@
 
         // ==================== Project 详情页 ====================
         async function renderProjectDetailPage(container, headerActions, params) {
+            // 骨架屏：先画 tab 框架 + 概览卡片骨架
+            container.innerHTML = `
+                <div class="tabs">
+                    <div class="tab active">概览</div>
+                    <div class="tab" style="background: var(--light-bg); width: 60px; height: 24px;"></div>
+                    <div class="tab" style="background: var(--light-bg); width: 60px; height: 24px;"></div>
+                    <div class="tab" style="background: var(--light-bg); width: 60px; height: 24px;"></div>
+                </div>
+                <div id="tabContent">
+                    <div class="card" style="padding: 16px;">
+                        <div class="skeleton skeleton-line w-40" style="height: 20px; margin-bottom: 12px;"></div>
+                        <div class="skeleton skeleton-line w-80" style="margin-bottom: 8px;"></div>
+                        <div class="skeleton skeleton-line w-60"></div>
+                    </div>
+                </div>
+            `;
+
             try {
                 const project = await api(`/projects/${params.id}`);
                 state.currentProject = project;
+                // 切换项目时重置评测集选择状态
+                if (state.currentEvalsets?.[0]?.project_id !== project.id) {
+                    state.currentEvalsetId = null;
+                    state.currentEvalsets = null;
+                }
 
                 document.getElementById('pageTitle').textContent = project.name;
                 headerActions.innerHTML = `
@@ -885,6 +1138,10 @@
                         ${renderProjectOverview(project)}
                     </div>
                 `;
+
+                if (params.openRunModal) {
+                    showRunModal(project.id);
+                }
 
             } catch (err) {
                 container.innerHTML = `<div class="empty-state"><div class="empty-state-icon">❌</div><div class="empty-state-text">加载失败: ${err.message}</div></div>`;
@@ -949,11 +1206,10 @@
 
         async function renderEvalsetsTab(container, projectId) {
             try {
-                const data = await api('/evalsets/' + projectId + '?project_id=' + projectId);
-                const evalsets = Array.isArray(data) ? data : [data];
-                const currentEvalset = evalsets.find(e => e.project_id === projectId) || evalsets[0];
+                const data = await api(`/projects/${projectId}/evalsets`);
+                const evalsets = data.evalsets || [];
 
-                if (!currentEvalset) {
+                if (evalsets.length === 0) {
                     container.innerHTML = `
                         <div class="empty-state">
                             <div class="empty-state-icon">📋</div>
@@ -964,14 +1220,62 @@
                     return;
                 }
 
-                container.innerHTML = `
+                state.currentEvalsets = evalsets;
+                // 默认选中第一个
+                state.currentEvalsetId = state.currentEvalsetId || evalsets[0].id;
+                const current = evalsets.find(e => e.id === state.currentEvalsetId) || evalsets[0];
+                state.currentEvalsetId = current.id;
+
+                const selectorHtml = `
+                    <div class="card mb-4">
+                        <div class="card-header">
+                            <span class="card-title">评测集</span>
+                            <div class="flex gap-2">
+                                <button class="btn btn-sm btn-secondary" onclick="showCreateEvalSetModal('${projectId}')">+ 新建</button>
+                            </div>
+                        </div>
+                        <div style="padding: 12px 16px; display: flex; align-items: center; gap: 12px;">
+                            <select class="form-input" id="evalsetSelect" onchange="switchEvalset('${projectId}', this.value)" style="flex: 1;">
+                                ${evalsets.map(e => `<option value="${escapeHtml(e.id)}" ${e.id === current.id ? 'selected' : ''}>${escapeHtml(e.name)}（${(e.cases || []).length} 条）</option>`).join('')}
+                            </select>
+                        </div>
+                    </div>
+                `;
+
+                container.innerHTML = selectorHtml + renderEvalsetDetail(current, projectId);
+            } catch (err) {
+                container.innerHTML = `<div class="empty-state"><div class="empty-state-icon">❌</div><div class="empty-state-text">加载失败</div></div>`;
+            }
+        }
+
+        function switchEvalset(projectId, evalsetId) {
+            state.currentEvalsetId = evalsetId;
+            const content = document.getElementById('tabContent');
+            if (!content || !state.currentEvalsets) return;
+            const current = state.currentEvalsets.find(e => e.id === evalsetId);
+            if (!current) return;
+            // 只替换详情部分（保留选择器，避免重渲染下拉）
+            const detailNode = document.getElementById('evalsetDetail');
+            if (detailNode) {
+                detailNode.outerHTML = renderEvalsetDetail(current, projectId);
+            }
+        }
+
+        function renderEvalsetDetail(evalset, projectId) {
+            const cases = evalset.cases || [];
+            const enabledCount = cases.filter(c => c.enabled).length;
+            return `
+                <div id="evalsetDetail">
                     <div class="card">
                         <div class="card-header">
-                            <span class="card-title">${currentEvalset.name}</span>
+                            <span class="card-title">${escapeHtml(evalset.name)}</span>
                             <div class="flex gap-2">
-                                <button class="btn btn-sm btn-secondary" onclick="showImportModal('${currentEvalset.id}', '${projectId}')">⤒ 导入</button>
-                                <button class="btn btn-sm btn-secondary" onclick="exportEvalSet('${currentEvalset.id}', '${projectId}')">⇩ 导出</button>
+                                <button class="btn btn-sm btn-secondary" onclick="showImportModal('${evalset.id}', '${projectId}')">⤒ 导入</button>
+                                <button class="btn btn-sm btn-secondary" onclick="exportEvalSet('${evalset.id}', '${projectId}')">⇩ 导出</button>
                             </div>
+                        </div>
+                        <div style="padding: 8px 16px; color: var(--ink-4); font-size: 12px;">
+                            共 ${cases.length} 条 · 启用 ${enabledCount} 条
                         </div>
                         <div class="table-wrapper">
                             <table>
@@ -986,12 +1290,12 @@
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    ${(currentEvalset.cases || []).map(c => `
+                                    ${cases.length === 0 ? `<tr><td colspan="6" style="text-align: center; color: var(--ink-4); padding: 24px;">暂无用例，点击「导入」添加</td></tr>` : cases.map(c => `
                                         <tr style="${c.enabled === false ? 'opacity: 0.5' : ''}">
-                                            <td>${c.case_name}</td>
-                                            <td class="truncate mono">${c.input || '-'}</td>
-                                            <td><span class="tag tag-${c.eval_type}">${c.eval_type}</span></td>
-                                            <td class="truncate mono">${c.expected_output || c.output_requirement || '-'}</td>
+                                            <td>${escapeHtml(c.case_name)}</td>
+                                            <td class="truncate mono">${escapeHtml(c.input || '-')}</td>
+                                            <td><span class="tag tag-${c.eval_type}">${escapeHtml(c.eval_type)}</span></td>
+                                            <td class="truncate mono">${escapeHtml(c.expected_output || c.output_requirement || '-')}</td>
                                             <td>
                                                 <span class="status-badge ${c.enabled ? 'status-passed' : 'status-disabled'}">
                                                     <span class="status-dot"></span>
@@ -999,7 +1303,7 @@
                                                 </span>
                                             </td>
                                             <td>
-                                                <button class="btn btn-sm btn-secondary" onclick="toggleCaseEnabled('${currentEvalset.id}', '${projectId}', '${c.id}', ${!c.enabled})">
+                                                <button class="btn btn-sm btn-secondary" onclick="toggleCaseEnabled('${evalset.id}', '${projectId}', '${c.id}', ${!c.enabled})">
                                                     ${c.enabled ? '禁用' : '启用'}
                                                 </button>
                                             </td>
@@ -1009,13 +1313,70 @@
                             </table>
                         </div>
                     </div>
-                `;
-            } catch (err) {
-                container.innerHTML = `<div class="empty-state"><div class="empty-state-icon">❌</div><div class="empty-state-text">加载失败</div></div>`;
+                </div>
+            `;
+        }
+
+        function showCreateEvalSetModal(projectId) {
+            const modal = document.createElement('div');
+            modal.className = 'modal-overlay';
+            modal.id = 'createEvalSetModal';
+            modal.innerHTML = `
+                <div class="modal">
+                    <div class="modal-header">
+                        <span class="modal-title">新建评测集</span>
+                        <button class="modal-close" onclick="closeModal('createEvalSetModal')">×</button>
+                    </div>
+                    <div class="modal-body">
+                        <div class="form-group">
+                            <label class="form-label">名称</label>
+                            <input type="text" class="form-input" id="evalsetName" placeholder="例如：客服意图评测集">
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button class="btn btn-secondary" onclick="closeModal('createEvalSetModal')">取消</button>
+                        <button class="btn btn-primary" onclick="createEvalSet('${projectId}')">创建</button>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(modal);
+        }
+
+        async function createEvalSet(projectId) {
+            const name = document.getElementById('evalsetName').value.trim();
+            if (!name) {
+                showToast('请输入名称', 'error');
+                return;
             }
+            try {
+                const newSet = await api('/evalsets', {
+                    method: 'POST',
+                    body: JSON.stringify({ project_id: projectId, name, cases: [] })
+                });
+                state.currentEvalsetId = newSet.id;
+                closeModal('createEvalSetModal');
+                showToast('已创建空评测集，请导入用例');
+                switchTab('evalsets');
+            } catch (err) {}
         }
 
         function renderConfigTab(container, project) {
+            const tc = project.target_config;
+            const jc = project.judge_config;
+            const auth = tc.auth || { type: 'none', cookies: [], headers: [] };
+            const rp = tc.response_parsing || { output_paths: [], token_paths: [], token_fields: [], token_scope: null };
+
+            // 工具：判断字段是否被后端掩码
+            const isMasked = v => v && typeof v === 'object' && v.masked === true;
+            // 掩码占位符
+            const MASK_PLACEHOLDER = '••••••••';
+            // 工具：渲染敏感输入框，带 data-masked 状态
+            const secretInput = (id, value, type = 'password') => {
+                const masked = isMasked(value);
+                const val = masked ? MASK_PLACEHOLDER : escapeHtml(value || '');
+                return `<input type="${type}" class="form-input mono" value="${val}" id="${id}" data-masked="${masked ? 'true' : 'false'}" oninput="this.dataset.masked='false'">`;
+            };
+
             container.innerHTML = `
                 <div class="card mb-4">
                     <div class="card-header">
@@ -1023,18 +1384,67 @@
                     </div>
                     <div class="form-group">
                         <label class="form-label">base_url</label>
-                        <input type="text" class="form-input mono" value="${project.target_config.base_url}" id="targetBaseUrl">
+                        <input type="text" class="form-input mono" value="${escapeHtml(tc.base_url)}" id="targetBaseUrl">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">api_key</label>
+                        ${secretInput('targetApiKey', tc.api_key)}
                     </div>
                     <div class="form-group">
                         <label class="form-label">model</label>
-                        <input type="text" class="form-input mono" value="${project.target_config.model}" id="targetModel">
+                        <input type="text" class="form-input mono" value="${escapeHtml(tc.model)}" id="targetModel">
                     </div>
                     <div class="form-group">
-                        <label class="form-label">请求模板</label>
-                        <textarea class="form-input mono" id="targetTemplate">${project.target_config.request_template}</textarea>
+                        <label class="form-label">请求模板（占位符 {input}）</label>
+                        <textarea class="form-input mono" id="targetTemplate">${escapeHtml(tc.request_template || '')}</textarea>
                     </div>
+
+                    <div class="form-group">
+                        <label class="form-label">认证方式</label>
+                        <select class="form-input" id="authType" onchange="renderAuthFields('${project.id}')">
+                            <option value="none" ${auth.type === 'none' ? 'selected' : ''}>无</option>
+                            <option value="bearer" ${auth.type === 'bearer' ? 'selected' : ''}>Bearer Token</option>
+                            <option value="api_key" ${auth.type === 'api_key' ? 'selected' : ''}>API Key（自定义 header）</option>
+                            <option value="cookie" ${auth.type === 'cookie' ? 'selected' : ''}>Cookie</option>
+                            <option value="headers" ${auth.type === 'headers' ? 'selected' : ''}>自定义 Headers</option>
+                        </select>
+                    </div>
+                    <div id="authFields"></div>
+
                     <button class="btn btn-secondary" onclick="testTargetConfig('${project.id}')">测试连接</button>
                     <div id="targetTestResult" class="mt-4"></div>
+                </div>
+
+                <div class="card mb-4">
+                    <div class="card-header">
+                        <span class="card-title">响应解析配置</span>
+                    </div>
+                    <div style="padding: 0 0 12px; color: var(--ink-4); font-size: 12px;">
+                        四键模型：output_paths 按序 fallback，token_paths 命中求和，token_fields 全树递归求和（配 token_scope）。paths 与 fields 同时给时 paths 优先。全空 = 完整响应原文 + 不统计 token。
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">output_paths（每行一条，如 $.choices[0].message.content）</label>
+                        <textarea class="form-input mono" id="rpOutputPaths">${escapeHtml((rp.output_paths || []).join('\n'))}</textarea>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">token_paths（每行一条，如 $.usage.total_tokens）</label>
+                        <textarea class="form-input mono" id="rpTokenPaths">${escapeHtml((rp.token_paths || []).join('\n'))}</textarea>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">token_fields（每行一个字段名，如 total_tokens）</label>
+                        <textarea class="form-input mono" id="rpTokenFields">${escapeHtml((rp.token_fields || []).join('\n'))}</textarea>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">token_scope（JSON，可选过滤）</label>
+                        <textarea class="form-input mono" id="rpTokenScope" placeholder='{"path": "$.usage"} 或留空'>${escapeHtml(rp.token_scope ? JSON.stringify(rp.token_scope) : '')}</textarea>
+                    </div>
+
+                    <div class="form-group">
+                        <label class="form-label">样例响应（用于测试解析）</label>
+                        <textarea class="form-input mono" id="parsingSample" placeholder='{"choices":[{"message":{"content":"hi"}}], "usage":{"total_tokens": 12}}' style="min-height: 100px;"></textarea>
+                    </div>
+                    <button class="btn btn-secondary" onclick="testParsingConfig()">测试解析</button>
+                    <div id="parsingTestResult" class="mt-4"></div>
                 </div>
 
                 <div class="card mb-4">
@@ -1043,19 +1453,19 @@
                     </div>
                     <div class="form-group">
                         <label class="form-label">base_url</label>
-                        <input type="text" class="form-input mono" value="${project.judge_config.base_url}" id="judgeBaseUrl">
+                        <input type="text" class="form-input mono" value="${escapeHtml(jc.base_url)}" id="judgeBaseUrl">
                     </div>
                     <div class="form-group">
                         <label class="form-label">api_key</label>
-                        <input type="password" class="form-input mono" value="••••••••" id="judgeApiKey">
+                        ${secretInput('judgeApiKey', jc.api_key)}
                     </div>
                     <div class="form-group">
                         <label class="form-label">model</label>
-                        <input type="text" class="form-input mono" value="${project.judge_config.model}" id="judgeModel">
+                        <input type="text" class="form-input mono" value="${escapeHtml(jc.model)}" id="judgeModel">
                     </div>
                     <div class="form-group">
                         <label class="form-label">Prompt 模板</label>
-                        <textarea class="form-input mono" id="judgePrompt">${project.judge_config.prompt_template}</textarea>
+                        <textarea class="form-input mono" id="judgePrompt">${escapeHtml(jc.prompt_template || '')}</textarea>
                     </div>
                     <button class="btn btn-secondary" onclick="testJudgeConfig('${project.id}')">测试 Judge</button>
                     <div id="judgeTestResult" class="mt-4"></div>
@@ -1063,6 +1473,117 @@
 
                 <button class="btn btn-primary" onclick="saveProjectConfig('${project.id}')">保存配置</button>
             `;
+
+            // 渲染认证字段（首次进入）
+            state._auth = JSON.parse(JSON.stringify(auth));
+            renderAuthFields(project.id);
+        }
+
+        function renderAuthFields(projectId) {
+            const container = document.getElementById('authFields');
+            if (!container) return;
+            const type = document.getElementById('authType').value;
+            const auth = state._auth || { type: 'none' };
+            // 切换类型时保留同名字段，其它清空
+            const isMasked = v => v && typeof v === 'object' && v.masked === true;
+            const MASK_PLACEHOLDER = '••••••••';
+            const secretInput = (id, value) => {
+                const masked = isMasked(value);
+                const val = masked ? MASK_PLACEHOLDER : escapeHtml(value || '');
+                return `<input type="password" class="form-input mono" value="${val}" id="${id}" data-masked="${masked ? 'true' : 'false'}" oninput="this.dataset.masked='false'">`;
+            };
+
+            let html = '';
+            if (type === 'bearer') {
+                html = `
+                    <div class="form-group">
+                        <label class="form-label">bearer_token</label>
+                        ${secretInput('authBearerToken', auth.bearer_token)}
+                    </div>
+                `;
+            } else if (type === 'api_key') {
+                html = `
+                    <div class="form-group">
+                        <label class="form-label">header 名</label>
+                        <input type="text" class="form-input mono" value="${escapeHtml(auth.api_key_header || 'X-API-Key')}" id="authApiKeyHeader">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">api_key 值</label>
+                        ${secretInput('authApiKeyValue', auth.api_key_value)}
+                    </div>
+                `;
+            } else if (type === 'cookie') {
+                const cookies = Array.isArray(auth.cookies) ? auth.cookies : [];
+                html = `
+                    <div class="form-group">
+                        <label class="form-label">Cookies（每行一个 name=value）</label>
+                        <textarea class="form-input mono" id="authCookies" placeholder="session=abc">${escapeHtml(cookies.map(c => `${c.name}=${isMasked(c.value) ? '••••••••' : (c.value || '')}`).join('\n'))}</textarea>
+                        <div style="margin-top: 4px; font-size: 11px; color: var(--ink-4);">掩码值将自动用 __UNCHANGED__ 保留</div>
+                    </div>
+                `;
+            } else if (type === 'headers') {
+                const headers = Array.isArray(auth.headers) ? auth.headers : [];
+                html = `
+                    <div class="form-group">
+                        <label class="form-label">自定义 Headers（每行 name: value）</label>
+                        <textarea class="form-input mono" id="authHeaders" placeholder="X-Env: test">${escapeHtml(headers.map(h => `${h.name}: ${h.value || ''}`).join('\n'))}</textarea>
+                    </div>
+                `;
+            }
+            container.innerHTML = html;
+        }
+
+        // 工具：从带 data-masked 的输入读取值，掩码时返回哨兵
+        function readSecret(id) {
+            const el = document.getElementById(id);
+            if (!el) return '';
+            if (el.dataset.masked === 'true') return '__UNCHANGED__';
+            return el.value;
+        }
+
+        function collectAuth() {
+            const type = document.getElementById('authType').value;
+            const auth = { type, bearer_token: null, api_key_header: 'X-API-Key', api_key_value: null, cookies: [], headers: [] };
+            if (type === 'bearer') {
+                auth.bearer_token = readSecret('authBearerToken') || null;
+            } else if (type === 'api_key') {
+                auth.api_key_header = document.getElementById('authApiKeyHeader')?.value || 'X-API-Key';
+                auth.api_key_value = readSecret('authApiKeyValue') || null;
+            } else if (type === 'cookie') {
+                const lines = (document.getElementById('authCookies')?.value || '').split('\n').map(s => s.trim()).filter(Boolean);
+                auth.cookies = lines.map((line, i) => {
+                    const idx = line.indexOf('=');
+                    const name = idx >= 0 ? line.slice(0, idx).trim() : line;
+                    const value = idx >= 0 ? line.slice(idx + 1).trim() : '';
+                    // 用户没改掩码占位 → 哨兵
+                    const oldValue = (state._auth?.cookies || [])[i]?.value;
+                    const wasMasked = oldValue && typeof oldValue === 'object' && oldValue.masked === true;
+                    return { name, value: wasMasked && value === '••••••••' ? '__UNCHANGED__' : value };
+                });
+            } else if (type === 'headers') {
+                const lines = (document.getElementById('authHeaders')?.value || '').split('\n').map(s => s.trim()).filter(Boolean);
+                auth.headers = lines.map(line => {
+                    const idx = line.indexOf(':');
+                    return { name: idx >= 0 ? line.slice(0, idx).trim() : line, value: idx >= 0 ? line.slice(idx + 1).trim() : '' };
+                });
+            }
+            return auth;
+        }
+
+        function collectResponseParsing() {
+            const splitLines = id => (document.getElementById(id)?.value || '').split('\n').map(s => s.trim()).filter(Boolean);
+            const scopeRaw = document.getElementById('rpTokenScope')?.value.trim();
+            let tokenScope = null;
+            if (scopeRaw) {
+                try { tokenScope = JSON.parse(scopeRaw); }
+                catch (e) { /* 留空，save 时由后端兜底；test 时单独报错 */ }
+            }
+            return {
+                output_paths: splitLines('rpOutputPaths'),
+                token_paths: splitLines('rpTokenPaths'),
+                token_fields: splitLines('rpTokenFields'),
+                token_scope: tokenScope
+            };
         }
 
         async function renderHistoryTab(container, projectId) {
@@ -1098,13 +1619,13 @@
                                 <tbody>
                                     ${runs.map(r => `
                                         <tr>
-                                            <td class="mono">${r.id}</td>
-                                            <td>${r.evalset_id}</td>
-                                            <td><span class="status-badge status-${r.status}"><span class="status-dot"></span>${r.status}</span></td>
+                                            <td class="mono">${escapeHtml(r.id)}</td>
+                                            <td>${escapeHtml(r.evalset_id)}</td>
+                                            <td><span class="status-badge status-${escapeHtml(r.status)}"><span class="status-dot"></span>${escapeHtml(r.status)}</span></td>
                                             <td class="text-muted">${formatRelativeTime(r.created_at)}</td>
                                             <td class="num">${r.summary ? (r.summary.pass_rate * 100).toFixed(1) + '%' : '-'}</td>
                                             <td class="num">${r.summary ? formatNumber(r.summary.total_token) : '-'}</td>
-                                            <td><button class="btn btn-sm btn-secondary" onclick="navigateTo('run-detail', {id: '${r.id}', projectId: '${projectId}'})">查看</button></td>
+                                            <td><button class="btn btn-sm btn-secondary" onclick="navigateTo('run-detail', {id: '${escapeHtml(r.id)}', projectId: '${escapeHtml(projectId)}'})">查看</button></td>
                                         </tr>
                                     `).join('')}
                                 </tbody>
@@ -1119,57 +1640,55 @@
 
         // ==================== Run 详情页 ====================
         async function renderRunDetailPage(container, headerActions, params) {
+            // 骨架屏：状态行 + 6 张指标卡 + case 表格骨架
+            container.innerHTML = `
+                <div class="card mb-4" style="padding: 16px;">
+                    <div class="skeleton skeleton-line w-30" style="height: 22px;"></div>
+                </div>
+                <div class="metrics-grid mb-4">${skeletonMetrics(6)}</div>
+                <div class="card">
+                    <div class="card-header"><span class="card-title">Case 结果</span></div>
+                    <div class="table-wrapper">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>状态</th><th>case 名</th><th>评测类型</th><th>得分</th><th>延迟</th><th>token</th><th>操作</th>
+                                </tr>
+                            </thead>
+                            <tbody>${skeletonRows(3, 7, ['w-30','w-60','w-40','w-30','w-30','w-30','w-30'])}</tbody>
+                        </table>
+                    </div>
+                </div>
+            `;
+
             try {
                 const run = await api(`/runs/${params.id}?project_id=${params.projectId}`);
                 state.currentRun = run;
 
+                // 拉评测集以便 join 出 input / expected_output / eval_type（CaseResult 没存这些字段）
+                let evalsetMap = {};
+                try {
+                    const esData = await api(`/projects/${params.projectId}/evalsets`);
+                    const es = (esData.evalsets || []).find(e => e.id === run.evalset_id);
+                    if (es) {
+                        state.currentRunEvalset = es;
+                        (es.cases || []).forEach(c => { evalsetMap[c.case_name] = c; });
+                    }
+                } catch (e) { /* join 失败不阻断详情 */ }
+
+                state.currentRunParams = params;
+
                 document.getElementById('pageTitle').textContent = run.id;
                 headerActions.innerHTML = `<button class="btn btn-secondary" onclick="exportRun('${run.id}', '${params.projectId}')">⇩ 导出</button>`;
 
-                const progress = run.results?.length || 0;
-                const failed = run.results?.filter(r => !r.passed && !r.skipped_reason).length || 0;
-
+                // 一次性建骨架，后续轮询只更新数据区
                 container.innerHTML = `
                     <div class="card mb-4">
-                        <div style="margin-bottom: 12px;">
-                            <span class="status-badge status-${run.status}" style="margin-right: 12px;">
-                                <span class="status-dot"></span>${run.status}
-                            </span>
-                            ${run.status === 'running' ? `
-                                <div class="progress-bar" style="display: inline-block; width: 200px; vertical-align: middle;">
-                                    <div class="progress-fill" style="width: ${progress * 10}%"></div>
-                                </div>
-                            ` : ''}
-                        </div>
-                        ${run.error ? `<div class="code-block" style="color: var(--red);">Error: ${run.error}</div>` : ''}
+                        <div id="runStatusRow" style="margin-bottom: 12px;"></div>
+                        <div id="runError"></div>
                     </div>
 
-                    <div class="metrics-grid mb-4">
-                        <div class="metric-card">
-                            <div class="metric-value num">${run.summary ? (run.summary.pass_rate * 100).toFixed(1) + '%' : '-'}</div>
-                            <div class="metric-label">pass rate</div>
-                        </div>
-                        <div class="metric-card">
-                            <div class="metric-value num">${run.summary ? formatNumber(run.summary.total_token) : '-'}</div>
-                            <div class="metric-label">总 token</div>
-                        </div>
-                        <div class="metric-card">
-                            <div class="metric-value num">${run.summary ? run.summary.token_per_pass.toFixed(1) : '-'}</div>
-                            <div class="metric-label">每万token完成率</div>
-                        </div>
-                        <div class="metric-card">
-                            <div class="metric-value num">${run.summary ? (run.summary.latency_p50 / 1000).toFixed(1) + 's' : '-'}</div>
-                            <div class="metric-label">P50 延迟</div>
-                        </div>
-                        <div class="metric-card">
-                            <div class="metric-value num">${run.summary ? (run.summary.latency_p95 / 1000).toFixed(1) + 's' : '-'}</div>
-                            <div class="metric-label">P95 延迟</div>
-                        </div>
-                        <div class="metric-card">
-                            <div class="metric-value num" style="color: ${failed > 0 ? 'var(--red)' : 'inherit'}">${failed}</div>
-                            <div class="metric-label">失败</div>
-                        </div>
-                    </div>
+                    <div id="metricsGrid" class="metrics-grid mb-4"></div>
 
                     <div class="card">
                         <div class="card-header">
@@ -1188,29 +1707,7 @@
                                         <th>操作</th>
                                     </tr>
                                 </thead>
-                                <tbody>
-                                    ${(run.results || []).map((r, i) => `
-                                        <tr>
-                                            <td>
-                                                ${r.skipped_reason ? `
-                                                    <span class="status-badge status-disabled"><span class="status-dot"></span>跳过</span>
-                                                ` : r.passed ? `
-                                                    <span class="status-badge status-passed"><span class="status-dot"></span>通过</span>
-                                                ` : `
-                                                    <span class="status-badge status-failed"><span class="status-dot"></span>失败</span>
-                                                `}
-                                            </td>
-                                            <td>${r.case_name}</td>
-                                            <td>-</td>
-                                            <td class="num">${r.score.toFixed(1)}</td>
-                                            <td class="num">${(r.latency_ms / 1000).toFixed(1)}s</td>
-                                            <td class="num">${r.token_used}</td>
-                                            <td>
-                                                <button class="btn btn-sm btn-secondary" onclick="showCaseDetail(${i})">查看</button>
-                                            </td>
-                                        </tr>
-                                    `).join('')}
-                                </tbody>
+                                <tbody id="caseTableBody"></tbody>
                             </table>
                         </div>
                     </div>
@@ -1226,27 +1723,194 @@
                     </div>
                 `;
 
-                // 轮询更新
-                if (run.status === 'running' || run.status === 'queued') {
-                    setTimeout(() => {
-                        navigateTo('run-detail', {id: params.id, projectId: params.projectId});
-                    }, 2000);
-                }
+                updateRunDetailDom(run, evalsetMap);
+
+                // 启动静默轮询
+                startRunPolling(params);
 
             } catch (err) {
                 container.innerHTML = `<div class="empty-state"><div class="empty-state-icon">❌</div><div class="empty-state-text">加载失败: ${err.message}</div></div>`;
             }
         }
 
+        function updateRunDetailDom(run, evalsetMap) {
+            const totalEnabled = state.currentRunEvalset
+                ? (state.currentRunEvalset.cases || []).filter(c => c.enabled).length
+                : 0;
+            const completed = run.results?.length || 0;
+            const failed = run.results?.filter(r => !r.passed && !r.skipped_reason).length || 0;
+            const pct = totalEnabled > 0 ? Math.min(100, (completed / totalEnabled) * 100) : (run.status === 'completed' ? 100 : 0);
+
+            const statusRow = document.getElementById('runStatusRow');
+            if (statusRow) {
+                statusRow.innerHTML = `
+                    <span class="status-badge status-${run.status}" style="margin-right: 12px;">
+                        <span class="status-dot"></span>${run.status}
+                    </span>
+                    ${(run.status === 'running' || run.status === 'queued') ? `
+                        <div class="progress-bar" style="display: inline-block; width: 200px; vertical-align: middle;">
+                            <div class="progress-fill" style="width: ${pct}%"></div>
+                        </div>
+                        <span style="margin-left: 8px; color: var(--ink-4); font-size: 12px;">${completed}/${totalEnabled || '?'}</span>
+                    ` : ''}
+                `;
+            }
+
+            const errDiv = document.getElementById('runError');
+            if (errDiv) {
+                errDiv.innerHTML = run.error
+                    ? `<div class="code-block" style="color: var(--red);">Error: ${escapeHtml(run.error)}</div>`
+                    : '';
+            }
+
+            const metrics = document.getElementById('metricsGrid');
+            if (metrics) {
+                const s = run.summary;
+                metrics.innerHTML = `
+                    <div class="metric-card">
+                        <div class="metric-value num">${s ? (s.pass_rate * 100).toFixed(1) + '%' : '-'}</div>
+                        <div class="metric-label">pass rate</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-value num">${s ? formatNumber(s.total_token) : '-'}</div>
+                        <div class="metric-label">总 token</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-value num">${s ? s.token_per_pass.toFixed(1) : '-'}</div>
+                        <div class="metric-label">每万 token 完成率</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-value num">${s ? (s.latency_p50 / 1000).toFixed(1) + 's' : '-'}</div>
+                        <div class="metric-label">P50 延迟</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-value num">${s ? (s.latency_p95 / 1000).toFixed(1) + 's' : '-'}</div>
+                        <div class="metric-label">P95 延迟</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-value num" style="color: ${failed > 0 ? 'var(--red)' : 'inherit'}">${failed}</div>
+                        <div class="metric-label">失败</div>
+                    </div>
+                `;
+            }
+
+            const tbody = document.getElementById('caseTableBody');
+            if (tbody) {
+                tbody.innerHTML = (run.results || []).map((r, i) => {
+                    const cs = evalsetMap[r.case_name] || {};
+                    const evalType = cs.eval_type || '-';
+                    return `
+                        <tr>
+                            <td>
+                                ${r.skipped_reason ? `
+                                    <span class="status-badge status-disabled"><span class="status-dot"></span>跳过</span>
+                                ` : r.passed ? `
+                                    <span class="status-badge status-passed"><span class="status-dot"></span>通过</span>
+                                ` : `
+                                    <span class="status-badge status-failed"><span class="status-dot"></span>失败</span>
+                                `}
+                            </td>
+                            <td>${escapeHtml(r.case_name)}</td>
+                            <td><span class="tag tag-${evalType}">${escapeHtml(evalType)}</span></td>
+                            <td class="num">${(r.score ?? 0).toFixed(1)}</td>
+                            <td class="num">${((r.latency_ms || 0) / 1000).toFixed(1)}s</td>
+                            <td class="num">${r.token_used}${r.token_missing ? '*' : ''}</td>
+                            <td>
+                                <button class="btn btn-sm btn-secondary" onclick="showCaseDetail(${i})">查看</button>
+                            </td>
+                        </tr>
+                    `;
+                }).join('');
+            }
+        }
+
+        // 静默轮询：指数退避，弹窗打开/页面隐藏时暂停
+        let runPollTimer = null;
+        let runPollDelay = 2000;
+        const RUN_POLL_MAX_DELAY = 10000;
+
+        function startRunPolling(params) {
+            stopRunPolling();
+            runPollDelay = 2000;
+            document.removeEventListener('visibilitychange', onVisibilityChange);
+            document.addEventListener('visibilitychange', onVisibilityChange);
+            scheduleRunPoll(params);
+        }
+
+        function stopRunPolling() {
+            if (runPollTimer) { clearTimeout(runPollTimer); runPollTimer = null; }
+        }
+
+        function onVisibilityChange() {
+            const params = state.currentRunParams;
+            if (!params) return;
+            if (document.hidden) {
+                stopRunPolling();
+            } else {
+                // 恢复时立即补拉
+                pollRunOnce(params);
+            }
+        }
+
+        function scheduleRunPoll(params) {
+            stopRunPolling();
+            runPollTimer = setTimeout(() => pollRunOnce(params), runPollDelay);
+        }
+
+        async function pollRunOnce(params) {
+            // 终止条件：run 已结束 / 已离开 run 详情页
+            if (!state.currentRunParams || state.currentRunParams.id !== params.id) return;
+            const status = state.currentRun?.status;
+            if (status === 'completed' || status === 'failed') return;
+
+            // 弹窗打开时暂停轮询，但仍排程下一轮（让用户关闭弹窗后继续）
+            const modal = document.getElementById('caseModal');
+            if (modal && !modal.classList.contains('hidden')) {
+                scheduleRunPoll(params);
+                return;
+            }
+            if (document.hidden) return;
+
+            try {
+                const run = await api(`/runs/${params.id}?project_id=${params.projectId}`);
+                state.currentRun = run;
+                let evalsetMap = {};
+                if (state.currentRunEvalset) {
+                    (state.currentRunEvalset.cases || []).forEach(c => { evalsetMap[c.case_name] = c; });
+                }
+                updateRunDetailDom(run, evalsetMap);
+                // 指数退避
+                runPollDelay = Math.min(RUN_POLL_MAX_DELAY, runPollDelay * 1.5);
+                if (run.status === 'running' || run.status === 'queued') {
+                    scheduleRunPoll(params);
+                }
+            } catch (err) {
+                // 网络错误时降速重试
+                runPollDelay = Math.min(RUN_POLL_MAX_DELAY, runPollDelay * 1.5);
+                scheduleRunPoll(params);
+            }
+        }
+
         function showCaseDetail(index) {
             const run = state.currentRun;
+            if (!run || !run.results || !run.results[index]) return;
             const result = run.results[index];
+            // join 评测集拿 input / expected_output
+            const evalsetMap = {};
+            if (state.currentRunEvalset) {
+                (state.currentRunEvalset.cases || []).forEach(c => { evalsetMap[c.case_name] = c; });
+            }
+            const cs = evalsetMap[result.case_name] || {};
 
             document.getElementById('caseDetailContent').innerHTML = `
                 <div class="comparison-view">
                     <div class="comparison-column">
                         <div class="comparison-header">INPUT</div>
-                        <div class="comparison-content">${result.case_name}</div>
+                        <div class="comparison-content">${escapeHtml(cs.input || result.case_name)}</div>
+                    </div>
+                    <div class="comparison-column">
+                        <div class="comparison-header">EXPECTED</div>
+                        <div class="comparison-content">${escapeHtml(cs.expected_output || cs.output_requirement || '-')}</div>
                     </div>
                     <div class="comparison-column">
                         <div class="comparison-header">ACTUAL OUTPUT</div>
@@ -1256,18 +1920,19 @@
                 <div style="margin-top: 16px;">
                     <span class="status-badge ${result.passed ? 'status-passed' : result.skipped_reason ? 'status-disabled' : 'status-failed'}">
                         <span class="status-dot"></span>
-                        ${result.passed ? '通过' : result.skipped_reason ? '跳过: ' + result.skipped_reason : '失败'}
+                        ${result.passed ? '通过' : result.skipped_reason ? '跳过: ' + escapeHtml(result.skipped_reason) : '失败'}
                     </span>
                     <span style="margin-left: 16px; color: var(--ink-4);">得分: ${result.score}</span>
-                    <span style="margin-left: 16px; color: var(--ink-4);">延迟: ${(result.latency_ms / 1000).toFixed(2)}s</span>
-                    <span style="margin-left: 16px; color: var(--ink-4);">token: ${result.token_used}</span>
+                    <span style="margin-left: 16px; color: var(--ink-4);">延迟: ${((result.latency_ms || 0) / 1000).toFixed(2)}s</span>
+                    <span style="margin-left: 16px; color: var(--ink-4);">token: ${result.token_used}${result.token_missing ? ' (无法统计)' : ''}</span>
                 </div>
             `;
             document.getElementById('caseModal').classList.remove('hidden');
         }
 
         function closeCaseDetail() {
-            document.getElementById('caseModal').classList.add('hidden');
+            const modal = document.getElementById('caseModal');
+            if (modal) modal.classList.add('hidden');
         }
 
         // ==================== 模态框 ====================
@@ -1328,9 +1993,399 @@
             }
         }
 
-        function showRunModal(projectId) {
-            state.currentProject && switchTab('evalsets');
-            showToast('请先保存评测集配置', 'warning');
+        // ==================== 评测集导入 ====================
+        function showImportModal(evalsetId, projectId) {
+            const modal = document.createElement('div');
+            modal.className = 'modal-overlay';
+            modal.id = 'importModal';
+            modal.innerHTML = `
+                <div class="modal" style="max-width: 800px;">
+                    <div class="modal-header">
+                        <span class="modal-title">导入评测数据</span>
+                        <button class="modal-close" onclick="closeModal('importModal')">×</button>
+                    </div>
+                    <div class="modal-body" style="max-height: 70vh; overflow-y: auto;">
+                        <div class="tabs" style="margin-bottom: 16px;">
+                            <div class="tab active" data-tab="file" onclick="switchImportTab('file')">文件导入</div>
+                            <div class="tab" data-tab="manual" onclick="switchImportTab('manual')">手动输入</div>
+                        </div>
+                        
+                        <!-- 文件导入 -->
+                        <div id="importFileTab" class="tab-content active">
+                            <div class="import-drop-zone" id="dropZone" onclick="document.getElementById('fileInput').click()">
+                                <div style="text-align: center; padding: 40px;">
+                                    <div style="font-size: 48px; margin-bottom: 16px;">📁</div>
+                                    <div style="color: var(--ink-3); margin-bottom: 8px;">拖拽文件到此处或点击选择文件</div>
+                                    <div style="color: var(--ink-4); font-size: 12px;">支持 .csv、.json 格式</div>
+                                </div>
+                                <input type="file" id="fileInput" accept=".csv,.json" style="display: none;" onchange="handleFileSelect(this)">
+                            </div>
+                            <div id="filePreview" style="display: none; margin-top: 16px;"></div>
+                            <div id="importProgress" style="display: none; margin-top: 16px;"></div>
+                        </div>
+                        
+                        <!-- 手动输入 -->
+                        <div id="importManualTab" class="tab-content" style="display: none;">
+                            <div class="form-group">
+                                <label class="form-label">输入 JSON 格式的评测数据</label>
+                                <textarea class="form-input mono" id="manualImportData" placeholder='[{"case_name": "测试用例1", "input": "输入文本", "eval_type": "exact", "expected_output": "期望输出"}, ...]' style="min-height: 200px;"></textarea>
+                                <div style="margin-top: 8px; color: var(--ink-4); font-size: 12px;">
+                                    支持格式：JSON 数组，每项包含 case_name、input、eval_type 必填字段
+                                </div>
+                            </div>
+                            <button class="btn btn-secondary" onclick="validateManualInput()">验证格式</button>
+                            <div id="manualPreview" style="margin-top: 16px;"></div>
+                        </div>
+                        
+                        <!-- 导入选项 -->
+                        <div id="importOptions" style="display: none; margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--ink-6);">
+                            <div class="form-group">
+                                <label class="form-label">导入模式</label>
+                                <div style="display: flex; gap: 16px;">
+                                    <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+                                        <input type="radio" name="importMode" value="merge" checked> 合并（追加到现有数据）
+                                    </label>
+                                    <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+                                        <input type="radio" name="importMode" value="replace"> 替换（清空后导入）
+                                    </label>
+                                </div>
+                            </div>
+                            <div style="margin-top: 16px;">
+                                <button class="btn btn-primary" id="confirmImportBtn" onclick="confirmImport('${evalsetId}', '${projectId}')" disabled>确认导入</button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <div id="importSummary" style="flex: 1; color: var(--ink-4);"></div>
+                        <button class="btn btn-secondary" onclick="closeModal('importModal')">关闭</button>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(modal);
+        }
+
+        function switchImportTab(tab) {
+            const modal = document.getElementById('importModal');
+            if (!modal) return;
+            modal.querySelectorAll('.tabs .tab').forEach(t => t.classList.remove('active'));
+            modal.querySelector(`.tab[data-tab="${tab}"]`).classList.add('active');
+            document.getElementById('importFileTab').style.display = tab === 'file' ? 'block' : 'none';
+            document.getElementById('importManualTab').style.display = tab === 'manual' ? 'block' : 'none';
+        }
+
+        let importData = { cases: [], errors: [], total: 0 };
+
+        function handleFileSelect(input) {
+            const file = input.files[0];
+            if (!file) return;
+            parseFile(file);
+        }
+
+        function parseFile(file) {
+            const reader = new FileReader();
+            reader.onload = e => {
+                try {
+                    const content = e.target.result;
+                    if (file.name.endsWith('.json')) {
+                        importData = validateImportData(JSON.parse(content));
+                    } else if (file.name.endsWith('.csv')) {
+                        importData = validateImportData(parseCSVContent(content));
+                    } else {
+                        throw new Error('不支持的文件格式');
+                    }
+                    showImportPreview();
+                } catch (err) {
+                    showToast('文件解析失败: ' + err.message, 'error');
+                }
+            };
+            reader.readAsText(file);
+        }
+
+        function parseCSVContent(content) {
+            const lines = content.replace(/^\ufeff/, '').split('\n').filter(l => l.trim());
+            if (lines.length < 2) throw new Error('CSV 文件内容为空或格式错误');
+            const headers = parseCSVLine(lines[0]);
+            const rows = [];
+            for (let i = 1; i < lines.length; i++) {
+                const values = parseCSVLine(lines[i]);
+                const obj = {};
+                headers.forEach((h, idx) => obj[h] = values[idx] || '');
+                rows.push(obj);
+            }
+            return rows;
+        }
+
+        function parseCSVLine(line) {
+            const values = [];
+            let current = '';
+            let inQuotes = false;
+            for (let i = 0; i < line.length; i++) {
+                const char = line[i];
+                if (char === '"') {
+                    inQuotes = !inQuotes;
+                } else if (char === ',' && !inQuotes) {
+                    values.push(current.trim());
+                    current = '';
+                } else {
+                    current += char;
+                }
+            }
+            values.push(current.trim());
+            return values;
+        }
+
+        function validateImportData(rawCases) {
+            if (!Array.isArray(rawCases)) {
+                throw new Error('数据格式错误：需要数组');
+            }
+            const cases = [];
+            const errors = [];
+            const validTypes = ['exact', 'contains', 'not_contains', 'length', 'llm_judge'];
+            rawCases.forEach((item, index) => {
+                const rowNum = index + 1;
+                const caseErrors = [];
+                if (!item.case_name) caseErrors.push('case_name 必填');
+                if (!item.input) caseErrors.push('input 必填');
+                if (!item.eval_type) caseErrors.push('eval_type 必填');
+                if (item.eval_type && !validTypes.includes(item.eval_type)) {
+                    caseErrors.push('eval_type 无效: ' + item.eval_type);
+                }
+                if (caseErrors.length > 0) {
+                    errors.push({ row: rowNum, errors: caseErrors });
+                } else {
+                    cases.push({
+                        id: item.id || 'import-' + Date.now() + '-' + rowNum,
+                        case_name: item.case_name,
+                        input: item.input || '',
+                        expected_output: item.expected_output || null,
+                        output_requirement: item.output_requirement || null,
+                        eval_type: item.eval_type || 'exact',
+                        eval_params: typeof item.eval_params === 'object' ? item.eval_params : {},
+                        enabled: item.enabled !== false
+                    });
+                }
+            });
+            return { cases, errors, total: rawCases.length };
+        }
+
+        function showImportPreview() {
+            const previewDiv = document.getElementById('filePreview');
+            const optionsDiv = document.getElementById('importOptions');
+            const summaryDiv = document.getElementById('importSummary');
+            const confirmBtn = document.getElementById('confirmImportBtn');
+            if (!previewDiv) return;
+
+            previewDiv.style.display = 'block';
+            if (importData.errors.length > 0) {
+                previewDiv.innerHTML =
+                    '<div style="background: var(--red-bg); color: var(--red); padding: 12px; border-radius: 6px;">' +
+                    '<div style="font-weight: 600; margin-bottom: 8px;">格式错误 (' + importData.errors.length + ' 条)</div>' +
+                    importData.errors.slice(0, 5).map(e => '<div style="margin: 4px 0;">行 ' + e.row + ': ' + e.errors.join(', ') + '</div>').join('') +
+                    (importData.errors.length > 5 ? '<div style="margin-top: 4px;">...还有 ' + (importData.errors.length - 5) + ' 条错误</div>' : '') +
+                    '</div>';
+                optionsDiv.style.display = 'none';
+                if (confirmBtn) confirmBtn.disabled = true;
+            } else {
+                previewDiv.innerHTML =
+                    '<div style="padding: 12px; background: var(--green-bg); border-radius: 6px;">' +
+                    '<span style="color: var(--green);">✓</span> 验证通过，共 ' + importData.cases.length + ' 条用例</div>';
+                optionsDiv.style.display = 'block';
+                if (confirmBtn) confirmBtn.disabled = false;
+            }
+            summaryDiv.innerHTML = '总计: ' + importData.total + ' 条，成功: ' + importData.cases.length + '，失败: ' + importData.errors.length;
+        }
+
+        function validateManualInput() {
+            const input = document.getElementById('manualImportData').value;
+            const previewDiv = document.getElementById('manualPreview');
+            if (!input.trim()) {
+                showToast('请输入数据', 'warning');
+                return;
+            }
+            try {
+                const data = JSON.parse(input);
+                importData = validateImportData(data);
+                showImportPreview();
+                previewDiv.innerHTML = importData.errors.length > 0
+                    ? '<div style="color: var(--red);">验证失败: ' + importData.errors.length + ' 条错误</div>'
+                    : '<div style="color: var(--green);">✓ 验证通过: ' + importData.cases.length + ' 条用例</div>';
+                if (importData.errors.length > 0) {
+                    previewDiv.innerHTML += importData.errors.slice(0, 3).map(e =>
+                        '<div style="font-size: 12px; color: var(--ink-3); margin-top: 4px;">行' + e.row + ': ' + e.errors.join(', ') + '</div>'
+                    ).join('');
+                }
+            } catch (err) {
+                previewDiv.innerHTML = '<div style="color: var(--red);">JSON 解析失败: ' + err.message + '</div>';
+            }
+        }
+
+        async function confirmImport(evalsetId, projectId) {
+            if (importData.cases.length === 0) {
+                showToast('没有可导入的数据', 'warning');
+                return;
+            }
+            const mode = document.querySelector('input[name="importMode"]:checked').value;
+            const progressDiv = document.getElementById('importProgress');
+            const confirmBtn = document.getElementById('confirmImportBtn');
+            progressDiv.style.display = 'block';
+            progressDiv.innerHTML = '<div style="color: var(--ink-3);">导入中...</div>';
+            confirmBtn.disabled = true;
+            try {
+                const currentEvalset = await api('/evalsets/' + evalsetId + '?project_id=' + projectId);
+                let newCases;
+                if (mode === 'replace') {
+                    newCases = importData.cases;
+                } else {
+                    const existingIds = new Set((currentEvalset.cases || []).map(c => c.id));
+                    newCases = (currentEvalset.cases || []).concat(
+                        importData.cases.filter(c => !existingIds.has(c.id))
+                    );
+                }
+                await api('/evalsets/' + evalsetId, {
+                    method: 'PUT',
+                    body: JSON.stringify({ ...currentEvalset, cases: newCases })
+                });
+                progressDiv.innerHTML = '<div style="color: var(--green);">✓ 导入完成</div>';
+                showToast('成功导入 ' + importData.cases.length + ' 条用例', 'success');
+                switchTab('evalsets');
+                closeModal('importModal');
+            } catch (err) {
+                progressDiv.innerHTML = '<div style="color: var(--red);">导入失败: ' + err.message + '</div>';
+                confirmBtn.disabled = false;
+            }
+        }
+
+        // 拖拽：用事件委托，因为模态框是动态创建的
+        document.addEventListener('dragover', e => {
+            const dz = document.getElementById('dropZone');
+            if (dz && dz.contains(e.target)) { e.preventDefault(); dz.style.borderColor = 'var(--accent)'; }
+        });
+        document.addEventListener('dragleave', e => {
+            const dz = document.getElementById('dropZone');
+            if (dz) dz.style.borderColor = '';
+        });
+        document.addEventListener('drop', e => {
+            const dz = document.getElementById('dropZone');
+            if (dz && dz.contains(e.target)) {
+                e.preventDefault();
+                dz.style.borderColor = '';
+                const file = e.dataTransfer.files[0];
+                if (file) parseFile(file);
+            }
+        });
+
+        async function runProjectEval(projectId) {
+            // 列表页快捷运行：跳到详情页并打开发起评测弹窗
+            // 详情页 renderProjectDetailPage 会设置 state.currentProject，showRunModal 依赖它
+            navigateTo('project-detail', { id: projectId, openRunModal: true });
+        }
+
+        async function showRunModal(projectId) {
+            const modal = document.createElement('div');
+            modal.className = 'modal-overlay';
+            modal.id = 'runModal';
+            modal.innerHTML = `
+                <div class="modal">
+                    <div class="modal-header">
+                        <span class="modal-title">发起评测</span>
+                        <button class="modal-close" onclick="closeModal('runModal')">×</button>
+                    </div>
+                    <div class="modal-body">
+                        <div id="runModalBody"><div style="color: var(--ink-4);">加载中...</div></div>
+                    </div>
+                    <div class="modal-footer">
+                        <button class="btn btn-secondary" onclick="closeModal('runModal')">取消</button>
+                        <button class="btn btn-primary" id="confirmRunBtn" onclick="confirmRunEval('${projectId}')" disabled>发起评测</button>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(modal);
+
+            const body = document.getElementById('runModalBody');
+            try {
+                const data = await api(`/projects/${projectId}/evalsets`);
+                const evalsets = data.evalsets || [];
+                state.currentEvalsets = evalsets;
+                const proj = state.currentProject;
+                const isJudgeReady = !!(proj?.judge_config?.base_url && proj?.judge_config?.model);
+                const isTargetReady = !!(proj?.target_config?.base_url && proj?.target_config?.model);
+
+                if (evalsets.length === 0) {
+                    body.innerHTML = `
+                        <div class="empty-state" style="padding: 24px 0;">
+                            <div class="empty-state-icon">📋</div>
+                            <div class="empty-state-text">还没有评测集，请先创建并导入用例</div>
+                            <button class="btn btn-secondary" onclick="closeModal('runModal'); switchTab('evalsets')">前往评测集</button>
+                        </div>
+                    `;
+                    return;
+                }
+
+                const hasLlmCases = evalsets.some(e => e.cases.some(c => c.enabled && c.eval_type === 'llm_judge'));
+                const warnJudge = hasLlmCases && !isJudgeReady;
+                const warnTarget = !isTargetReady;
+
+                body.innerHTML = `
+                    <div class="form-group">
+                        <label class="form-label">选择评测集</label>
+                        <select class="form-input" id="runEvalsetSelect" onchange="updateRunEvalsetInfo()">
+                            ${evalsets.map(e => {
+                                const enabledN = (e.cases || []).filter(c => c.enabled).length;
+                                return `<option value="${escapeHtml(e.id)}">${escapeHtml(e.name)}（启用 ${enabledN} / 共 ${(e.cases || []).length}）</option>`;
+                            }).join('')}
+                        </select>
+                    </div>
+                    <div id="runEvalsetInfo" style="margin-top: 12px;"></div>
+                    ${(warnTarget || warnJudge) ? `
+                        <div style="margin-top: 12px; padding: 10px 12px; background: var(--amber-bg); border: 1px solid var(--amber-bd); border-radius: var(--radius-md); color: var(--amber); font-size: 12px;">
+                            ${warnTarget ? '<div>⚠ Target API 未配置完整，发起后所有 case 将失败</div>' : ''}
+                            ${warnJudge ? '<div>⚠ 检测到 llm_judge 类型 case 但 Judge API 未配置，将自动跳过</div>' : ''}
+                        </div>
+                    ` : ''}
+                `;
+                updateRunEvalsetInfo();
+                const confirmBtn = document.getElementById('confirmRunBtn');
+                if (confirmBtn) confirmBtn.disabled = false;
+            } catch (err) {
+                body.innerHTML = `<div style="color: var(--red);">加载失败: ${escapeHtml(err.message)}</div>`;
+            }
+        }
+
+        function updateRunEvalsetInfo() {
+            const select = document.getElementById('runEvalsetSelect');
+            const info = document.getElementById('runEvalsetInfo');
+            if (!select || !info || !state.currentEvalsets) return;
+            const evalset = state.currentEvalsets.find(e => e.id === select.value);
+            if (!evalset) return;
+            const enabledCases = (evalset.cases || []).filter(c => c.enabled);
+            const byType = {};
+            enabledCases.forEach(c => { byType[c.eval_type] = (byType[c.eval_type] || 0) + 1; });
+            const typeBreakdown = Object.entries(byType).map(([t, n]) => `<span class="tag tag-${t}" style="margin-right: 4px;">${escapeHtml(t)} ×${n}</span>`).join('');
+            info.innerHTML = `
+                <div style="color: var(--ink-3); font-size: 12px;">将运行 <b style="color: var(--ink-1);">${enabledCases.length}</b> 条启用用例</div>
+                <div style="margin-top: 6px;">${typeBreakdown || '<span style="color: var(--red);">无启用用例</span>'}</div>
+            `;
+            const confirmBtn = document.getElementById('confirmRunBtn');
+            if (confirmBtn) confirmBtn.disabled = enabledCases.length === 0;
+        }
+
+        async function confirmRunEval(projectId) {
+            const select = document.getElementById('runEvalsetSelect');
+            if (!select) return;
+            const evalsetId = select.value;
+            const confirmBtn = document.getElementById('confirmRunBtn');
+            if (confirmBtn) { confirmBtn.disabled = true; confirmBtn.textContent = '发起中...'; }
+            try {
+                const run = await api('/runs', {
+                    method: 'POST',
+                    body: JSON.stringify({ project_id: projectId, evalset_id: evalsetId })
+                });
+                closeModal('runModal');
+                showToast('评测已开始');
+                navigateTo('run-detail', { id: run.run_id, projectId });
+            } catch (err) {
+                if (confirmBtn) { confirmBtn.disabled = false; confirmBtn.textContent = '发起评测'; }
+            }
         }
 
         async function testTargetConfig(projectId) {
@@ -1338,23 +2393,57 @@
             resultDiv.innerHTML = '<span class="text-muted">测试中...</span>';
 
             try {
-                const res = await api('/test/target', {
+                const res = await api(`/test/target?project_id=${encodeURIComponent(projectId)}`, {
                     method: 'POST',
                     body: JSON.stringify({
                         base_url: document.getElementById('targetBaseUrl').value,
-                        api_key: 'test',
+                        api_key: readSecret('targetApiKey') || '__UNCHANGED__',
                         model: document.getElementById('targetModel').value,
-                        request_template: document.getElementById('targetTemplate').value
+                        request_template: document.getElementById('targetTemplate').value,
+                        auth: collectAuth(),
+                        response_mapping: [],
+                        response_parsing: collectResponseParsing()
                     })
                 });
 
                 if (res.ok) {
                     resultDiv.innerHTML = `<span style="color: var(--green);">✓ ${res.latency_ms}ms · ${res.token_used} tokens</span>`;
                 } else {
-                    resultDiv.innerHTML = `<span style="color: var(--red);">✗ ${res.error?.message || '失败'}</span>`;
+                    resultDiv.innerHTML = `<span style="color: var(--red);">✗ ${escapeHtml(res.error?.message || '失败')}</span>`;
                 }
             } catch (err) {
-                resultDiv.innerHTML = `<span style="color: var(--red);">✗ ${err.message}</span>`;
+                resultDiv.innerHTML = `<span style="color: var(--red);">✗ ${escapeHtml(err.message)}</span>`;
+            }
+        }
+
+        async function testParsingConfig() {
+            const resultDiv = document.getElementById('parsingTestResult');
+            const sample = document.getElementById('parsingSample').value.trim();
+            if (!sample) {
+                resultDiv.innerHTML = '<span style="color: var(--red);">请填入样例响应</span>';
+                return;
+            }
+            resultDiv.innerHTML = '<span class="text-muted">测试中...</span>';
+            try {
+                const res = await api('/test/parsing', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        response_parsing: collectResponseParsing(),
+                        sample_response: sample
+                    })
+                });
+                if (res.ok) {
+                    resultDiv.innerHTML = `
+                        <div style="background: var(--green-bg); border: 1px solid var(--green-bd); padding: 10px 12px; border-radius: var(--radius-md);">
+                            <div style="color: var(--green); margin-bottom: 6px;">✓ output_found=${res.output_found} · token=${res.token_used}${res.token_missing ? ' (缺失)' : ''}</div>
+                            <div class="code-block" style="margin-top: 6px;">${escapeHtml(res.output)}</div>
+                        </div>
+                    `;
+                } else {
+                    resultDiv.innerHTML = `<span style="color: var(--red);">✗ ${escapeHtml(res.error?.message || '失败')}</span>`;
+                }
+            } catch (err) {
+                resultDiv.innerHTML = `<span style="color: var(--red);">✗ ${escapeHtml(err.message)}</span>`;
             }
         }
 
@@ -1363,11 +2452,11 @@
             resultDiv.innerHTML = '<span class="text-muted">测试中...</span>';
 
             try {
-                const res = await api('/test/judge', {
+                const res = await api(`/test/judge?project_id=${encodeURIComponent(projectId)}`, {
                     method: 'POST',
                     body: JSON.stringify({
                         base_url: document.getElementById('judgeBaseUrl').value,
-                        api_key: document.getElementById('judgeApiKey').value,
+                        api_key: readSecret('judgeApiKey') || '__UNCHANGED__',
                         model: document.getElementById('judgeModel').value,
                         prompt_template: document.getElementById('judgePrompt').value,
                         input: '测试输入',
@@ -1379,10 +2468,10 @@
                 if (res.ok) {
                     resultDiv.innerHTML = `<span style="color: var(--green);">✓ 得分: ${res.score} · ${res.passed ? '通过' : '不通过'}</span>`;
                 } else {
-                    resultDiv.innerHTML = `<span style="color: var(--red);">✗ ${res.error?.message || '失败'}</span>`;
+                    resultDiv.innerHTML = `<span style="color: var(--red);">✗ ${escapeHtml(res.error?.message || '失败')}</span>`;
                 }
             } catch (err) {
-                resultDiv.innerHTML = `<span style="color: var(--red);">✗ ${err.message}</span>`;
+                resultDiv.innerHTML = `<span style="color: var(--red);">✗ ${escapeHtml(err.message)}</span>`;
             }
         }
 
@@ -1393,26 +2482,31 @@
                 task_shape: state.currentProject.task_shape,
                 judge_config: {
                     base_url: document.getElementById('judgeBaseUrl').value,
-                    api_key: document.getElementById('judgeApiKey').value,
+                    api_key: readSecret('judgeApiKey') || '__UNCHANGED__',
                     model: document.getElementById('judgeModel').value,
                     prompt_template: document.getElementById('judgePrompt').value
                 },
                 target_config: {
                     base_url: document.getElementById('targetBaseUrl').value,
-                    api_key: 'test',
+                    api_key: readSecret('targetApiKey') || '__UNCHANGED__',
                     model: document.getElementById('targetModel').value,
                     request_template: document.getElementById('targetTemplate').value,
-                    auth: { type: 'none' },
-                    response_mapping: []
+                    auth: collectAuth(),
+                    response_mapping: [],
+                    response_parsing: collectResponseParsing()
                 }
             };
 
             try {
-                await api(`/projects/${projectId}`, {
+                const updated = await api(`/projects/${projectId}`, {
                     method: 'PUT',
                     body: JSON.stringify(config)
                 });
+                // 更新本地缓存，让后续操作看到最新掩码状态
+                state.currentProject = updated;
                 showToast('保存成功');
+                // 重新渲染配置页，把掩码状态刷新（用户改过的字段恢复为 masked 占位）
+                switchTab('config');
             } catch (err) {}
         }
 
@@ -1488,8 +2582,21 @@
 
         // ==================== 初始化 ====================
         document.addEventListener('DOMContentLoaded', () => {
-            navigateTo('projects');
+            // 优先从 hash 恢复，没有 hash 默认回列表
+            const parsed = parseHash(location.hash);
+            if (parsed) {
+                runNavigation(parsed.page, parsed.params || {});
+            } else {
+                navigateTo('projects');
+            }
+            // 启动运行中任务胶囊轮询
+            loadRunningTasks();
+            setInterval(loadRunningTasks, 5000);
         });
+
+        // 暴露给 window，方便 onclick 内联调用
+        window.navigateTo = navigateTo;
+        window.runNavigation = runNavigation;
     </script>
 </body>
 </html>

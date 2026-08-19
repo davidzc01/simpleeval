@@ -5,7 +5,8 @@ import httpx
 import re
 from typing import Optional, Union
 
-from .models import AuthConfig, ResponseMapping
+from .models import AuthConfig, ResponseMapping, ResponseParsing
+from .parser import extract_output, count_tokens
 
 
 class APIError(Exception):
@@ -84,8 +85,15 @@ async def call_target(
     request_template: str = "{input}",
     auth: Optional[AuthConfig] = None,
     response_mapping: Optional[list[ResponseMapping]] = None,
+    response_parsing: Optional[ResponseParsing] = None,
 ) -> tuple[str, int]:
-    """调用被评测 API，返回 (输出文本, 消耗 token 数)"""
+    """调用被评测 API，返回 (输出文本, 消耗 token 数)
+
+    解析优先级：
+    1. response_parsing（四键模型，parser 层接管）
+    2. response_mapping（旧设计，_extract_response 兼容）
+    3. OpenAI 兼容默认（choices[0].message.content + usage.total_tokens）
+    """
     auth = auth or AuthConfig()
     response_mapping = response_mapping or []
 
@@ -129,18 +137,37 @@ async def call_target(
     except (KeyError, ValueError, TypeError) as e:
         raise ResponseFormatError(f"API 返回格式错误: {e}")
 
-    # 提取 token 使用量
+    # 解析响应：response_parsing 优先，其次 response_mapping，最后 OpenAI 默认
     try:
         data = resp.json()
+    except (ValueError, TypeError) as e:
+        raise ResponseFormatError(f"API 返回非 JSON: {e}")
+
+    if response_parsing is not None:
+        # 四键模型：parser 层接管输出与 token
+        out, out_found = extract_output(data, response_parsing.output_paths)
+        if not out_found:
+            out = "[PARSE_ERROR] 未命中任何输出路径"
+        token_used, _missing = count_tokens(
+            data, response_parsing.token_paths,
+            response_parsing.token_fields, response_parsing.token_scope,
+        )
+        return out, token_used
+
+    if response_mapping:
+        # 旧设计：_extract_response 兼容
+        output = _extract_response(json.dumps(data), response_mapping)
+        token_used = data.get("usage", {}).get("total_tokens", 0)
+        return output, token_used
+
+    # OpenAI 兼容默认
+    try:
         token_used = data.get("usage", {}).get("total_tokens", 0)
         raw_output = data["choices"][0]["message"]["content"]
     except (KeyError, TypeError) as e:
         raise ResponseFormatError(f"无法解析 API 响应: {e}")
 
-    # 应用响应映射
-    output = _extract_response(json.dumps(data), response_mapping) if response_mapping else raw_output
-
-    return output, token_used
+    return raw_output, token_used
 
 
 async def judge_with_llm(

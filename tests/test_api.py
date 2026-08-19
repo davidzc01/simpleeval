@@ -94,6 +94,79 @@ class TestProjectsAPI:
         assert response.status_code == 200
         assert response.json()["name"] == "新名称"
 
+    def test_update_project_with_sentinel(self, client):
+        """更新项目时使用 __UNCHANGED__ 哨兵值保留原 api_key"""
+        create_response = client.post(
+            "/api/projects",
+            json={"name": "哨兵测试", "task_shape": "general"}
+        )
+        project_id = create_response.json()["id"]
+
+        # 设置真实 api_key
+        proj = client.get(f"/api/projects/{project_id}").json()
+        proj["judge_config"]["api_key"] = "sk-real-secret-123"
+        proj["target_config"]["api_key"] = "sk-target-real-456"
+        client.put(f"/api/projects/{project_id}", json=proj)
+
+        # 用哨兵值更新其它字段，不应覆盖原 key
+        proj = client.get(f"/api/projects/{project_id}").json()
+        proj["name"] = "改名后"
+        proj["judge_config"]["api_key"] = "__UNCHANGED__"
+        proj["target_config"]["api_key"] = "__UNCHANGED__"
+        response = client.put(f"/api/projects/{project_id}", json=proj)
+        assert response.status_code == 200
+        assert response.json()["name"] == "改名后"
+        # 接口仍返回掩码
+        assert response.json()["judge_config"]["api_key"] == {"masked": True}
+
+        # 直接读存储验证原 key 仍在
+        import json
+        from app.storage import PROJECTS_DIR
+        proj_file = PROJECTS_DIR / f"{project_id}.json"
+        stored = json.loads(proj_file.read_text(encoding="utf-8"))
+        assert stored["judge_config"]["api_key"] == "sk-real-secret-123"
+        assert stored["target_config"]["api_key"] == "sk-target-real-456"
+
+    def test_list_project_evalsets_empty(self, client):
+        """列出项目下的评测集（空）"""
+        create_response = client.post(
+            "/api/projects",
+            json={"name": "评测集列表测试", "task_shape": "general"}
+        )
+        project_id = create_response.json()["id"]
+
+        response = client.get(f"/api/projects/{project_id}/evalsets")
+        assert response.status_code == 200
+        assert response.json() == {"evalsets": []}
+
+    def test_list_project_evalsets_with_data(self, client):
+        """列出项目下的评测集（有数据）"""
+        create_response = client.post(
+            "/api/projects",
+            json={"name": "评测集列表测试2", "task_shape": "general"}
+        )
+        project_id = create_response.json()["id"]
+
+        # 创建两个评测集
+        client.post("/api/evalsets", json={
+            "project_id": project_id, "name": "set1", "cases": []
+        })
+        client.post("/api/evalsets", json={
+            "project_id": project_id, "name": "set2", "cases": []
+        })
+
+        response = client.get(f"/api/projects/{project_id}/evalsets")
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data["evalsets"]) == 2
+        names = {e["name"] for e in data["evalsets"]}
+        assert names == {"set1", "set2"}
+
+    def test_list_project_evalsets_project_not_found(self, client):
+        """项目不存在时列评测集返回 404"""
+        response = client.get("/api/projects/proj-notexist/evalsets")
+        assert response.status_code == 404
+
 
 class TestEvalSetsAPI:
     """EvalSets 接口测试"""
@@ -413,6 +486,125 @@ class TestTestEndpoints:
         data = response.json()
         assert data["ok"] is True
         assert "测试回复" in data["result"]
+
+    def test_test_parsing_openai_compatible(self, client):
+        """测试响应解析 - OpenAI 兼容形态"""
+        response = client.post(
+            "/api/test/parsing",
+            json={
+                "response_parsing": {
+                    "output_paths": ["$.choices[0].message.content"],
+                    "token_paths": ["$.usage.total_tokens"],
+                },
+                "sample_response": json.dumps({
+                    "choices": [{"message": {"content": "解析输出"}}],
+                    "usage": {"total_tokens": 88},
+                }),
+            },
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["ok"] is True
+        assert data["output"] == "解析输出"
+        assert data["token_used"] == 88
+        assert data["token_missing"] is False
+        assert data["output_found"] is True
+
+    def test_test_parsing_fallback_chain(self, client):
+        """测试响应解析 - fallback 链命中第二条"""
+        response = client.post(
+            "/api/test/parsing",
+            json={
+                "response_parsing": {
+                    "output_paths": [
+                        "$.choices[0].message.content",
+                        "$.output",
+                    ],
+                },
+                "sample_response": json.dumps({"output": "fallback 命中"}),
+            },
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["output"] == "fallback 命中"
+        assert data["output_found"] is True
+        assert data["token_missing"] is True
+
+    def test_test_parsing_token_fields_recursive(self, client):
+        """测试响应解析 - token_fields 递归求和"""
+        response = client.post(
+            "/api/test/parsing",
+            json={
+                "response_parsing": {
+                    "output_paths": ["$.text"],
+                    "token_fields": ["total_tokens"],
+                },
+                "sample_response": json.dumps({
+                    "text": "回复",
+                    "trace": [{"total_tokens": 30}, {"total_tokens": 40}],
+                }),
+            },
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["output"] == "回复"
+        assert data["token_used"] == 70
+        assert data["token_missing"] is False
+
+    def test_test_parsing_token_scope(self, client):
+        """测试响应解析 - token_scope 过滤"""
+        response = client.post(
+            "/api/test/parsing",
+            json={
+                "response_parsing": {
+                    "output_paths": ["$.data[-1].pluginOutput.text"],
+                    "token_fields": ["total_tokens"],
+                    "token_scope": {"moduleType": "tools"},
+                },
+                "sample_response": json.dumps({
+                    "data": [
+                        {"moduleType": "tools", "total_tokens": 30, "pluginOutput": {"text": "first"}},
+                        {"moduleType": "chat", "total_tokens": 999},
+                        {"moduleType": "tools", "total_tokens": 20, "pluginOutput": {"text": "final"}},
+                    ],
+                }),
+            },
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["output"] == "final"
+        assert data["token_used"] == 50
+        assert data["token_missing"] is False
+
+    def test_test_parsing_output_miss(self, client):
+        """测试响应解析 - 输出路径全部未命中"""
+        response = client.post(
+            "/api/test/parsing",
+            json={
+                "response_parsing": {"output_paths": ["$.choices[0].message.content"]},
+                "sample_response": json.dumps({"other": "x"}),
+            },
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["ok"] is True
+        assert data["output_found"] is False
+        assert data["output"] == ""
+
+    def test_test_parsing_all_empty(self, client):
+        """测试响应解析 - 全部留空"""
+        response = client.post(
+            "/api/test/parsing",
+            json={
+                "response_parsing": {},
+                "sample_response": json.dumps({"any": "thing"}),
+            },
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["token_used"] == 0
+        assert data["token_missing"] is True
+        assert data["output_found"] is False
 
     def test_test_judge_success(self, client):
         """测试 Judge - 成功"""

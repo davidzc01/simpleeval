@@ -12,7 +12,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Form
 from .models import (
     Project, EvalSet, EvalRun, EvalCase,
     CreateProjectRequest, CreateEvalSetRequest, RunEvalRequest,
-    TestTargetRequest, TestMappingRequest, TestJudgeRequest,
+    TestTargetRequest, TestMappingRequest, TestParsingRequest, TestJudgeRequest,
     CaseResult, ErrorResponse,
 )
 from .storage import (
@@ -119,15 +119,43 @@ async def get_project_detail(project_id: str):
 
 @router.put("/projects/{project_id}")
 async def update_project(project_id: str, project: Project):
-    """全量更新项目配置"""
+    """全量更新项目配置（支持 __UNCHANGED__ 哨兵值保留原 secret）"""
     existing = get_project(project_id)
     if not existing:
         project_not_found(project_id)
 
-    # 保持 ID 不变
     project.id = project_id
+
+    # 哨兵值处理：提交 "__UNCHANGED__" 表示保留原值，避免掩码字符串覆盖真实 secret
+    if project.judge_config.api_key == "__UNCHANGED__":
+        project.judge_config.api_key = existing.judge_config.api_key
+    if project.target_config.api_key == "__UNCHANGED__":
+        project.target_config.api_key = existing.target_config.api_key
+
+    auth = project.target_config.auth
+    existing_auth = existing.target_config.auth
+    if auth and existing_auth:
+        if auth.bearer_token == "__UNCHANGED__":
+            auth.bearer_token = existing_auth.bearer_token
+        if auth.api_key_value == "__UNCHANGED__":
+            auth.api_key_value = existing_auth.api_key_value
+        for i, cookie in enumerate(auth.cookies):
+            if cookie.get("value") == "__UNCHANGED__" and i < len(existing_auth.cookies):
+                cookie["value"] = existing_auth.cookies[i].get("value")
+
     save_project(project)
     return _project_to_response(project)
+
+
+@router.get("/projects/{project_id}/evalsets")
+async def list_project_evalsets(project_id: str):
+    """列出项目下所有评测集（列表项不含 cases 明细以外的字段）"""
+    project = get_project(project_id)
+    if not project:
+        project_not_found(project_id)
+    evalsets = list_evalsets(project_id)
+    # 列表项精简：包含 id/name/project_id/cases（前端表格需要 cases）
+    return {"evalsets": [e.model_dump() for e in evalsets]}
 
 
 # ============== EvalSets ==============
@@ -373,19 +401,32 @@ async def export_run(run_id: str, project_id: str):
 # ============== Test 端点 ==============
 
 @router.post("/test/target")
-async def test_target(req: TestTargetRequest):
-    """测试目标 API"""
+async def test_target(req: TestTargetRequest, project_id: Optional[str] = None):
+    """测试目标 API（支持 __UNCHANGED__ 哨兵值，需带 project_id 查询参数）"""
     try:
         import time
+        api_key = req.api_key
+        auth = req.auth
+        if project_id:
+            saved = get_project(project_id)
+            if saved:
+                if api_key == "__UNCHANGED__":
+                    api_key = saved.target_config.api_key
+                if auth and saved.target_config.auth:
+                    if auth.bearer_token == "__UNCHANGED__":
+                        auth.bearer_token = saved.target_config.auth.bearer_token
+                    if auth.api_key_value == "__UNCHANGED__":
+                        auth.api_key_value = saved.target_config.auth.api_key_value
         start = time.perf_counter()
         output, token = await call_target(
             base_url=req.base_url,
-            api_key=req.api_key,
+            api_key=api_key,
             model=req.model,
             prompt="ping",
             request_template=req.request_template,
-            auth=req.auth,
+            auth=auth,
             response_mapping=req.response_mapping,
+            response_parsing=req.response_parsing,
         )
         latency_ms = (time.perf_counter() - start) * 1000
         return {
@@ -405,7 +446,7 @@ async def test_target(req: TestTargetRequest):
 
 @router.post("/test/mapping")
 async def test_mapping(req: TestMappingRequest):
-    """测试响应映射提取"""
+    """测试响应映射提取（旧设计，兼容保留）"""
     try:
         from .judge import _extract_response
         result = _extract_response(req.sample_response, req.response_mapping)
@@ -414,13 +455,38 @@ async def test_mapping(req: TestMappingRequest):
         mapping_invalid(f"映射提取失败: {e}")
 
 
-@router.post("/test/judge")
-async def test_judge(req: TestJudgeRequest):
-    """测试 Judge"""
+@router.post("/test/parsing")
+async def test_parsing(req: TestParsingRequest):
+    """测试响应解析（四键模型：output_paths / token_paths / token_fields / token_scope）
+
+    返回输出提取结果、token 计数与缺失标记，供配置页「测试映射」面板使用。
+    """
+    from .parser import parse_response
     try:
+        result = parse_response(req.sample_response, req.response_parsing)
+        return {
+            "ok": True,
+            "output": result["output"],
+            "token_used": result["token_used"],
+            "token_missing": result["token_missing"],
+            "output_found": result["output_found"],
+        }
+    except Exception as e:
+        mapping_invalid(f"解析失败: {e}")
+
+
+@router.post("/test/judge")
+async def test_judge(req: TestJudgeRequest, project_id: Optional[str] = None):
+    """测试 Judge（支持 __UNCHANGED__ 哨兵值，需带 project_id 查询参数）"""
+    try:
+        api_key = req.api_key
+        if project_id and api_key == "__UNCHANGED__":
+            saved = get_project(project_id)
+            if saved:
+                api_key = saved.judge_config.api_key
         score = await judge_with_llm(
             base_url=req.base_url,
-            api_key=req.api_key,
+            api_key=api_key,
             model=req.model,
             requirement=req.output_requirement,
             output=req.actual_output,
