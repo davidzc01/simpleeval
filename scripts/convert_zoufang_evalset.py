@@ -27,13 +27,15 @@ def build_cases(df: pd.DataFrame) -> list[dict]:
         expected_word = "true" if expected else "false"
         cases.append({
             "case_name": f"{leader}-{enterprise}",
-            "input": f"{leader}-{enterprise}\n\n{content}",
-            "expected_output": None,
-            "output_requirement": (
-                f"输出 JSON 的 result 字段应为 {expected_word}。"
-                f"若 result 为 {expected_word} 回答 1，否则回答 0。"
-            ),
-            "eval_type": "llm_judge",
+            "input": f"{leader}-{enterprise}",
+            "variables": {
+                "leader": leader,
+                "enterprise": enterprise,
+                "content": content,
+            },
+            "expected_output": "true" if expected else "false",
+            "output_requirement": None,
+            "eval_type": "exact",
             "eval_params": {},
         })
     return cases
@@ -45,8 +47,8 @@ def main():
     with open(DST, "w", encoding="utf-8") as f:
         json.dump(cases, f, ensure_ascii=False, indent=2)
     print(f"生成 {len(cases)} 条 case → {DST}")
-    print(f"预期 true: {sum(1 for c in cases if 'true' in c['output_requirement'][:30])}, "
-          f"预期 false: {sum(1 for c in cases if 'false' in c['output_requirement'][:30])}")
+    print(f"预期 true: {sum(1 for c in cases if c['expected_output'] == 'true')}, "
+          f"预期 false: {sum(1 for c in cases if c['expected_output'] == 'false')}")
 
 
 if __name__ == "__main__":
