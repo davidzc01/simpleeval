@@ -152,6 +152,7 @@ class TestProjectsAPI:
         # 设置真实 api_key + model（A-4: openai_compatible 模式 model 必填）
         proj = client.get(f"/api/projects/{project_id}").json()
         proj["judge_config"]["api_key"] = "sk-real-secret-123"
+        proj["judge_config"]["model"] = "gpt-4-judge"
         proj["target_config"]["api_key"] = "sk-target-real-456"
         proj["target_config"]["model"] = "gpt-4o-mini"
         client.put(f"/api/projects/{project_id}", json=proj)
@@ -178,6 +179,7 @@ class TestProjectsAPI:
         # 设置 model（openai_compatible 必填）
         proj = client.get(f"/api/projects/{project_id}").json()
         proj["target_config"]["model"] = "gpt-4o"
+        proj["judge_config"]["model"] = "gpt-4-judge"
         proj["target_config"]["api_key"] = "__UNCHANGED__"
         proj["judge_config"]["api_key"] = "__UNCHANGED__"
 
@@ -217,6 +219,7 @@ class TestProjectsAPI:
         # 设置真实 api_key + model
         proj = client.get(f"/api/projects/{project_id}").json()
         proj["judge_config"]["api_key"] = "sk-real-secret-123"
+        proj["judge_config"]["model"] = "gpt-4-judge"
         proj["target_config"]["api_key"] = "sk-target-real-456"
         proj["target_config"]["model"] = "gpt-4o-mini"
         client.put(f"/api/projects/{project_id}", json=proj)
@@ -266,6 +269,12 @@ class TestProjectsAPI:
         proj["target_config"]["api_type"] = "custom"
         proj["target_config"]["model"] = None
         proj["target_config"]["request_template"] = '{"query": "{input}"}'
+        # T1-3: judge_config 也需符合校验——这里同步改为 custom 模式（无 model 也可保存）
+        proj["judge_config"]["api_type"] = "custom"
+        proj["judge_config"]["model"] = None
+        proj["judge_config"]["request_template"] = '{"q": "{input}"}'
+        # custom 模式必须配 response_parsing
+        proj["judge_config"]["response_parsing"] = {"output_paths": ["$.score"]}
         response = client.put(f"/api/projects/{project_id}", json=proj)
         assert response.status_code == 200
         assert response.json()["target_config"]["api_type"] == "custom"
@@ -284,6 +293,67 @@ class TestProjectsAPI:
         proj["target_config"]["request_template"] = ""
         response = client.put(f"/api/projects/{project_id}", json=proj)
         assert response.status_code == 422
+
+    def test_update_project_judge_openai_compat_requires_model_422(self, client):
+        """T1-3: judge_config openai_compatible 模式无 model → 422（与 target 对称）"""
+        create_response = client.post(
+            "/api/projects",
+            json={"name": "Judge model test", "task_shape": "general"}
+        )
+        project_id = create_response.json()["id"]
+        proj = create_response.json()
+        # target 合法（custom 模式 + 模板），judge 不合法（openai_compatible + 无 model）
+        proj["judge_config"]["api_key"] = "__UNCHANGED__"
+        proj["judge_config"]["api_type"] = "openai_compatible"
+        proj["judge_config"]["model"] = None
+        proj["target_config"]["api_key"] = "__UNCHANGED__"
+        proj["target_config"]["api_type"] = "custom"
+        proj["target_config"]["request_template"] = '{"q": "{input}"}'
+        response = client.put(f"/api/projects/{project_id}", json=proj)
+        assert response.status_code == 422
+        assert "judge model 必填" in response.json()["detail"]["error"]["message"]
+
+    def test_update_project_judge_custom_empty_template_422(self, client):
+        """T1-3: judge_config custom 模式 request_template 为空 → 422（与 target 对称）"""
+        create_response = client.post(
+            "/api/projects",
+            json={"name": "Judge tpl test", "task_shape": "general"}
+        )
+        project_id = create_response.json()["id"]
+        proj = create_response.json()
+        proj["judge_config"]["api_key"] = "__UNCHANGED__"
+        proj["judge_config"]["api_type"] = "custom"
+        proj["judge_config"]["request_template"] = ""
+        proj["target_config"]["api_key"] = "__UNCHANGED__"
+        proj["target_config"]["api_type"] = "custom"
+        proj["target_config"]["request_template"] = '{"q": "{input}"}'
+        response = client.put(f"/api/projects/{project_id}", json=proj)
+        assert response.status_code == 422
+        assert "judge request_template 必填" in response.json()["detail"]["error"]["message"]
+
+    def test_update_project_judge_custom_no_response_parsing_422(self, client):
+        """T1-3: judge_config custom 模式无 response_parsing → 422
+
+        custom 模式假定用户自定义 API，响应不一定遵循 OpenAI 格式；
+        response_parsing 缺失会导致 fallback 到 OpenAI 默认解析（错误结果）。
+        在 PUT 边界校验阶段就阻断，给清晰错误信息。
+        """
+        create_response = client.post(
+            "/api/projects",
+            json={"name": "Judge rp test", "task_shape": "general"}
+        )
+        project_id = create_response.json()["id"]
+        proj = create_response.json()
+        proj["judge_config"]["api_key"] = "__UNCHANGED__"
+        proj["judge_config"]["api_type"] = "custom"
+        proj["judge_config"]["request_template"] = '{"q": "{input}"}'
+        proj["judge_config"]["response_parsing"] = None
+        proj["target_config"]["api_key"] = "__UNCHANGED__"
+        proj["target_config"]["api_type"] = "custom"
+        proj["target_config"]["request_template"] = '{"q": "{input}"}'
+        response = client.put(f"/api/projects/{project_id}", json=proj)
+        assert response.status_code == 422
+        assert "judge response_parsing 必填" in response.json()["detail"]["error"]["message"]
 
     def test_list_project_evalsets_empty(self, client):
         """列出项目下的评测集（空）"""
@@ -990,7 +1060,7 @@ class TestTestEndpoints:
     def test_test_judge_success(self, client):
         """测试 Judge - 成功"""
         with patch("app.routes.judge_with_llm", new_callable=AsyncMock) as mock_judge:
-            mock_judge.return_value = 0.8
+            mock_judge.return_value = (0.8, 30)
 
             response = client.post(
                 "/api/test/judge",
@@ -1009,6 +1079,7 @@ class TestTestEndpoints:
             assert data["ok"] is True
             assert data["score"] == 0.8
             assert data["passed"] is True
+            assert data["token_used"] == 30
 
 
 class TestErrorHandling:

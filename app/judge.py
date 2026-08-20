@@ -287,8 +287,20 @@ async def judge_with_llm(
     requirement: str,
     output: str,
     judge_prompt: Optional[str] = None,
-) -> float:
-    """用 Judge 模型打分，返回 0-1 的分数"""
+    # T1-3: 双模式字段（可选，不传 = openai_compatible 旧行为）
+    api_type: str = "openai_compatible",
+    request_template: Optional[str] = None,
+    auth: Optional[AuthConfig] = None,
+    response_parsing: Optional[ResponseParsing] = None,
+) -> tuple[float, int]:
+    """用 Judge 模型打分，返回 (0-1 分数, judge 消耗 token 数)
+
+    T1-3 双模式：
+    - openai_compatible（默认）：messages + model 注入，旧数据零迁移
+    - custom：request_template 渲染后请求，response_parsing 提取分数 + token
+
+    T1-4: 返回值改为 (score, token_used)，token 计入评测成本。
+    """
     DEFAULT_JUDGE_PROMPT = (
         "你是一个评测者。请判断被评测模型的输出是否满足要求。\n"
         "要求：{requirement}\n"
@@ -297,40 +309,96 @@ async def judge_with_llm(
     )
 
     prompt_template = judge_prompt or DEFAULT_JUDGE_PROMPT
-    prompt = prompt_template.format(requirement=requirement, output=output)
+    prompt_text = prompt_template.format(requirement=requirement, output=output)
+    auth = auth or AuthConfig()
 
-    try:
-        async with httpx.AsyncClient(timeout=120) as client:
-            resp = await client.post(
-                f"{base_url.rstrip('/')}/chat/completions",
-                headers={"Authorization": f"Bearer {api_key}"},
-                json={
-                    "model": model,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "temperature": 0,
-                },
+    # 前置参数校验（兜底，PUT /projects 已校验但 test_judge 端点可能直接调用）
+    if api_type == "custom":
+        if not request_template or not request_template.strip():
+            raise ResponseFormatError("custom 模式 request_template 必填")
+        if response_parsing is None:
+            raise ResponseFormatError("custom 模式 response_parsing 必填（用于从自定义 API 响应中提取分数与 token）")
+    else:
+        if not model or not model.strip():
+            raise ResponseFormatError("openai_compatible 模式 model 必填")
+
+    if api_type == "custom":
+        # custom 模式：走与 call_target 相同的路径
+        try:
+            rendered = render_request_template(
+                request_template, prompt_text,
+                variables=None, case_name="", task_shape="",
+                default_missing="test",
             )
-            resp.raise_for_status()
-            data = resp.json()
-    except httpx.TimeoutException as e:
-        raise NetworkError(f"Judge API 请求超时: {e}")
-    except httpx.ConnectError as e:
-        raise NetworkError(f"Judge API 连接失败: {e}")
-    except httpx.HTTPStatusError as e:
-        raise APIError(f"Judge API 返回错误状态码 {e.response.status_code}: {e.response.text}", e.response.status_code)
-    except (KeyError, ValueError, TypeError) as e:
-        raise ResponseFormatError(f"Judge API 返回格式错误: {e}")
+            body = json.loads(rendered)
+        except json.JSONDecodeError:
+            raise ResponseFormatError("custom 模式 request_template 不是合法 JSON")
+        url = base_url
 
-    try:
-        raw = data["choices"][0]["message"]["content"].strip()
-    except (KeyError, TypeError) as e:
-        raise ResponseFormatError(f"无法解析 Judge 响应内容: {e}")
+        try:
+            async with httpx.AsyncClient(timeout=120) as client:
+                resp = await client.post(
+                    url,
+                    headers=_build_headers(api_key, auth),
+                    cookies=_build_cookies(auth),
+                    json=body,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+        except httpx.TimeoutException as e:
+            raise NetworkError(f"Judge API 请求超时: {e}")
+        except httpx.ConnectError as e:
+            raise NetworkError(f"Judge API 连接失败: {e}")
+        except httpx.HTTPStatusError as e:
+            raise APIError(f"Judge API 返回错误状态码 {e.response.status_code}: {e.response.text}", e.response.status_code)
+        except (KeyError, ValueError, TypeError) as e:
+            raise ResponseFormatError(f"Judge API 返回格式错误: {e}")
 
-    # 只取数字
+        # 提取分数与 token（custom 模式必须配 response_parsing，前置守卫已校验）
+        raw, found = extract_output(data, response_parsing.output_paths)
+        if not found:
+            raw = ""
+        elif response_parsing.output_unpack_json:
+            raw = _unpack_output(raw, response_parsing.output_unpack_json, response_parsing.output_field)
+        token_used, _ = count_tokens(
+            data, response_parsing.token_paths,
+            response_parsing.token_fields, response_parsing.token_scope,
+        )
+    else:
+        # openai_compatible 模式（默认）
+        try:
+            async with httpx.AsyncClient(timeout=120) as client:
+                resp = await client.post(
+                    f"{base_url.rstrip('/')}/chat/completions",
+                    headers={"Authorization": f"Bearer {api_key}"},
+                    json={
+                        "model": model,
+                        "messages": [{"role": "user", "content": prompt_text}],
+                        "temperature": 0,
+                    },
+                )
+                resp.raise_for_status()
+                data = resp.json()
+        except httpx.TimeoutException as e:
+            raise NetworkError(f"Judge API 请求超时: {e}")
+        except httpx.ConnectError as e:
+            raise NetworkError(f"Judge API 连接失败: {e}")
+        except httpx.HTTPStatusError as e:
+            raise APIError(f"Judge API 返回错误状态码 {e.response.status_code}: {e.response.text}", e.response.status_code)
+        except (KeyError, ValueError, TypeError) as e:
+            raise ResponseFormatError(f"Judge API 返回格式错误: {e}")
+
+        try:
+            raw = data["choices"][0]["message"]["content"].strip()
+        except (KeyError, TypeError) as e:
+            raise ResponseFormatError(f"无法解析 Judge 响应内容: {e}")
+        token_used = data.get("usage", {}).get("total_tokens", 0)
+
+    # 解析分数
     try:
         score = float(raw)
     except ValueError:
         # 兜底：尝试从字符串里抠第一个数字
         m = re.search(r"[-+]?\d*\.?\d+", raw)
         score = float(m.group()) if m else 0.0
-    return max(0.0, min(1.0, score))
+    return max(0.0, min(1.0, score)), token_used

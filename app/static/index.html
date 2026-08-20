@@ -781,6 +781,136 @@
         .json-tree-container { border: 1px solid var(--gray-bd); border-radius: var(--radius-md); padding: 12px; max-height: 400px; overflow: auto; background: var(--gray-bg); }
         .rp-target-badge { font-size: 11px; color: var(--ink-4); margin-left: 8px; }
         .rp-target-badge.active { color: var(--accent); font-weight: 600; }
+
+        /* ==================== T1-2: Tag chips ==================== */
+        .tag-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+        .tag-chip {
+            display: inline-flex; align-items: center; gap: 4px;
+            padding: 2px 8px; font-size: 11px;
+            background: var(--accent-pale); color: var(--accent-deep);
+            border: 1px solid var(--accent-bd); border-radius: var(--radius-pill);
+            cursor: default; user-select: none;
+        }
+        .tag-chip .tag-chip-x { cursor: pointer; color: var(--ink-4); font-weight: 600; }
+        .tag-chip .tag-chip-x:hover { color: var(--red); }
+        .tag-chip-toggle { cursor: pointer; }
+        .tag-chip-toggle.off { background: var(--gray-bg); color: var(--ink-4); border-color: var(--gray-bd); }
+        .tag-chip-toggle.off .tag-chip-x { color: var(--ink-5); }
+
+        /* 表格内 tag chips（紧凑） */
+        .tag-cell .tag-chip { font-size: 10px; padding: 1px 6px; }
+
+        /* 评测弹窗 tag 筛选区 */
+        .tag-filter-bar {
+            margin-top: 12px; padding: 10px 12px;
+            background: var(--light-bg); border: 1px solid var(--gray-bd);
+            border-radius: var(--radius-md);
+        }
+        .tag-filter-bar .tag-filter-mode { margin-left: 12px; font-size: 12px; color: var(--ink-3); }
+        .tag-filter-bar .tag-filter-mode label { margin-left: 8px; cursor: pointer; }
+
+        /* ==================== T1-1: 危险操作菜单 ==================== */
+        .row-menu-wrap { position: relative; display: inline-block; }
+        .row-menu {
+            position: absolute; right: 0; top: 100%; z-index: 10;
+            min-width: 140px; padding: 4px 0;
+            background: var(--card-bg);
+            border: 1px solid var(--gray-bd);
+            border-radius: var(--radius-md);
+            box-shadow: var(--shadow-dropdown);
+            display: none;
+        }
+        .row-menu.open { display: block; }
+        .row-menu-item {
+            display: block; width: 100%; padding: 8px 12px;
+            background: none; border: none; cursor: pointer;
+            font-size: 13px; color: var(--ink-2); text-align: left;
+        }
+        .row-menu-item:hover { background: var(--light-bg); }
+        .row-menu-item.danger { color: var(--red); }
+        .row-menu-item.danger:hover { background: var(--red-bg); }
+
+        /* T1-1: 输入名称二次确认 */
+        .confirm-input {
+            width: 100%; padding: 8px 10px;
+            border: 2px solid var(--gray-bd); border-radius: var(--radius-md);
+            font-size: 13px; font-family: var(--font-mono);
+        }
+        .confirm-input:focus { border-color: var(--accent); outline: none; }
+        .confirm-input.unlocked { border-color: var(--green); }
+
+        /* ==================== T1-6: Dirty 警告 ==================== */
+        .dirty-bar {
+            margin-top: 12px; padding: 10px 12px;
+            background: var(--amber-bg); border: 1px solid var(--amber-bd);
+            border-radius: var(--radius-md); color: var(--amber);
+            font-size: 12px; display: flex; align-items: center; gap: 12px;
+        }
+        .dirty-bar a { color: var(--accent-deep); cursor: pointer; text-decoration: underline; font-weight: 600; }
+        .dirty-tab-dot {
+            display: inline-block; width: 6px; height: 6px;
+            background: var(--amber); border-radius: 50%;
+            margin-left: 4px; vertical-align: middle;
+        }
+
+        /* ==================== T1-5: checks 列表编辑器 ==================== */
+        .checks-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 8px; }
+        .check-row {
+            display: grid; grid-template-columns: 1.2fr 1.2fr 1fr 1.6fr auto;
+            gap: 6px; align-items: center; padding: 8px;
+            background: var(--gray-bg); border-radius: var(--radius-md);
+        }
+        .check-row .form-input { font-size: 12px; padding: 4px 8px; }
+        .check-row .btn-sm { padding: 4px 10px; line-height: 1.4; }
+        .checks-section {
+            border: 1px dashed var(--gray-bd); border-radius: var(--radius-md);
+            padding: 12px; margin-top: 8px;
+        }
+        .checks-section > .checks-toggle { display: flex; align-items: center; gap: 6px; cursor: pointer; color: var(--ink-3); font-size: 12px; }
+        .checks-section.collapsed > .checks-body { display: none; }
+
+        /* run 详情 check 结果展示 */
+        .check-result-list { margin-top: 12px; }
+        .check-result-row {
+            display: flex; align-items: center; gap: 8px;
+            padding: 6px 10px; margin-bottom: 4px;
+            background: var(--gray-bg); border-radius: var(--radius-sm);
+            font-size: 12px;
+        }
+        .check-result-row .chk-status { width: 8px; height: 8px; border-radius: 50%; }
+        .check-result-row .chk-status.pass { background: var(--green); }
+        .check-result-row .chk-status.fail { background: var(--red); }
+
+        /* ==================== T1-7: Token 模式分段控件 ==================== */
+        .token-mode-segment {
+            display: inline-flex; padding: 2px; background: var(--light-bg);
+            border: 1px solid var(--gray-bd); border-radius: var(--radius-md);
+            margin-bottom: 8px; gap: 0;
+        }
+        .token-mode-segment label {
+            font-size: 12px; cursor: pointer;
+            color: var(--ink-3); border-radius: var(--radius-sm);
+            transition: all .12s ease; display: inline-flex;
+        }
+        .token-mode-segment input { display: none; }
+        .token-mode-segment label span {
+            display: inline-block; padding: 5px 14px;
+            border-radius: var(--radius-sm);
+        }
+        .token-mode-segment input:checked + span {
+            background: var(--card-bg); color: var(--accent-deep);
+            font-weight: 600; box-shadow: 0 1px 2px rgba(16,24,40,.08);
+        }
+        .token-scope-fold {
+            margin-top: 8px; padding: 8px 10px;
+            background: var(--gray-bg); border-radius: var(--radius-md);
+            font-size: 11px; color: var(--ink-4);
+        }
+        .token-scope-fold summary { cursor: pointer; color: var(--ink-3); font-size: 12px; }
+        .token-empty-hint {
+            padding: 8px 10px; background: var(--gray-bg); border-radius: var(--radius-md);
+            font-size: 11px; color: var(--ink-4); text-align: center;
+        }
     </style>
 </head>
 <body>
@@ -831,7 +961,15 @@
             currentRun: null,
             currentEvalsets: null,
             currentEvalsetId: null,
-            apiBase: '/api'
+            apiBase: '/api',
+            // T1-6 dirty 检测
+            _configSnapshot: null,    // 配置页打开时保存的 JSON 快照
+            _configDirty: false,
+            _suppressDirtyCheck: false, // 切到 config tab 初始化期间临时关闭
+            // Judge 双模式共享的 auth/_rp 状态
+            _judgeAuth: null,
+            _judgeRpSample: '',
+            _judgeRpActiveTarget: null
         };
 
         // ==================== 辅助函数 ====================
@@ -951,6 +1089,26 @@
         }
 
         function navigateTo(page, params = {}) {
+            // T1-6: 当前在 config tab 且 dirty 时，拦截离开
+            if (state._configDirty && !_isNavigationSelf(page, params)) {
+                showDiscardDirtyConfirm(() => {
+                    state._configDirty = false;
+                    state._configSnapshot = null;
+                    removeConfigDirtyDot();
+                    _navigateToNoCheck(page, params);
+                });
+                return;
+            }
+            _navigateToNoCheck(page, params);
+        }
+
+        // 同页同参数（如 openRunModal 二次导航）不视为离开，不拦截
+        function _isNavigationSelf(page, params) {
+            // 切到当前页面（如刷新当前项目详情）属于用户主动行为，仍拦截；此处仅跳过完全同 hash 的调用
+            return false;
+        }
+
+        function _navigateToNoCheck(page, params = {}) {
             // 同步 hash（静默：不触发 hashchange 二次导航）
             const newHash = buildHash(page, params);
             if (location.hash !== newHash) {
@@ -959,6 +1117,15 @@
             }
             runNavigation(page, params);
         }
+
+        // T1-6: 浏览器刷新/关闭拦截 —— beforeunload 由浏览器原生弹窗处理
+        window.addEventListener('beforeunload', (e) => {
+            if (state._configDirty) {
+                e.preventDefault();
+                e.returnValue = '';
+                return '';
+            }
+        });
 
         function runNavigation(page, params = {}) {
             // 加载侧栏项目列表（B-11: 有缓存时同步渲染，active 用 URL 判断）
@@ -986,11 +1153,28 @@
             }
         }
 
+        // 记录上一个 hash，供 hashchange 时拦截 dirty 后回滚
+        let _lastConfirmedHash = location.hash;
         window.addEventListener('hashchange', () => {
-            if (_programmaticHash) { _programmaticHash = false; return; }
+            if (_programmaticHash) { _programmaticHash = false; _lastConfirmedHash = location.hash; return; }
             const parsed = parseHash(location.hash);
-            if (!parsed) { runNavigation('projects'); return; }
+            if (!parsed) { runNavigation('projects'); _lastConfirmedHash = location.hash; return; }
+            // T1-6: dirty 拦截 —— 用户用浏览器前进/后退或手动改 hash 时
+            if (state._configDirty) {
+                // 回滚 hash（同步设 _programmaticHash，避免回滚再触发）
+                _programmaticHash = true;
+                location.hash = _lastConfirmedHash;
+                showDiscardDirtyConfirm(() => {
+                    state._configDirty = false;
+                    state._configSnapshot = null;
+                    removeConfigDirtyDot();
+                    _navigateToNoCheck(parsed.page, parsed.params || {});
+                    _lastConfirmedHash = location.hash;
+                });
+                return;
+            }
             runNavigation(parsed.page, parsed.params || {});
+            _lastConfirmedHash = location.hash;
         });
 
         // ==================== 骨架屏工具 ====================
@@ -1125,6 +1309,13 @@
                                                     <button class="btn btn-sm" disabled title="请先配置 Target API 和 Judge">▶ 配置不完整</button>
                                                 `}
                                                 <button class="btn btn-sm btn-secondary" onclick="navigateTo('project-detail', {id: '${escapeHtml(p.id)}'})">查看</button>
+                                                <div class="row-menu-wrap">
+                                                    <button class="btn btn-sm btn-secondary" onclick="toggleRowMenu(event, 'menu-${escapeHtml(p.id)}')">⋯</button>
+                                                    <div class="row-menu" id="menu-${escapeHtml(p.id)}">
+                                                        <button class="row-menu-item" onclick="closeAllRowMenus(); navigateTo('project-detail', {id: '${escapeHtml(p.id)}'})">查看详情</button>
+                                                        <button class="row-menu-item danger" onclick="closeAllRowMenus(); showDeleteProjectModal('${escapeHtml(p.id)}')">删除项目</button>
+                                                    </div>
+                                                </div>
                                             </td>
                                         </tr>
                                     `).join('')}
@@ -1247,6 +1438,7 @@
                 document.getElementById('pageTitle').textContent = project.name;
                 headerActions.innerHTML = `
                     <button class="btn btn-primary" onclick="showRunModal('${project.id}')">▶ 发起评测</button>
+                    <button class="btn btn-secondary" style="color: var(--red); border-color: var(--red-bd);" onclick="showDeleteProjectModal('${project.id}')">删除项目</button>
                 `;
 
                 container.innerHTML = `
@@ -1274,9 +1466,24 @@
         }
 
         function switchTab(tab) {
+            // T1-6: 切出 config tab 时拦截 dirty
+            if (state._configDirty && tab !== 'config') {
+                // 切走 = 丢弃未保存改动，弹窗确认
+                showDiscardDirtyConfirm(() => {
+                    state._configDirty = false;
+                    state._configSnapshot = null;
+                    removeConfigDirtyDot();
+                    _switchTabNoCheck(tab);
+                });
+                return;
+            }
+            _switchTabNoCheck(tab);
+        }
+
+        function _switchTabNoCheck(tab) {
             document.querySelectorAll('.tab').forEach(el => el.classList.remove('active'));
             document.querySelector(`.tab[data-tab="${tab}"]`).classList.add('active');
-            
+
             const project = state.currentProject;
             const content = document.getElementById('tabContent');
 
@@ -1294,6 +1501,50 @@
                 case 'history':
                     renderHistoryTab(content, project.id);
                     break;
+            }
+        }
+
+        // T1-6: 离开未保存配置 → 确认弹窗（沿用项目内通用 modal 风格）
+        function showDiscardDirtyConfirm(onConfirm, opts = {}) {
+            const title = opts.title || '有未保存的更改';
+            const message = opts.message || '配置页有未保存的更改，离开将丢失这些改动。';
+            const id = 'dirtyConfirmModal';
+            // 已存在则先移除
+            const existing = document.getElementById(id);
+            if (existing) existing.remove();
+            const modal = document.createElement('div');
+            modal.className = 'modal-overlay';
+            modal.id = id;
+            modal.innerHTML = `
+                <div class="modal">
+                    <div class="modal-header">
+                        <span class="modal-title">${title}</span>
+                        <button class="modal-close" onclick="closeModal('${id}')">×</button>
+                    </div>
+                    <div class="modal-body">
+                        <div style="color: var(--ink-2); font-size: 13px; line-height: 1.6;">
+                            ⚠ ${message}
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button class="btn btn-secondary" onclick="closeModal('${id}')">取消</button>
+                        <button class="btn btn-danger" id="dirtyConfirmLeaveBtn">仍要离开</button>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(modal);
+            document.getElementById('dirtyConfirmLeaveBtn').onclick = () => {
+                closeModal(id);
+                if (typeof onConfirm === 'function') onConfirm();
+            };
+        }
+
+        // T1-6: 移除配置 tab 上的 dirty 圆点
+        function removeConfigDirtyDot() {
+            const configTab = document.querySelector('.tab[data-tab="config"]');
+            if (configTab) {
+                const dot = configTab.querySelector('.dirty-tab-dot');
+                if (dot) dot.remove();
             }
         }
 
@@ -1577,6 +1828,8 @@
                 const evalsets = data.evalsets || [];
 
                 if (evalsets.length === 0) {
+                    state.currentEvalsets = null;
+                    state.currentEvalsetId = null;
                     container.innerHTML = `
                         <div class="empty-state">
                             <div class="empty-state-icon">📋</div>
@@ -1588,49 +1841,23 @@
                 }
 
                 state.currentEvalsets = evalsets;
-                // 默认选中第一个
-                state.currentEvalsetId = state.currentEvalsetId || evalsets[0].id;
-                const current = evalsets.find(e => e.id === state.currentEvalsetId) || evalsets[0];
+                // T1-2: 一项目一评测集 → 直接用第一个，不暴露多评测集下拉
+                const current = evalsets[0];
                 state.currentEvalsetId = current.id;
 
-                const selectorHtml = `
-                    <div class="card mb-4">
-                        <div class="card-header">
-                            <span class="card-title">评测集</span>
-                            <div class="flex gap-2">
-                                <button class="btn btn-sm btn-secondary" onclick="showCreateEvalSetModal('${projectId}')">+ 新建</button>
-                            </div>
-                        </div>
-                        <div style="padding: 12px 16px; display: flex; align-items: center; gap: 12px;">
-                            <select class="form-input" id="evalsetSelect" onchange="switchEvalset('${projectId}', this.value)" style="flex: 1;">
-                                ${evalsets.map(e => `<option value="${escapeHtml(e.id)}" ${e.id === current.id ? 'selected' : ''}>${escapeHtml(e.name)}（${(e.cases || []).length} 条）</option>`).join('')}
-                            </select>
-                        </div>
-                    </div>
-                `;
-
-                container.innerHTML = selectorHtml + renderEvalsetDetail(current, projectId);
+                container.innerHTML = renderEvalsetDetail(current, projectId);
             } catch (err) {
                 container.innerHTML = `<div class="empty-state"><div class="empty-state-icon">❌</div><div class="empty-state-text">加载失败</div></div>`;
-            }
-        }
-
-        function switchEvalset(projectId, evalsetId) {
-            state.currentEvalsetId = evalsetId;
-            const content = document.getElementById('tabContent');
-            if (!content || !state.currentEvalsets) return;
-            const current = state.currentEvalsets.find(e => e.id === evalsetId);
-            if (!current) return;
-            // 只替换详情部分（保留选择器，避免重渲染下拉）
-            const detailNode = document.getElementById('evalsetDetail');
-            if (detailNode) {
-                detailNode.outerHTML = renderEvalsetDetail(current, projectId);
             }
         }
 
         function renderEvalsetDetail(evalset, projectId) {
             const cases = evalset.cases || [];
             const enabledCount = cases.filter(c => c.enabled).length;
+            // 收集全部 tag（去重，保留出现顺序）供发起评测弹窗筛选
+            const allTags = [];
+            (cases || []).forEach(c => (c.tags || []).forEach(t => { if (!allTags.includes(t)) allTags.push(t); }));
+            state._currentEvalsetAllTags = allTags;
             // 用例预览文本（按 eval_type 取对应字段）
             const previewField = c => {
                 if (c.eval_type === 'llm_judge') return c.output_requirement;
@@ -1642,6 +1869,13 @@
                 }
                 return c.expected_output;
             };
+            // 表格内的 tag chips
+            const renderTagsCell = c => {
+                const tags = c.tags || [];
+                if (!tags.length) return '<span class="text-muted">-</span>';
+                return `<div class="tag-cell" style="display:flex;flex-wrap:wrap;gap:2px;">` +
+                    tags.map(t => `<span class="tag-chip">${escapeHtml(t)}</span>`).join('') + `</div>`;
+            };
             return `
                 <div id="evalsetDetail">
                     <div class="card">
@@ -1650,11 +1884,12 @@
                             <div class="flex gap-2">
                                 <button class="btn btn-sm btn-secondary" onclick="showImportModal('${evalset.id}', '${projectId}')">⤒ 导入</button>
                                 <button class="btn btn-sm btn-secondary" onclick="exportEvalSet('${evalset.id}', '${projectId}')">⇩ 导出</button>
+                                <button class="btn btn-sm btn-secondary" style="color: var(--red); border-color: var(--red-bd);" onclick="showClearEvalsetModal(state.currentEvalsets.find(e => e.id === '${evalset.id}'), '${projectId}')" ${cases.length === 0 ? 'disabled title="评测集已空"' : ''}>清空评测集</button>
                                 <button class="btn btn-sm btn-primary" onclick="showCaseEditorModal('${evalset.id}', '${projectId}', null)">+ 新增用例</button>
                             </div>
                         </div>
                         <div style="padding: 8px 16px; color: var(--ink-4); font-size: 12px;">
-                            共 ${cases.length} 条 · 启用 ${enabledCount} 条
+                            共 ${cases.length} 条 · 启用 ${enabledCount} 条${allTags.length ? ' · 标签 ' + allTags.length + ' 个' : ''}
                         </div>
                         <div id="batchOpsBar" style="display: none; padding: 8px 16px; background: var(--gray-bg); border-bottom: 1px solid var(--border); align-items: center; gap: 8px;">
                             <span id="batchSelectedCount" style="font-size: 13px; color: var(--ink-3);">已选 0 条</span>
@@ -1671,18 +1906,20 @@
                                         <th>输入(截断)</th>
                                         <th>评测类型</th>
                                         <th>期望/判据</th>
+                                        <th>标签</th>
                                         <th>状态</th>
                                         <th>操作</th>
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    ${cases.length === 0 ? `<tr><td colspan="7" style="text-align: center; color: var(--ink-4); padding: 24px;">暂无用例，点击「+ 新增用例」或「导入」添加</td></tr>` : cases.map(c => `
+                                    ${cases.length === 0 ? `<tr><td colspan="8" style="text-align: center; color: var(--ink-4); padding: 24px;">暂无用例，点击「+ 新增用例」或「导入」添加${allTags.length === 0 ? '' : ''}</td></tr>` : cases.map(c => `
                                         <tr style="${c.enabled === false ? 'opacity: 0.5' : ''}">
                                             <td><input type="checkbox" class="batch-case-cb" value="${escapeHtml(c.id)}" onchange="updateBatchOpsBar()"></td>
                                             <td>${escapeHtml(c.case_name)}</td>
                                             <td class="truncate mono">${escapeHtml(c.input || '-')}</td>
                                             <td><span class="tag tag-${c.eval_type}">${escapeHtml(c.eval_type)}</span></td>
                                             <td class="truncate mono">${escapeHtml(previewField(c) || '-')}</td>
+                                            <td>${renderTagsCell(c)}</td>
                                             <td>
                                                 <span class="status-badge ${c.enabled ? 'status-passed' : 'status-disabled'}">
                                                     <span class="status-dot"></span>
@@ -1843,18 +2080,21 @@
                 eval_type: 'exact',
                 eval_params: {},
                 task_shape: '',
-                enabled: true
+                enabled: true,
+                tags: [],
+                checks: []
             };
             const params = c.eval_params || {};
             const substringVal = params.substring || '';
             const minVal = params.min ?? '';
             const maxVal = params.max ?? '';
+            const tagsStr = Array.isArray(c.tags) ? c.tags.join(', ') : '';
 
             const modal = document.createElement('div');
             modal.className = 'modal-overlay';
             modal.id = 'caseEditorModal';
             modal.innerHTML = `
-                <div class="modal" style="max-width: 720px;">
+                <div class="modal" style="max-width: 760px;">
                     <div class="modal-header">
                         <span class="modal-title">${isNew ? '新增用例' : '编辑用例'}</span>
                         <button class="modal-close" onclick="closeModal('caseEditorModal')">×</button>
@@ -1907,6 +2147,25 @@
                             <button class="btn btn-sm btn-secondary" onclick="addCaseVarRow()">+ 添加变量</button>
                             <div style="font-size: 11px; color: var(--ink-4); margin-top: 4px;">键名任意，模板里用 {key} 引用；值会 JSON 转义后替换</div>
                         </div>
+                        <div class="form-group">
+                            <label class="form-label">标签 tags（逗号分隔，可混合已有标签）</label>
+                            <input type="text" class="form-input" id="ceTags" value="${escapeHtml(tagsStr)}" placeholder="如：regression, smoke" oninput="renderTagsPreview(this.value, 'ceTagsPreview')">
+                            <div id="ceTagsPreview" class="tag-chips"></div>
+                            <div style="font-size: 11px; color: var(--ink-4); margin-top: 4px;">发起评测时可按标签筛选参与的 case</div>
+                        </div>
+                        <div class="checks-section collapsed" id="ceChecksSection">
+                            <div class="checks-toggle" onclick="document.getElementById('ceChecksSection').classList.toggle('collapsed')">
+                                <span>多字段验证（checks）</span>
+                                <span style="font-size: 11px; color: var(--ink-4);">— 一次输出校验多个字段，全部通过才算通过</span>
+                            </div>
+                            <div class="checks-body">
+                                <div class="checks-list" id="ceChecksList"></div>
+                                <button class="btn btn-sm btn-secondary" onclick="addCheckRow()">+ 添加 check</button>
+                                <div style="font-size: 11px; color: var(--ink-4); margin-top: 6px;">
+                                    field 支持点路径（如 result 或 a.b.c），作用于响应根对象或解包后的对象；llm_judge 类型的 check 会调 Judge。
+                                </div>
+                            </div>
+                        </div>
                     </div>
                     <div class="modal-footer">
                         <button class="btn btn-secondary" onclick="closeModal('caseEditorModal')">取消</button>
@@ -1917,7 +2176,116 @@
             document.body.appendChild(modal);
             // B-13: 填充 variables kv 行
             initCaseVarRows(c.variables);
+            // T1-2: 渲染 tags 预览
+            renderTagsPreview(tagsStr, 'ceTagsPreview');
+            // T1-5: 渲染 checks 列表
+            initCheckRows(c.checks || []);
             toggleCaseEditorFields();
+        }
+
+        // T1-2: 逗号分隔 → chips 预览
+        function renderTagsPreview(str, targetId) {
+            const el = document.getElementById(targetId);
+            if (!el) return;
+            const tags = (str || '').split(/[,，]/).map(s => s.trim()).filter(Boolean);
+            el.innerHTML = tags.map(t => `<span class="tag-chip">${escapeHtml(t)}</span>`).join('') || '<span style="font-size: 11px; color: var(--ink-4);">无</span>';
+        }
+        function parseTagsInput(str) {
+            return (str || '').split(/[,，]/).map(s => s.trim()).filter(Boolean);
+        }
+
+        // T1-5: checks 列表编辑器
+        const CHECK_EVAL_TYPES = [
+            { value: 'exact', label: 'exact（精确匹配）' },
+            { value: 'contains', label: 'contains（包含子串）' },
+            { value: 'not_contains', label: 'not_contains（不包含子串）' },
+            { value: 'length', label: 'length（长度范围）' },
+            { value: 'llm_judge', label: 'llm_judge（LLM 评判）' }
+        ];
+        function checkRowHTML(chk) {
+            chk = chk || { name: '', field: '', eval_type: 'exact', expected: '', eval_params: {} };
+            const epSubstr = chk.eval_params?.substring || '';
+            const epMin = chk.eval_params?.min ?? '';
+            const epMax = chk.eval_params?.max ?? '';
+            const expectedVisible = chk.eval_type === 'exact' || chk.eval_type === 'llm_judge';
+            const containsVisible = chk.eval_type === 'contains' || chk.eval_type === 'not_contains';
+            const lengthVisible = chk.eval_type === 'length';
+            return `
+                <div class="check-row" data-eval-type="${escapeHtml(chk.eval_type)}">
+                    <input type="text" class="form-input chk-name" value="${escapeHtml(chk.name || '')}" placeholder="check 名称">
+                    <input type="text" class="form-input chk-field" value="${escapeHtml(chk.field || '')}" placeholder="字段（如 result / a.b.c）">
+                    <select class="form-input chk-type" onchange="updateCheckRowVisibility(this)">
+                        ${CHECK_EVAL_TYPES.map(t => `<option value="${t.value}" ${chk.eval_type === t.value ? 'selected' : ''}>${escapeHtml(t.label)}</option>`).join('')}
+                    </select>
+                    <div class="chk-params">
+                        <input type="text" class="form-input chk-expected" value="${escapeHtml(chk.expected || '')}" placeholder="expected（${chk.eval_type === 'llm_judge' ? '评判要求' : '期望值'}）"
+                               style="${expectedVisible ? '' : 'display:none;'}">
+                        <input type="text" class="form-input chk-substr" value="${escapeHtml(epSubstr)}" placeholder="substring 子串"
+                               style="${containsVisible ? '' : 'display:none;'}">
+                        <div class="chk-length" style="display: ${lengthVisible ? 'flex' : 'none'}; gap: 4px;">
+                            <input type="number" class="form-input chk-len-min" value="${epMin}" placeholder="min" style="width: 50%;">
+                            <input type="number" class="form-input chk-len-max" value="${epMax}" placeholder="max" style="width: 50%;">
+                        </div>
+                    </div>
+                    <button class="btn btn-sm btn-danger" onclick="this.closest('.check-row').remove()" title="删除">×</button>
+                </div>
+            `;
+        }
+        function initCheckRows(checks) {
+            const list = document.getElementById('ceChecksList');
+            if (!list) return;
+            list.innerHTML = '';
+            if (!checks || checks.length === 0) {
+                list.innerHTML = '<div style="font-size:11px;color:var(--ink-4);">无 check，case 通过只看主 eval_type</div>';
+            } else {
+                checks.forEach(c => list.insertAdjacentHTML('beforeend', checkRowHTML(c)));
+            }
+        }
+        function addCheckRow() {
+            const list = document.getElementById('ceChecksList');
+            if (!list) return;
+            // 移除"无 check"占位
+            const placeholder = list.querySelector('div[style*="无 check"]');
+            if (placeholder) placeholder.remove();
+            list.insertAdjacentHTML('beforeend', checkRowHTML(null));
+        }
+        function updateCheckRowVisibility(sel) {
+            const row = sel.closest('.check-row');
+            if (!row) return;
+            const t = sel.value;
+            row.dataset.evalType = t;
+            const expected = row.querySelector('.chk-expected');
+            const substr = row.querySelector('.chk-substr');
+            const lenWrap = row.querySelector('.chk-length');
+            if (expected) expected.style.display = (t === 'exact' || t === 'llm_judge') ? '' : 'none';
+            if (substr) substr.style.display = (t === 'contains' || t === 'not_contains') ? '' : 'none';
+            if (lenWrap) lenWrap.style.display = (t === 'length') ? 'flex' : 'none';
+        }
+        function collectChecks() {
+            const list = document.getElementById('ceChecksList');
+            if (!list) return null;
+            const rows = list.querySelectorAll('.check-row');
+            if (rows.length === 0) return null;
+            const checks = [];
+            rows.forEach(r => {
+                const name = r.querySelector('.chk-name')?.value.trim();
+                if (!name) return; // 跳过无 name 的行
+                const type = r.querySelector('.chk-type')?.value;
+                const field = r.querySelector('.chk-field')?.value.trim() || '';
+                const expected = r.querySelector('.chk-expected')?.value || null;
+                const evalParams = {};
+                if (type === 'contains' || type === 'not_contains') {
+                    const s = r.querySelector('.chk-substr')?.value;
+                    if (s !== null) evalParams.substring = s;
+                } else if (type === 'length') {
+                    const mn = r.querySelector('.chk-len-min')?.value;
+                    const mx = r.querySelector('.chk-len-max')?.value;
+                    if (mn !== '') evalParams.min = parseInt(mn, 10);
+                    if (mx !== '') evalParams.max = parseInt(mx, 10);
+                }
+                checks.push({ name, field, eval_type: type, expected, eval_params: evalParams });
+            });
+            return checks.length ? checks : null;
         }
 
         // B-13: 变量 kv 行编辑器（case 编辑器 + 导入表单共用）
@@ -2006,6 +2374,10 @@
                 outputRequirement = document.getElementById('ceOutputRequirement').value;
             }
 
+            // T1-2: tags + T1-5: checks
+            const tags = parseTagsInput(document.getElementById('ceTags').value);
+            const checks = collectChecks();
+
             try {
                 const evalset = await api(`/evalsets/${evalsetId}?project_id=${projectId}`);
                 const cases = evalset.cases || [];
@@ -2020,6 +2392,8 @@
                     eval_params: evalParams,
                     task_shape: taskShape,
                     variables: collectKvRows('ceVariablesList'),
+                    tags: tags,
+                    checks: checks,
                     enabled: idx >= 0 ? cases[idx].enabled : true
                 };
                 if (idx >= 0) {
@@ -2181,17 +2555,12 @@
 
                     <div class="form-group">
                         <label class="form-label">Token 统计模式</label>
-                        <div style="display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 8px;">
-                            <label style="display: flex; align-items: center; gap: 4px;">
-                                <input type="radio" name="rpTokenMode" value="paths" onchange="toggleRpTokenMode()"> 路径求和（token_paths）
-                            </label>
-                            <label style="display: flex; align-items: center; gap: 4px;">
-                                <input type="radio" name="rpTokenMode" value="fields" onchange="toggleRpTokenMode()"> 字段递归（token_fields）
-                            </label>
-                            <label style="display: flex; align-items: center; gap: 4px;">
-                                <input type="radio" name="rpTokenMode" value="none" onchange="toggleRpTokenMode()"> 不统计
-                            </label>
+                        <div class="token-mode-segment" id="rpTokenModeSegment">
+                            <label><input type="radio" name="rpTokenMode" value="paths" onchange="toggleRpTokenMode()"><span>路径求和</span></label>
+                            <label><input type="radio" name="rpTokenMode" value="fields" onchange="toggleRpTokenMode()"><span>字段递归</span></label>
+                            <label><input type="radio" name="rpTokenMode" value="none" onchange="toggleRpTokenMode()"><span>不统计</span></label>
                         </div>
+                        <div id="rpTokenEmptyHint" class="token-empty-hint" style="display: none;">未配置 token 统计——所有 case 的 token_used 将记为 0 且 token_missing = true</div>
                     </div>
 
                     <div class="form-group" id="rpTokenPathsGroup" style="display: none;">
@@ -2216,10 +2585,13 @@
                         </div>
                     </div>
 
-                    <div class="form-group">
-                        <label class="form-label">token_scope（JSON，可选过滤）</label>
-                        <textarea class="form-input mono" id="rpTokenScope" placeholder='{"path": "$.usage"} 或留空'>${escapeHtml(rp.token_scope ? JSON.stringify(rp.token_scope) : '')}</textarea>
-                    </div>
+                    <details class="token-scope-fold">
+                        <summary>token_scope（可选过滤，默认展开示例）</summary>
+                        <div style="margin-top: 8px;">
+                            <div style="margin-bottom: 6px; color: var(--ink-4);">JSON 格式过滤条件。例：<code>{"moduleType": "tools"}</code> → 只统计满足该条件的子树；留空 = 不过滤。</div>
+                            <textarea class="form-input mono" id="rpTokenScope" placeholder='{"moduleType": "tools"} 或留空'>${escapeHtml(rp.token_scope ? JSON.stringify(rp.token_scope) : '')}</textarea>
+                        </div>
+                    </details>
 
                     <div class="form-group">
                         <label class="form-label">样例响应（粘贴真实返回 JSON）</label>
@@ -2244,20 +2616,45 @@
                         <span class="card-title">LLM Judge 配置</span>
                     </div>
                     <div class="form-group">
+                        <label class="form-label">API 模式</label>
+                        <select class="form-input" id="judgeApiType" onchange="toggleJudgeApiMode()">
+                            <option value="openai_compatible" ${(jc.api_type || 'openai_compatible') === 'openai_compatible' ? 'selected' : ''}>OpenAI 兼容（messages + model 注入）</option>
+                            <option value="custom" ${jc.api_type === 'custom' ? 'selected' : ''}>自定义 API（模板渲染，不注入 model/messages）</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
                         <label class="form-label">base_url</label>
                         <input type="text" class="form-input mono" value="${escapeHtml(jc.base_url)}" id="judgeBaseUrl">
                     </div>
                     <div class="form-group">
-                        <label class="form-label">api_key</label>
+                        <label class="form-label">api_key <span id="judgeApiKeyHint" style="color: var(--ink-5); font-weight: normal;">（留空 = 不带 Authorization 头）</span></label>
                         ${secretInput('judgeApiKey', jc.api_key)}
                     </div>
-                    <div class="form-group">
-                        <label class="form-label">model</label>
-                        <input type="text" class="form-input mono" value="${escapeHtml(jc.model)}" id="judgeModel">
+                    <div class="form-group" id="judgeModelGroup">
+                        <label class="form-label">model <span id="judgeModelRequired" style="color: var(--red);">*</span></label>
+                        <input type="text" class="form-input mono" value="${escapeHtml(jc.model || '')}" id="judgeModel">
+                    </div>
+                    <div class="form-group" id="judgeRequestTemplateGroup" style="display: none;">
+                        <label class="form-label">request_template（必填，JSON 格式，不注入 model/messages）<span style="color: var(--ink-5); font-weight: normal;">— 占位符 {requirement} / {output}</span></label>
+                        <textarea class="form-input mono" id="judgeRequestTemplate" style="min-height: 100px;" placeholder='{"input": "{output}", "requirement": "{requirement}"}'>${escapeHtml(jc.request_template || '')}</textarea>
+                    </div>
+                    <div class="form-group" id="judgeAuthGroup" style="display: none;">
+                        <label class="form-label">auth 配置（JSON，与 Target auth 同结构）</label>
+                        <textarea class="form-input mono" id="judgeAuthJson" style="min-height: 80px;" placeholder='{"type": "none"}'>${escapeHtml(jc.auth ? JSON.stringify(jc.auth, null, 2) : '{"type": "none"}')}</textarea>
+                        <div style="font-size: 11px; color: var(--ink-4); margin-top: 4px;">
+                            支持类型：none / bearer / api_key / cookie / headers。格式参考 Target 卡片。
+                        </div>
+                    </div>
+                    <div class="form-group" id="judgeResponseParsingGroup" style="display: none;">
+                        <label class="form-label">response_parsing（JSON，与 Target 同结构）</label>
+                        <textarea class="form-input mono" id="judgeResponseParsingJson" style="min-height: 100px;" placeholder='{"output_paths": ["$.score"], "token_paths": ["$.usage.total_tokens"]}'>${escapeHtml(jc.response_parsing ? JSON.stringify(jc.response_parsing, null, 2) : '')}</textarea>
+                        <div style="font-size: 11px; color: var(--ink-4); margin-top: 4px;">
+                            必须能从响应中提取到分数（0-1 浮点数）；可选 token_paths 用于统计 Judge token。
+                        </div>
                     </div>
                     <div class="form-group">
-                        <label class="form-label">Prompt 模板</label>
-                        <textarea class="form-input mono" id="judgePrompt">${escapeHtml(jc.prompt_template || '')}</textarea>
+                        <label class="form-label">Prompt 模板（占位符 {requirement} / {output}）</label>
+                        <textarea class="form-input mono" id="judgePrompt" style="min-height: 100px;">${escapeHtml(jc.prompt_template || '')}</textarea>
                     </div>
                     <button class="btn btn-secondary" onclick="testJudgeConfig('${project.id}')">测试 Judge</button>
                     <div id="judgeTestResult" class="mt-4"></div>
@@ -2289,8 +2686,50 @@
             state._auth = JSON.parse(JSON.stringify(auth));
             renderAuthFields(project.id);
             toggleApiMode();
+            // T1-3: 初始化 Judge API 模式切换
+            toggleJudgeApiMode();
             // B-7: 初始化响应解析行编辑器（从 rp 数据填充）
             initRpPathLists(rp);
+
+            // T1-6: 配置页初始化完成后，建立 dirty 基准快照并绑定字段监听
+            // _suppressDirtyCheck 防止初始化期间 toggleApiMode 等触发 change 误报 dirty
+            state._suppressDirtyCheck = true;
+            state._configSnapshot = JSON.stringify(collectConfigSnapshot());
+            state._configDirty = false;
+            // 重新渲染配置页时清除可能残留的 dirty 圆点（保存后切回 config 走的就是这条路径）
+            removeConfigDirtyDot();
+            bindConfigDirtyListeners();
+            // 下一个事件循环再放开监听，避免初始化触发的 change 被吞掉后又被误报
+            setTimeout(() => { state._suppressDirtyCheck = false; }, 0);
+        }
+
+        // T1-6: 绑定配置页字段的 change/input 事件 → markConfigDirtyIfChanged
+        // 绑定到 #tabContent 容器，依赖事件冒泡；过滤只在 config tab 上生效
+        let _configDirtyBound = false;
+        function bindConfigDirtyListeners() {
+            if (_configDirtyBound) return;
+            const container = document.getElementById('tabContent');
+            if (!container) return;
+            container.addEventListener('input', (e) => {
+                if (!isInConfigTab()) return;
+                const t = e.target;
+                if (!t || !t.closest) return;
+                // 只关心表单字段
+                if (!t.matches('input, textarea, select')) return;
+                markConfigDirtyIfChanged();
+            });
+            container.addEventListener('change', (e) => {
+                if (!isInConfigTab()) return;
+                const t = e.target;
+                if (!t || !t.closest) return;
+                if (!t.matches('input, textarea, select')) return;
+                markConfigDirtyIfChanged();
+            });
+            _configDirtyBound = true;
+        }
+        function isInConfigTab() {
+            const tab = document.querySelector('.tab[data-tab="config"]');
+            return !!tab && tab.classList.contains('active');
         }
 
         // B-6: API 模式切换时调整字段提示
@@ -2497,6 +2936,9 @@
             // 切换到某模式但列表为空 → 自动加一行
             if (showPaths && document.getElementById('rpTokenPathsList').children.length === 0) addRpPathRow('token_paths');
             if (showFields && document.getElementById('rpTokenFieldsList').children.length === 0) addRpPathRow('token_fields');
+            // T1-7: 未配置（"不统计"）时显示空态提示
+            const emptyHint = document.getElementById('rpTokenEmptyHint');
+            if (emptyHint) emptyHint.style.display = (mode === 'none') ? '' : 'none';
         }
 
         // ============== JSON 树渲染 + 点选生成路径 ==============
@@ -2857,9 +3299,9 @@
                     </div>
                     <div class="metric-card">
                         <div class="metric-value num">${tokenVal}</div>
-                        <div class="metric-label">总 token</div>
+                        <div class="metric-label">总 token${s && s.judge_token ? ` <span style="font-size: 10px; color: var(--ink-4);" title="被评测消耗 ${formatNumber(s.total_token - s.judge_token)} + Judge 评测自身消耗 ${formatNumber(s.judge_token)}">(含 Judge ${formatNumber(s.judge_token)})</span>` : ''}</div>
                     </div>
-                    <div class="metric-card">
+                    <div class="metric-card" title="${allMissing ? 'token 不可得，完成率无法计算' : '通过数 / ((target_token + judge_token) / 10000)'}">
                         <div class="metric-value num">${tppVal}</div>
                         <div class="metric-label">每万 token 完成率</div>
                     </div>
@@ -3011,7 +3453,25 @@
                     <span style="margin-left: 16px; color: var(--ink-4);">得分: ${result.score}</span>
                     <span style="margin-left: 16px; color: var(--ink-4);">延迟: ${((result.latency_ms || 0) / 1000).toFixed(2)}s</span>
                     <span style="margin-left: 16px; color: var(--ink-4);" title="${result.token_missing ? '响应未配置 token 统计路径，或路径未命中' : ''}">token: ${result.token_missing ? '不可得' : result.token_used}</span>
+                    ${result.judge_token ? `<span style="margin-left: 16px; color: var(--ink-4);" title="LLM Judge 自身消耗">Judge token: ${result.judge_token}</span>` : ''}
                 </div>
+                ${result.check_results && result.check_results.length ? `
+                    <div class="check-result-list">
+                        <div style="font-size: 12px; color: var(--ink-3); margin-bottom: 6px;">多字段验证 checks</div>
+                        ${result.check_results.map(c => `
+                            <div class="check-result-row">
+                                <span class="chk-status ${c.passed ? 'pass' : 'fail'}"></span>
+                                <span style="flex: 1;"><strong>${escapeHtml(c.name || '')}</strong></span>
+                                <span style="color: var(--ink-4);">得分 ${c.score != null ? Number(c.score).toFixed(2) : '-'} · ${c.passed ? '通过' : '失败'}</span>
+                            </div>
+                        `).join('')}
+                    </div>
+                ` : ''}
+                ${cs.checks && cs.checks.length ? `
+                    <div style="margin-top: 12px; font-size: 11px; color: var(--ink-4);">
+                        配置的 checks：${cs.checks.map(c => escapeHtml(c.name + '(' + c.field + '·' + c.eval_type + ')')).join('，')}
+                    </div>
+                ` : ''}
             `;
             document.getElementById('caseModal').classList.remove('hidden');
         }
@@ -3078,6 +3538,150 @@
             } catch (err) {
                 // 错误已由 api 处理
             }
+        }
+
+        // ==================== T1-1: 项目删除 + 评测集清空 ====================
+        // 行内 ⋯ 菜单开关
+        function toggleRowMenu(e, menuId) {
+            e.stopPropagation();
+            const menu = document.getElementById(menuId);
+            if (!menu) return;
+            const isOpen = menu.classList.contains('open');
+            closeAllRowMenus();
+            if (!isOpen) menu.classList.add('open');
+        }
+        function closeAllRowMenus() {
+            document.querySelectorAll('.row-menu.open').forEach(m => m.classList.remove('open'));
+        }
+        document.addEventListener('click', closeAllRowMenus);
+
+        // 删除项目弹窗（输入名称二次确认 + 风险说明）
+        async function showDeleteProjectModal(projectId) {
+            // 拉一次详情，拿到评测集数 + run 数 + 名称
+            let proj = state.projects.find(p => p.id === projectId);
+            try {
+                proj = await api(`/projects/${projectId}`);
+            } catch (e) { /* 用列表项兜底 */ }
+            const name = proj?.name || '该项目';
+            const evalsetsCount = await (async () => {
+                try {
+                    const data = await api(`/projects/${projectId}/evalsets`);
+                    return (data.evalsets || []).length;
+                } catch (e) { return '?'; }
+            })();
+            const runsCount = await (async () => {
+                try {
+                    const data = await api(`/projects/${projectId}/runs`);
+                    return (data.runs || []).length;
+                } catch (e) { return '?'; }
+            })();
+
+            const modal = document.createElement('div');
+            modal.className = 'modal-overlay';
+            modal.id = 'deleteProjectModal';
+            modal.innerHTML = `
+                <div class="modal" style="max-width: 480px;">
+                    <div class="modal-header">
+                        <span class="modal-title" style="color: var(--red);">删除项目</span>
+                        <button class="modal-close" onclick="closeModal('deleteProjectModal')">×</button>
+                    </div>
+                    <div class="modal-body">
+                        <div style="margin-bottom: 12px;">
+                            将永久删除项目 <strong>${escapeHtml(name)}</strong>。
+                        </div>
+                        <div style="background: var(--red-bg); color: var(--red); padding: 12px; border-radius: 6px; font-size: 13px; margin-bottom: 12px;">
+                            将删除 <strong>${evalsetsCount}</strong> 个评测集、<strong>${runsCount}</strong> 次评测历史，不可恢复。
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">输入项目名称 <span style="color: var(--ink-4);">（${escapeHtml(name)}）</span> 以确认</label>
+                            <input type="text" class="confirm-input" id="deleteProjectConfirmInput"
+                                   placeholder="输入项目名称以确认"
+                                   oninput="updateDeleteProjectUnlock('${escapeHtml(name).replace(/'/g, "\\'")}', this.value)">
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button class="btn btn-secondary" onclick="closeModal('deleteProjectModal')">取消</button>
+                        <button class="btn btn-danger" id="deleteProjectConfirmBtn"
+                                onclick="confirmDeleteProject('${escapeHtml(projectId)}')" disabled>永久删除</button>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(modal);
+        }
+        function updateDeleteProjectUnlock(expectedName, currentInput) {
+            const btn = document.getElementById('deleteProjectConfirmBtn');
+            const input = document.getElementById('deleteProjectConfirmInput');
+            const matched = currentInput === expectedName;
+            if (btn) btn.disabled = !matched;
+            if (input) input.classList.toggle('unlocked', matched);
+        }
+        async function confirmDeleteProject(projectId) {
+            try {
+                await api(`/projects/${projectId}`, { method: 'DELETE' });
+                closeModal('deleteProjectModal');
+                showToast('项目已删除');
+                refreshSidebarProjects();
+                // 删除后跳回项目列表
+                navigateTo('projects');
+            } catch (err) {}
+        }
+
+        // 清空评测集弹窗（输入名称二次确认 → PUT cases: []）
+        function showClearEvalsetModal(evalset, projectId) {
+            const name = evalset?.name || '该评测集';
+            const caseCount = (evalset?.cases || []).length;
+            const modal = document.createElement('div');
+            modal.className = 'modal-overlay';
+            modal.id = 'clearEvalsetModal';
+            modal.innerHTML = `
+                <div class="modal" style="max-width: 480px;">
+                    <div class="modal-header">
+                        <span class="modal-title" style="color: var(--red);">清空评测集</span>
+                        <button class="modal-close" onclick="closeModal('clearEvalsetModal')">×</button>
+                    </div>
+                    <div class="modal-body">
+                        <div style="margin-bottom: 12px;">
+                            将清空评测集 <strong>${escapeHtml(name)}</strong> 的全部 ${caseCount} 条用例。
+                        </div>
+                        <div style="background: var(--amber-bg); color: var(--amber); padding: 12px; border-radius: 6px; font-size: 13px; margin-bottom: 12px;">
+                            评测集本身保留，历史 run 结果不受影响。<br>
+                            只是更换内容？用导入的「替换」模式更省事。
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">输入评测集名称 <span style="color: var(--ink-4);">（${escapeHtml(name)}）</span> 以确认</label>
+                            <input type="text" class="confirm-input" id="clearEvalsetConfirmInput"
+                                   placeholder="输入评测集名称以确认"
+                                   oninput="updateClearEvalsetUnlock('${escapeHtml(name).replace(/'/g, "\\'")}', this.value)">
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button class="btn btn-secondary" onclick="closeModal('clearEvalsetModal')">取消</button>
+                        <button class="btn btn-danger" id="clearEvalsetConfirmBtn"
+                                onclick="confirmClearEvalset('${escapeHtml(evalset.id)}', '${escapeHtml(projectId)}')" disabled>清空</button>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(modal);
+        }
+        function updateClearEvalsetUnlock(expectedName, currentInput) {
+            const btn = document.getElementById('clearEvalsetConfirmBtn');
+            const input = document.getElementById('clearEvalsetConfirmInput');
+            const matched = currentInput === expectedName;
+            if (btn) btn.disabled = !matched;
+            if (input) input.classList.toggle('unlocked', matched);
+        }
+        async function confirmClearEvalset(evalsetId, projectId) {
+            try {
+                const evalset = await api(`/evalsets/${evalsetId}?project_id=${projectId}`);
+                // 清空 = PUT 全量 cases 为空数组
+                await api(`/evalsets/${evalsetId}`, {
+                    method: 'PUT',
+                    body: JSON.stringify({ ...evalset, cases: [] })
+                });
+                closeModal('clearEvalsetModal');
+                showToast('已清空评测集');
+                switchTab('evalsets');
+            } catch (err) {}
         }
 
         // ==================== 评测集导入 ====================
@@ -3157,6 +3761,11 @@
                                 <label class="form-label">variables（可选，模板 {key} 变量）</label>
                                 <div id="manualVariablesList" class="kv-list"></div>
                                 <button class="btn btn-sm btn-secondary" onclick="addManualVarRow()">+ 添加变量</button>
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label">标签 tags（逗号分隔）</label>
+                                <input type="text" class="form-input" id="manualTags" placeholder="如：regression, smoke" oninput="renderTagsPreview(this.value, 'manualTagsPreview')">
+                                <div id="manualTagsPreview" class="tag-chips"></div>
                             </div>
                             <button class="btn btn-secondary" onclick="addManualCaseToList()">+ 添加到待导入列表</button>
                             <div id="manualCaseList" style="margin-top: 16px;"></div>
@@ -3301,6 +3910,21 @@
                         variables = item.variables;
                     }
                 }
+                // T1-2: 解析 tags（CSV JSON 字符串数组 / 逗号或分号分隔字符串 / JSON 数组）
+                let tags = [];
+                if (item.tags !== undefined && item.tags !== null && item.tags !== '') {
+                    if (Array.isArray(item.tags)) {
+                        tags = item.tags.map(String);
+                    } else if (typeof item.tags === 'string') {
+                        const s = item.tags.trim();
+                        if (s.startsWith('[')) {
+                            try { tags = JSON.parse(s).map(String); }
+                            catch (e) { caseErrors.push('tags 不是合法 JSON 数组'); }
+                        } else {
+                            tags = s.split(/[,，;；]/).map(t => t.trim()).filter(Boolean);
+                        }
+                    }
+                }
                 if (caseErrors.length > 0) {
                     errors.push({ row: rowNum, errors: caseErrors });
                 } else {
@@ -3313,6 +3937,7 @@
                         eval_type: item.eval_type || 'exact',
                         eval_params: typeof item.eval_params === 'object' ? item.eval_params : {},
                         variables: variables,
+                        tags: tags,
                         enabled: item.enabled !== false
                     });
                 }
@@ -3384,6 +4009,9 @@
             // B-13: 收集 variables kv 行
             const vars = collectKvRows('manualVariablesList');
             if (vars) caseObj.variables = vars;
+            // T1-2: 收集 tags
+            const tags = parseTagsInput(document.getElementById('manualTags').value);
+            if (tags.length > 0) caseObj.tags = tags;
             // 加入待导入列表
             if (!Array.isArray(importData.cases)) importData.cases = [];
             importData.cases.push(caseObj);
@@ -3398,6 +4026,8 @@
             document.getElementById('manualLenMin').value = '';
             document.getElementById('manualLenMax').value = '';
             document.getElementById('manualOutputRequirement').value = '';
+            document.getElementById('manualTags').value = '';
+            renderTagsPreview('', 'manualTagsPreview');
             // 重置变量行（保留一条空行）
             const mvList = document.getElementById('manualVariablesList');
             if (mvList) mvList.innerHTML = kvRowHTML('', '');
@@ -3419,12 +4049,15 @@
                 return;
             }
             listDiv.innerHTML = '<div style="font-size: 12px; color: var(--ink-4); margin-bottom: 8px;">待导入列表（' + importData.cases.length + ' 条，点击 × 删除）</div>' +
-                importData.cases.map((c, i) =>
-                    '<div style="display: flex; align-items: center; gap: 8px; padding: 6px 8px; background: var(--gray-bg); border-radius: 4px; margin-bottom: 4px;">' +
-                        '<span style="flex: 1; font-size: 13px;"><strong>' + escapeHtml(c.case_name) + '</strong> <span style="color: var(--ink-4); font-size: 11px;">[' + c.eval_type + ']</span></span>' +
+                importData.cases.map((c, i) => {
+                    const tagsHtml = (c.tags && c.tags.length)
+                        ? ' <span style="margin-left: 6px;">' + c.tags.map(t => '<span class="tag-chip" style="font-size:10px;padding:1px 6px;">' + escapeHtml(t) + '</span>').join('') + '</span>'
+                        : '';
+                    return '<div style="display: flex; align-items: center; gap: 8px; padding: 6px 8px; background: var(--gray-bg); border-radius: 4px; margin-bottom: 4px;">' +
+                        '<span style="flex: 1; font-size: 13px;"><strong>' + escapeHtml(c.case_name) + '</strong> <span style="color: var(--ink-4); font-size: 11px;">[' + c.eval_type + ']</span>' + tagsHtml + '</span>' +
                         '<button class="btn btn-sm btn-danger" onclick="removeManualCase(' + i + ')" title="删除">×</button>' +
-                    '</div>'
-                ).join('');
+                    '</div>';
+                }).join('');
             // 显示导入选项 + 启用确认按钮
             const optsDiv = document.getElementById('importOptions');
             if (optsDiv) optsDiv.style.display = 'block';
@@ -3562,7 +4195,20 @@
                 const warnJudge = hasLlmCases && !isJudgeReady;
                 const warnTarget = !isTargetReady;
 
+                // T1-2: 收集全部 tag（去重，保留顺序），供筛选 chips 渲染
+                const allTags = [];
+                evalsets.forEach(es => (es.cases || []).forEach(c => (c.tags || []).forEach(t => { if (!allTags.includes(t)) allTags.push(t); })));
+
+                // T1-6: dirty 检测——若配置页有未保存改动，发起评测弹窗提示
+                const dirtyNow = state._configDirty;
+
                 body.innerHTML = `
+                    ${dirtyNow ? `
+                        <div class="dirty-bar">
+                            <span>⚠ 配置页有未保存的更改，评测将使用已保存的旧配置</span>
+                            <a onclick="closeModal('runModal'); switchTab('config')">去保存</a>
+                        </div>
+                    ` : ''}
                     <div class="form-group">
                         <label class="form-label">选择评测集</label>
                         <select class="form-input" id="runEvalsetSelect" onchange="updateRunEvalsetInfo()">
@@ -3573,6 +4219,19 @@
                         </select>
                     </div>
                     <div id="runEvalsetInfo" style="margin-top: 12px;"></div>
+                    ${allTags.length > 0 ? `
+                        <div class="tag-filter-bar">
+                            <div style="font-size: 12px; color: var(--ink-3); margin-bottom: 6px;">按标签筛选（不选 = 全部参与）</div>
+                            <div id="runTagChips" style="display: flex; flex-wrap: wrap; gap: 6px;">
+                                ${allTags.map(t => `<span class="tag-chip tag-chip-toggle off" data-tag="${escapeHtml(t)}" onclick="toggleRunTagChip(this)">${escapeHtml(t)}<span class="tag-chip-x">✓</span></span>`).join('')}
+                            </div>
+                            <div class="tag-filter-mode">
+                                组合：
+                                <label><input type="radio" name="runTagMode" value="any" checked> 含任一</label>
+                                <label><input type="radio" name="runTagMode" value="all"> 含全部</label>
+                            </div>
+                        </div>
+                    ` : ''}
                     ${(warnTarget || warnJudge) ? `
                         <div style="margin-top: 12px; padding: 10px 12px; background: var(--amber-bg); border: 1px solid var(--amber-bd); border-radius: var(--radius-md); color: var(--amber); font-size: 12px;">
                             ${warnTarget ? '<div>⚠ Target API 未配置完整，发起后所有 case 将失败</div>' : ''}
@@ -3594,16 +4253,34 @@
             if (!select || !info || !state.currentEvalsets) return;
             const evalset = state.currentEvalsets.find(e => e.id === select.value);
             if (!evalset) return;
-            const enabledCases = (evalset.cases || []).filter(c => c.enabled);
+            // T1-2: 若有筛选 tag，按 tag 过滤后展示
+            const selectedTags = Array.from(document.querySelectorAll('#runTagChips .tag-chip-toggle:not(.off)'))
+                .map(el => el.dataset.tag);
+            const tagMode = document.querySelector('input[name="runTagMode"]:checked')?.value || 'any';
+            let enabledCases = (evalset.cases || []).filter(c => c.enabled);
+            if (selectedTags.length > 0) {
+                enabledCases = enabledCases.filter(c => {
+                    const ct = c.tags || [];
+                    return tagMode === 'all'
+                        ? selectedTags.every(t => ct.includes(t))
+                        : selectedTags.some(t => ct.includes(t));
+                });
+            }
             const byType = {};
             enabledCases.forEach(c => { byType[c.eval_type] = (byType[c.eval_type] || 0) + 1; });
             const typeBreakdown = Object.entries(byType).map(([t, n]) => `<span class="tag tag-${t}" style="margin-right: 4px;">${escapeHtml(t)} ×${n}</span>`).join('');
             info.innerHTML = `
-                <div style="color: var(--ink-3); font-size: 12px;">将运行 <b style="color: var(--ink-1);">${enabledCases.length}</b> 条启用用例</div>
+                <div style="color: var(--ink-3); font-size: 12px;">将运行 <b style="color: var(--ink-1);">${enabledCases.length}</b> 条${selectedTags.length > 0 ? '（按标签筛选后）' : '启用'}用例</div>
                 <div style="margin-top: 6px;">${typeBreakdown || '<span style="color: var(--red);">无启用用例</span>'}</div>
             `;
             const confirmBtn = document.getElementById('confirmRunBtn');
             if (confirmBtn) confirmBtn.disabled = enabledCases.length === 0;
+        }
+
+        // T1-2: tag chip 选中/取消切换
+        function toggleRunTagChip(el) {
+            el.classList.toggle('off');
+            updateRunEvalsetInfo();
         }
 
         async function confirmRunEval(projectId) {
@@ -3612,10 +4289,18 @@
             const evalsetId = select.value;
             const confirmBtn = document.getElementById('confirmRunBtn');
             if (confirmBtn) { confirmBtn.disabled = true; confirmBtn.textContent = '发起中...'; }
+            // T1-2: 收集 case_filter
+            const selectedTags = Array.from(document.querySelectorAll('#runTagChips .tag-chip-toggle:not(.off)'))
+                .map(el => el.dataset.tag);
+            const tagMode = document.querySelector('input[name="runTagMode"]:checked')?.value || 'any';
+            const body = { project_id: projectId, evalset_id: evalsetId };
+            if (selectedTags.length > 0) {
+                body.case_filter = { tags: selectedTags, mode: tagMode };
+            }
             try {
                 const run = await api('/runs', {
                     method: 'POST',
-                    body: JSON.stringify({ project_id: projectId, evalset_id: evalsetId })
+                    body: JSON.stringify(body)
                 });
                 closeModal('runModal');
                 showToast('评测已开始');
@@ -3684,9 +4369,62 @@
             }
         }
 
+        // T1-3: Judge API 模式切换
+        function toggleJudgeApiMode() {
+            const mode = document.getElementById('judgeApiType')?.value;
+            if (!mode) return;
+            const showCustom = mode === 'custom';
+            const setDisplay = (id, show) => {
+                const el = document.getElementById(id);
+                if (el) el.style.display = show ? '' : 'none';
+            };
+            // openai_compatible: model 必填；custom: model 可选，request_template 必填
+            setDisplay('judgeRequestTemplateGroup', showCustom);
+            setDisplay('judgeAuthGroup', showCustom);
+            setDisplay('judgeResponseParsingGroup', showCustom);
+            const modelRequired = document.getElementById('judgeModelRequired');
+            if (modelRequired) modelRequired.style.display = showCustom ? 'none' : '';
+        }
+
+        // T1-3: 收集 Judge 配置（auth + response_parsing 从 JSON 文本框解析）
+        function collectJudgeConfigExtras() {
+            const mode = document.getElementById('judgeApiType')?.value || 'openai_compatible';
+            const result = { api_type: mode, auth: { type: 'none' }, response_parsing: null, request_template: null };
+            if (mode !== 'custom') return result;
+            const tplEl = document.getElementById('judgeRequestTemplate');
+            result.request_template = tplEl ? tplEl.value : null;
+            // auth JSON
+            const authEl = document.getElementById('judgeAuthJson');
+            if (authEl && authEl.value.trim()) {
+                try {
+                    result.auth = JSON.parse(authEl.value);
+                } catch (e) {
+                    throw new Error('Judge auth 不是合法 JSON: ' + e.message);
+                }
+            }
+            // response_parsing JSON
+            const rpEl = document.getElementById('judgeResponseParsingJson');
+            if (rpEl && rpEl.value.trim()) {
+                try {
+                    result.response_parsing = JSON.parse(rpEl.value);
+                } catch (e) {
+                    throw new Error('Judge response_parsing 不是合法 JSON: ' + e.message);
+                }
+            }
+            return result;
+        }
+
         async function testJudgeConfig(projectId) {
             const resultDiv = document.getElementById('judgeTestResult');
             resultDiv.innerHTML = '<span class="text-muted">测试中...</span>';
+
+            let extras;
+            try {
+                extras = collectJudgeConfigExtras();
+            } catch (e) {
+                resultDiv.innerHTML = `<span style="color: var(--red);">✗ ${escapeHtml(e.message)}</span>`;
+                return;
+            }
 
             try {
                 const res = await api(`/test/judge?project_id=${encodeURIComponent(projectId)}`, {
@@ -3698,12 +4436,16 @@
                         prompt_template: document.getElementById('judgePrompt').value,
                         input: '测试输入',
                         output_requirement: '测试要求',
-                        actual_output: '测试输出'
+                        actual_output: '测试输出',
+                        api_type: extras.api_type,
+                        request_template: extras.request_template,
+                        auth: extras.auth,
+                        response_parsing: extras.response_parsing
                     })
                 });
 
                 if (res.ok) {
-                    resultDiv.innerHTML = `<span style="color: var(--green);">✓ 得分: ${res.score} · ${res.passed ? '通过' : '不通过'}</span>`;
+                    resultDiv.innerHTML = `<span style="color: var(--green);">✓ 得分: ${res.score} · ${res.passed ? '通过' : '不通过'}${res.token_used ? ' · ' + res.token_used + ' tokens' : ''}</span>`;
                 } else {
                     resultDiv.innerHTML = `<span style="color: var(--red);">✗ ${escapeHtml(res.error?.message || '失败')}</span>`;
                 }
@@ -3713,14 +4455,26 @@
         }
 
         async function saveProjectConfig(projectId) {
+            // T1-3: 收集 Judge 双模式字段（可能抛出 JSON 解析错误）
+            let judgeExtras;
+            try {
+                judgeExtras = collectJudgeConfigExtras();
+            } catch (e) {
+                showToast(e.message, 'error');
+                return;
+            }
             const config = {
                 id: projectId,
                 name: state.currentProject.name,
                 task_shape: state.currentProject.task_shape,
                 judge_config: {
+                    api_type: judgeExtras.api_type,
                     base_url: document.getElementById('judgeBaseUrl').value,
                     api_key: readSecret('judgeApiKey') || '__UNCHANGED__',
-                    model: document.getElementById('judgeModel').value,
+                    model: document.getElementById('judgeModel').value || null,
+                    request_template: judgeExtras.request_template,
+                    auth: judgeExtras.auth,
+                    response_parsing: judgeExtras.response_parsing,
                     prompt_template: document.getElementById('judgePrompt').value
                 },
                 target_config: {
@@ -3743,10 +4497,64 @@
                 });
                 // 更新本地缓存，让后续操作看到最新掩码状态
                 state.currentProject = updated;
+                // T1-6: 保存后清除 dirty 标记
+                state._configDirty = false;
+                state._configSnapshot = JSON.stringify(collectConfigSnapshot());
                 showToast('保存成功');
                 // 重新渲染配置页，把掩码状态刷新（用户改过的字段恢复为 masked 占位）
                 switchTab('config');
             } catch (err) {}
+        }
+
+        // T1-6: 收集当前配置页可序列化字段（用于 dirty 比对）
+        function collectConfigSnapshot() {
+            // 跳过 secret 字段（masked 状态用户没改 → __UNCHANGED__，不会触发 dirty）
+            let judgeExtras = null;
+            try { judgeExtras = collectJudgeConfigExtras(); } catch (e) { judgeExtras = { _parseError: e.message }; }
+            return {
+                target_api_type: document.getElementById('targetApiType')?.value,
+                target_base_url: document.getElementById('targetBaseUrl')?.value,
+                target_api_key: readSecret('targetApiKey'),
+                target_model: document.getElementById('targetModel')?.value,
+                target_template: document.getElementById('targetTemplate')?.value,
+                target_auth: collectAuth(),
+                target_rp: collectResponseParsing(),
+                judge_api_type: document.getElementById('judgeApiType')?.value,
+                judge_base_url: document.getElementById('judgeBaseUrl')?.value,
+                judge_api_key: readSecret('judgeApiKey'),
+                judge_model: document.getElementById('judgeModel')?.value,
+                judge_template: document.getElementById('judgeRequestTemplate')?.value,
+                judge_auth_json: document.getElementById('judgeAuthJson')?.value,
+                judge_rp_json: document.getElementById('judgeResponseParsingJson')?.value,
+                judge_prompt: document.getElementById('judgePrompt')?.value,
+                budget_limit: document.getElementById('budgetLimit')?.value,
+                budget_warn_only: document.getElementById('budgetWarnOnly')?.checked,
+                _judgeExtras: judgeExtras
+            };
+        }
+
+        // T1-6: 比较当前快照与初始快照，返回 dirty 状态
+        function isConfigDirty() {
+            if (!state._configSnapshot) return false;
+            const current = JSON.stringify(collectConfigSnapshot());
+            return current !== state._configSnapshot;
+        }
+
+        // T1-6: 触发 dirty 检测更新（配置页字段 change 事件回调）
+        function markConfigDirtyIfChanged() {
+            if (state._suppressDirtyCheck) return;
+            const dirty = isConfigDirty();
+            state._configDirty = dirty;
+            // 配置 tab 标签上加/移除 dirty 圆点
+            const configTab = document.querySelector('.tab[data-tab="config"]');
+            if (configTab) {
+                const existingDot = configTab.querySelector('.dirty-tab-dot');
+                if (dirty && !existingDot) {
+                    configTab.insertAdjacentHTML('beforeend', '<span class="dirty-tab-dot"></span>');
+                } else if (!dirty && existingDot) {
+                    existingDot.remove();
+                }
+            }
         }
 
         async function toggleCaseEnabled(evalsetId, projectId, caseId, enabled) {

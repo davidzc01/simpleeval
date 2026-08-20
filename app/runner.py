@@ -1,10 +1,12 @@
 """评测执行器：跑一个评测集，产出结果 + 性能统计 + 成本对比"""
 
+import json
 import time
 import uuid
 from datetime import datetime, timezone
+from typing import Optional
 
-from .models import Project, EvalSet, CaseResult, EvalSummary, EvalRun
+from .models import Project, EvalSet, CaseResult, EvalSummary, EvalRun, CaseFilter
 from .eval_types import run_rule_based
 from .judge import call_target, judge_with_llm, APIError, NetworkError, ResponseFormatError
 from .storage import save_run
@@ -31,6 +33,49 @@ def _generate_run_id() -> str:
     return f"run-{int(time.time() * 1000)}-{uuid.uuid4().hex[:8]}"
 
 
+def _apply_case_filter(cases: list, case_filter: Optional[CaseFilter]) -> list:
+    """T1-2: 按 tags 筛选 case
+
+    - case_filter 为 None 或 tags 为空 → 不筛选，返回原列表
+    - mode="any" → case 含任一标签即入选（OR）
+    - mode="all" → case 须含全部标签才入选（AND）
+    """
+    if not case_filter or not case_filter.tags:
+        return cases
+    # EvalCase.tags 是 list[str] = Field(default_factory=list)，Pydantic 保证永不为 None
+    if case_filter.mode == "all":
+        return [c for c in cases if all(t in c.tags for t in case_filter.tags)]
+    # any
+    return [c for c in cases if any(t in c.tags for t in case_filter.tags)]
+
+
+def _extract_check_field(actual_output: str, field: str) -> str:
+    """T1-5: 从 actual_output 中提取 check.field 指定的字段值。
+
+    - field 为空 → 返回 actual_output 原文
+    - 尝试 json.loads(actual_output)，成功则按点路径取值
+    - 取到的标量统一 stringify（bool → "true"/"false"）
+    - json.loads 失败或路径未命中 → 返回 actual_output 原文兜底
+    """
+    if not field:
+        return actual_output
+    try:
+        obj = json.loads(actual_output)
+    except (json.JSONDecodeError, TypeError):
+        return actual_output
+    cur = obj
+    for seg in field.split("."):
+        if isinstance(cur, dict) and seg in cur:
+            cur = cur[seg]
+        else:
+            return actual_output
+    if isinstance(cur, bool):
+        return "true" if cur else "false"
+    if isinstance(cur, (dict, list)):
+        return json.dumps(cur, ensure_ascii=False)
+    return str(cur)
+
+
 def percentile(data: list[float], p: float) -> float:
     """计算分位数，使用线性插值"""
     if not data:
@@ -44,14 +89,23 @@ def percentile(data: list[float], p: float) -> float:
 
 
 async def check_judge_available(project: Project) -> tuple[bool, str]:
-    """测试 Judge LLM 是否可用，返回 (可用, 错误信息)"""
+    """测试 Judge LLM 是否可用，返回 (可用, 错误信息)
+
+    T1-3: 支持双模式——custom 模式用 project.judge_config 的 request_template/auth/response_parsing
+    """
     try:
+        jc = project.judge_config
         await judge_with_llm(
-            base_url=project.judge_config.base_url,
-            api_key=project.judge_config.api_key,
-            model=project.judge_config.model,
+            base_url=jc.base_url,
+            api_key=jc.api_key,
+            model=jc.model or "",
             requirement="测试",
             output="测试",
+            judge_prompt=jc.prompt_template,
+            api_type=jc.api_type,
+            request_template=jc.request_template,
+            auth=jc.auth,
+            response_parsing=jc.response_parsing,
         )
         return True, ""
     except NetworkError as e:
@@ -61,6 +115,93 @@ async def check_judge_available(project: Project) -> tuple[bool, str]:
     except ResponseFormatError as e:
         # 格式错误但 API 可达，也算可用
         return True, ""
+
+
+async def _evaluate_case(
+    project: Project,
+    case,
+    actual: str,
+    token: int,
+    token_missing: bool,
+    judge_available: bool,
+    judge_error: str,
+) -> tuple[bool, float, Optional[str], int, list[dict], str]:
+    """评测单条 case，返回 (passed, score, skipped_reason, judge_token, check_results, actual_output)
+
+    T1-4: 收集 judge_token（llm_judge case 才有）
+    T1-5: 运行 checks（多字段验证），case 通过 = 主验证通过 AND 所有 checks 通过
+    actual_output 会被修正（如 judge 不可用时标 [SKIPPED]）
+    """
+    passed = False
+    score = 0.0
+    skipped_reason: Optional[str] = None
+    judge_token = 0
+    check_results: list[dict] = []
+
+    if case.eval_type == "llm_judge":
+        if not judge_available:
+            skipped_reason = judge_error
+            actual = f"[SKIPPED] {skipped_reason}"
+            token = 0
+        else:
+            requirement = case.output_requirement or case.expected_output or ""
+            jc = project.judge_config
+            score, judge_token = await judge_with_llm(
+                base_url=jc.base_url,
+                api_key=jc.api_key,
+                model=jc.model or "",
+                requirement=requirement,
+                output=actual,
+                judge_prompt=jc.prompt_template,
+                api_type=jc.api_type,
+                request_template=jc.request_template,
+                auth=jc.auth,
+                response_parsing=jc.response_parsing,
+            )
+            passed = score >= JUDGE_THRESHOLD
+    else:
+        passed = run_rule_based(
+            case.eval_type, actual, case.expected_output, case.eval_params or {}
+        )
+        score = 1.0 if passed else 0.0
+
+    # T1-5: 多字段验证（checks）
+    if case.checks and not skipped_reason:
+        all_checks_passed = True
+        for chk in case.checks:
+            chk_value = _extract_check_field(actual, chk.field)
+            if chk.eval_type == "llm_judge":
+                if not judge_available:
+                    chk_passed = False
+                    chk_score = 0.0
+                else:
+                    chk_requirement = chk.expected or ""
+                    jc = project.judge_config
+                    chk_score, chk_judge_token = await judge_with_llm(
+                        base_url=jc.base_url,
+                        api_key=jc.api_key,
+                        model=jc.model or "",
+                        requirement=chk_requirement,
+                        output=chk_value,
+                        judge_prompt=jc.prompt_template,
+                        api_type=jc.api_type,
+                        request_template=jc.request_template,
+                        auth=jc.auth,
+                        response_parsing=jc.response_parsing,
+                    )
+                    chk_passed = chk_score >= JUDGE_THRESHOLD
+                    judge_token += chk_judge_token
+            else:
+                chk_passed = run_rule_based(
+                    chk.eval_type, chk_value, chk.expected, chk.eval_params or {}
+                )
+                chk_score = 1.0 if chk_passed else 0.0
+            check_results.append({"name": chk.name, "passed": chk_passed, "score": chk_score})
+            if not chk_passed:
+                all_checks_passed = False
+        passed = passed and all_checks_passed
+
+    return passed, score, skipped_reason, judge_token, check_results, actual
 
 
 async def run_evalset(project: Project, evalset: EvalSet) -> EvalRun:
@@ -97,32 +238,10 @@ async def run_evalset(project: Project, evalset: EvalSet) -> EvalRun:
             )
             latency_ms = (time.perf_counter() - start) * 1000
 
-            # 2. 评测
-            passed = False
-            score = 0.0
-            skipped_reason = None
-
-            if case.eval_type == "llm_judge":
-                if not judge_available:
-                    skipped_reason = judge_error
-                    actual = f"[SKIPPED] {skipped_reason}"
-                    token = 0
-                else:
-                    requirement = case.output_requirement or case.expected_output or ""
-                    score = await judge_with_llm(
-                        base_url=project.judge_config.base_url,
-                        api_key=project.judge_config.api_key,
-                        model=project.judge_config.model,
-                        requirement=requirement,
-                        output=actual,
-                        judge_prompt=project.judge_config.prompt_template,
-                    )
-                    passed = score >= JUDGE_THRESHOLD
-            else:
-                passed = run_rule_based(
-                    case.eval_type, actual, case.expected_output, case.eval_params or {}
-                )
-                score = 1.0 if passed else 0.0
+            passed, score, skipped_reason, judge_token, check_results, actual = await _evaluate_case(
+                project, case, actual, token, token_missing,
+                judge_available, judge_error,
+            )
 
         except (APIError, NetworkError, ResponseFormatError) as e:
             latency_ms = (time.perf_counter() - start) * 1000
@@ -132,6 +251,8 @@ async def run_evalset(project: Project, evalset: EvalSet) -> EvalRun:
             token = 0
             skipped_reason = None
             token_missing = _token_missing_on_error(project)
+            judge_token = 0
+            check_results = []
 
         results.append(
             CaseResult(
@@ -143,6 +264,8 @@ async def run_evalset(project: Project, evalset: EvalSet) -> EvalRun:
                 token_used=token,
                 skipped_reason=skipped_reason,
                 token_missing=token_missing,
+                judge_token=judge_token,
+                check_results=check_results,
             )
         )
 
@@ -168,12 +291,16 @@ def _build_run_result(
     passed_count = sum(1 for r in results if r.passed)
     skipped_count = sum(1 for r in results if r.skipped_reason is not None)
     total_token = sum(r.token_used for r in results)
+    # T1-4: 评测成本 = 被评测消耗 + 评测自身消耗（judge token）
+    judge_token_total = sum(r.judge_token for r in results)
     total_latency = sum(r.latency_ms for r in results)
     latencies = [r.latency_ms for r in results]
 
     valid_count = total - skipped_count
     pass_rate = passed_count / valid_count if valid_count > 0 else 0.0
-    token_per_pass = passed_count / (total_token / 10000) if total_token > 0 else 0.0
+    # T1-4: token_per_pass = 通过数 / ((target_token + judge_token)/10000)
+    cost_token = total_token + judge_token_total
+    token_per_pass = passed_count / (cost_token / 10000) if cost_token > 0 else 0.0
     latency_p50 = percentile(latencies, 50)
     latency_p95 = percentile(latencies, 95)
 
@@ -184,6 +311,7 @@ def _build_run_result(
         token_per_pass=round(token_per_pass, 4),
         latency_p50=round(latency_p50, 2),
         latency_p95=round(latency_p95, 2),
+        judge_token=judge_token_total,
     )
 
     return EvalRun(
@@ -199,9 +327,14 @@ def _build_run_result(
     )
 
 
-async def execute_run(run: EvalRun, project: Project, evalset: EvalSet) -> EvalRun:
-    """异步执行评测（供 BackgroundTasks 调用）"""
+async def execute_run(run: EvalRun, project: Project, evalset: EvalSet, case_filter: Optional[CaseFilter] = None) -> EvalRun:
+    """异步执行评测（供 BackgroundTasks 调用）
+
+    T1-2: case_filter 按标签筛选 case（None/空 = 全部启用 case）
+    """
+    # 过滤启用的 case，再按 case_filter 筛选
     enabled_cases = [c for c in evalset.cases if c.enabled]
+    enabled_cases = _apply_case_filter(enabled_cases, case_filter)
 
     # 更新状态为 running
     run.status = "running"
@@ -236,31 +369,10 @@ async def execute_run(run: EvalRun, project: Project, evalset: EvalSet) -> EvalR
                 )
                 latency_ms = (time.perf_counter() - start) * 1000
 
-                passed = False
-                score = 0.0
-                skipped_reason = None
-
-                if case.eval_type == "llm_judge":
-                    if not judge_available:
-                        skipped_reason = judge_error
-                        actual = f"[SKIPPED] {skipped_reason}"
-                        token = 0
-                    else:
-                        requirement = case.output_requirement or case.expected_output or ""
-                        score = await judge_with_llm(
-                            base_url=project.judge_config.base_url,
-                            api_key=project.judge_config.api_key,
-                            model=project.judge_config.model,
-                            requirement=requirement,
-                            output=actual,
-                            judge_prompt=project.judge_config.prompt_template,
-                        )
-                        passed = score >= JUDGE_THRESHOLD
-                else:
-                    passed = run_rule_based(
-                        case.eval_type, actual, case.expected_output, case.eval_params or {}
-                    )
-                    score = 1.0 if passed else 0.0
+                passed, score, skipped_reason, judge_token, check_results, actual = await _evaluate_case(
+                    project, case, actual, token, token_missing,
+                    judge_available, judge_error,
+                )
 
             except (APIError, NetworkError, ResponseFormatError) as e:
                 latency_ms = (time.perf_counter() - start) * 1000
@@ -270,6 +382,8 @@ async def execute_run(run: EvalRun, project: Project, evalset: EvalSet) -> EvalR
                 token = 0
                 skipped_reason = None
                 token_missing = _token_missing_on_error(project)
+                judge_token = 0
+                check_results = []
 
             results.append(
                 CaseResult(
@@ -281,6 +395,8 @@ async def execute_run(run: EvalRun, project: Project, evalset: EvalSet) -> EvalR
                     token_used=token,
                     skipped_reason=skipped_reason,
                     token_missing=token_missing,
+                    judge_token=judge_token,
+                    check_results=check_results,
                 )
             )
             # B-20: 每 case 落盘，前端轮询能看到 results 增长（status 保持 running）

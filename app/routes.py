@@ -16,12 +16,12 @@ from .models import (
     CaseResult, ErrorResponse,
 )
 from .storage import (
-    list_projects, get_project, save_project,
-    list_evalsets, get_evalset, save_evalset,
+    list_projects, get_project, save_project, delete_project,
+    list_evalsets, get_evalset, save_evalset, delete_evalset,
     list_runs, get_run, save_run,
     get_project_last_run, get_project_trend,
 )
-from .runner import execute_run, _utc_now, _generate_run_id
+from .runner import execute_run, _utc_now, _generate_run_id, _apply_case_filter
 from .judge import call_target, judge_with_llm, NetworkError, APIError, ResponseFormatError
 from .errors import (
     project_not_found, evalset_not_found, run_not_found,
@@ -91,6 +91,7 @@ def _last_run_summary(last_run):
         "latency_p95": s.latency_p95 if s else 0,
         "failed_count": failed_count,
         "token_missing": token_missing,
+        "judge_token": s.judge_token if s else 0,
     }
 
 
@@ -179,8 +180,40 @@ async def update_project(project_id: str, project: Project):
                       "message": "custom 模式下 request_template 必填"}
         })
 
+    # T1-3: judge_config 对称校验——与 target_config 同口径
+    jc = project.judge_config
+    if jc.api_type == "openai_compatible" and not (jc.model and jc.model.strip()):
+        raise HTTPException(status_code=422, detail={
+            "error": {"code": "invalid_config",
+                      "message": "openai_compatible 模式下 judge model 必填"}
+        })
+    if jc.api_type == "custom":
+        if not (jc.request_template and jc.request_template.strip()):
+            raise HTTPException(status_code=422, detail={
+                "error": {"code": "invalid_config",
+                          "message": "custom 模式下 judge request_template 必填"}
+            })
+        if jc.response_parsing is None:
+            raise HTTPException(status_code=422, detail={
+                "error": {"code": "invalid_config",
+                          "message": "custom 模式下 judge response_parsing 必填（用于从自定义 API 响应提取分数与 token）"}
+            })
+
     save_project(project)
     return _project_to_response(project)
+
+
+@router.delete("/projects/{project_id}")
+async def remove_project(project_id: str):
+    """T1-1 / B-23: 删除项目（连带删评测集与全部 runs）
+
+    前端用输入名称二次确认，后端只做物理删除。
+    """
+    project = get_project(project_id)
+    if not project:
+        project_not_found(project_id)
+    delete_project(project_id)
+    return {"deleted": project_id, "project_name": project.name if project else None}
 
 
 @router.get("/projects/{project_id}/evalsets")
@@ -292,6 +325,22 @@ async def import_evalset(
                 enabled = bool(enabled_raw)
             # task_shape 可选
             task_shape = row.get("task_shape") or None
+            # T1-2: tags 可选（CSV JSON 字符串数组 / JSON 数组 / 逗号或分号分隔字符串）
+            tags = []
+            t_raw = row.get("tags")
+            if t_raw is not None and t_raw != "":
+                if isinstance(t_raw, str):
+                    stripped = t_raw.strip()
+                    if stripped.startswith("["):
+                        try:
+                            tags = json.loads(stripped)
+                        except json.JSONDecodeError:
+                            tags = [t.strip() for t in stripped.replace(";", ",").split(",") if t.strip()]
+                    else:
+                        # 逗号或分号分隔
+                        tags = [t.strip() for t in stripped.replace(";", ",").split(",") if t.strip()]
+                elif isinstance(t_raw, list):
+                    tags = t_raw
             # variables 可选（B-13）：对象或 JSON 字符串两种形态
             variables = None
             v_raw = row.get("variables")
@@ -313,6 +362,7 @@ async def import_evalset(
                 eval_type=row.get("eval_type", "exact"),
                 eval_params=ep,
                 enabled=enabled,
+                tags=tags,
             )
             if task_shape:
                 kwargs["task_shape"] = task_shape
@@ -358,7 +408,7 @@ async def export_evalset(evalset_id: str, project_id: str):
     # 生成 CSV
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(["id", "case_name", "input", "expected_output", "output_requirement", "eval_type", "eval_params", "enabled"])
+    writer.writerow(["id", "case_name", "input", "expected_output", "output_requirement", "eval_type", "eval_params", "enabled", "tags"])
 
     for case in evalset.cases:
         writer.writerow([
@@ -370,6 +420,7 @@ async def export_evalset(evalset_id: str, project_id: str):
             case.eval_type,
             json.dumps(case.eval_params) if case.eval_params else "{}",
             "true" if case.enabled else "false",
+            json.dumps(case.tags, ensure_ascii=False) if case.tags else "[]",
         ])
 
     # 添加 UTF-8 BOM 以支持 Excel
@@ -392,9 +443,10 @@ async def create_run(req: RunEvalRequest, background_tasks: BackgroundTasks):
     if not evalset:
         evalset_not_found(req.evalset_id)
 
-    # 检查是否有启用的 case
+    # 检查是否有启用的 case（T1-2: 按 case_filter 筛选后判断）
     enabled_cases = [c for c in evalset.cases if c.enabled]
-    if not enabled_cases:
+    filtered_cases = _apply_case_filter(enabled_cases, req.case_filter)
+    if not filtered_cases:
         no_enabled_cases()
 
     # 创建 run 记录
@@ -408,8 +460,8 @@ async def create_run(req: RunEvalRequest, background_tasks: BackgroundTasks):
     )
     save_run(run)
 
-    # 后台执行
-    background_tasks.add_task(execute_run, run, project, evalset)
+    # 后台执行（T1-2: 传 case_filter）
+    background_tasks.add_task(execute_run, run, project, evalset, req.case_filter)
 
     return {"run_id": run_id, "status": "queued"}
 
@@ -466,7 +518,7 @@ async def export_run(run_id: str, project_id: str):
 
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(["case_name", "input", "expected_output", "actual_output", "passed", "score", "latency_ms", "token_used", "skipped_reason"])
+    writer.writerow(["case_name", "input", "expected_output", "actual_output", "passed", "score", "latency_ms", "token_used", "judge_token", "check_results", "skipped_reason"])
 
     # 获取评测集获取 input 和 expected_output
     evalset = get_evalset(run.evalset_id, project_id)
@@ -483,6 +535,8 @@ async def export_run(run_id: str, project_id: str):
             result.score,
             result.latency_ms,
             result.token_used,
+            result.judge_token,
+            json.dumps(result.check_results, ensure_ascii=False) if result.check_results else "[]",
             result.skipped_reason or "",
         ])
 
@@ -572,25 +626,30 @@ async def test_parsing(req: TestParsingRequest):
 
 @router.post("/test/judge")
 async def test_judge(req: TestJudgeRequest, project_id: Optional[str] = None):
-    """测试 Judge（支持 __UNCHANGED__ 哨兵值，需带 project_id 查询参数）"""
+    """测试 Judge（支持 __UNCHANGED__ 哨兵值 + T1-3 双模式）"""
     try:
         api_key = req.api_key
         if project_id and api_key == "__UNCHANGED__":
             saved = get_project(project_id)
             if saved:
                 api_key = saved.judge_config.api_key
-        score = await judge_with_llm(
+        score, token_used = await judge_with_llm(
             base_url=req.base_url,
             api_key=api_key,
-            model=req.model,
+            model=req.model or "",
             requirement=req.output_requirement,
             output=req.actual_output,
             judge_prompt=req.prompt_template,
+            api_type=req.api_type,
+            request_template=req.request_template,
+            auth=req.auth,
+            response_parsing=req.response_parsing,
         )
         return {
             "ok": True,
             "score": score,
             "passed": score >= 0.5,
+            "token_used": token_used,
         }
     except NetworkError as e:
         return {"ok": False, "error": {"code": "network_error", "message": e.message}}
