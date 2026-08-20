@@ -530,6 +530,30 @@ class TestExtractCheckField:
         actual = json.dumps({"score": 42})
         assert _extract_check_field(actual, "score") == "42"
 
+    def test_extract_list_index_path(self):
+        """list 下标路径（items.0.name）—— 修复点路径取值容错性不足
+
+        旧实现遇 list 直接返回原文；新实现遇 list + 数字段则按下标取值。
+        """
+        actual = json.dumps({"items": [{"name": "first"}, {"name": "second"}]})
+        assert _extract_check_field(actual, "items.0.name") == "first"
+        assert _extract_check_field(actual, "items.1.name") == "second"
+
+    def test_extract_list_index_out_of_range(self):
+        """list 下标越界 → 返回原文兜底"""
+        actual = json.dumps({"items": [{"name": "first"}]})
+        assert _extract_check_field(actual, "items.5.name") == actual
+
+    def test_extract_list_with_non_digit_segment(self):
+        """list + 非数字段 → 返回原文（不能取值）"""
+        actual = json.dumps({"items": [{"name": "first"}]})
+        assert _extract_check_field(actual, "items.foo.name") == actual
+
+    def test_extract_nested_list_dict_mix(self):
+        """混合嵌套：dict → list → dict → 标量"""
+        actual = json.dumps({"data": [{"scores": [10, 20, 30]}]})
+        assert _extract_check_field(actual, "data.0.scores.1") == "20"
+
     def test_extract_dict_to_json(self):
         """dict → json.dumps"""
         actual = json.dumps({"data": {"x": 1}})

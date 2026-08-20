@@ -67,6 +67,12 @@ def _extract_check_field(actual_output: str, field: str) -> str:
     for seg in field.split("."):
         if isinstance(cur, dict) and seg in cur:
             cur = cur[seg]
+        elif isinstance(cur, list) and seg.isdigit():
+            idx = int(seg)
+            if 0 <= idx < len(cur):
+                cur = cur[idx]
+            else:
+                return actual_output
         else:
             return actual_output
     if isinstance(cur, bool):

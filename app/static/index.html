@@ -800,6 +800,11 @@
         /* 表格内 tag chips（紧凑） */
         .tag-cell .tag-chip { font-size: 10px; padding: 1px 6px; }
 
+        /* P-2: 评测集 tab 标签过滤条 */
+        .filter-chip { cursor: pointer; transition: all .12s ease; border: 1px solid var(--accent-bd); }
+        .filter-chip:hover { border-color: var(--accent); }
+        .filter-chip.active { background: var(--accent); color: white; border-color: var(--accent); font-weight: 600; }
+
         /* 评测弹窗 tag 筛选区 */
         .tag-filter-bar {
             margin-top: 12px; padding: 10px 12px;
@@ -966,6 +971,8 @@
             _configSnapshot: null,    // 配置页打开时保存的 JSON 快照
             _configDirty: false,
             _suppressDirtyCheck: false, // 切到 config tab 初始化期间临时关闭
+            // P-2: 评测集 tab 标签筛选（OR 语义，空 = 全部）
+            _evalsetTagFilter: [],
             // Judge 双模式共享的 auth/_rp 状态
             _judgeAuth: null,
             _judgeRpSample: '',
@@ -1858,6 +1865,11 @@
             const allTags = [];
             (cases || []).forEach(c => (c.tags || []).forEach(t => { if (!allTags.includes(t)) allTags.push(t); }));
             state._currentEvalsetAllTags = allTags;
+            // P-2: 应用标签过滤（OR 语义，空 = 全部）
+            const tagFilter = state._evalsetTagFilter || [];
+            const filteredCases = tagFilter.length === 0
+                ? cases
+                : cases.filter(c => (c.tags || []).some(t => tagFilter.includes(t)));
             // 用例预览文本（按 eval_type 取对应字段）
             const previewField = c => {
                 if (c.eval_type === 'llm_judge') return c.output_requirement;
@@ -1882,15 +1894,24 @@
                         <div class="card-header">
                             <span class="card-title">${escapeHtml(evalset.name)}</span>
                             <div class="flex gap-2">
-                                <button class="btn btn-sm btn-secondary" onclick="showImportModal('${evalset.id}', '${projectId}')">⤒ 导入</button>
+                                <button class="btn btn-sm btn-secondary" onclick="showImportModal('${evalset.id}', '${projectId}')">⇧ 导入</button>
                                 <button class="btn btn-sm btn-secondary" onclick="exportEvalSet('${evalset.id}', '${projectId}')">⇩ 导出</button>
                                 <button class="btn btn-sm btn-secondary" style="color: var(--red); border-color: var(--red-bd);" onclick="showClearEvalsetModal(state.currentEvalsets.find(e => e.id === '${evalset.id}'), '${projectId}')" ${cases.length === 0 ? 'disabled title="评测集已空"' : ''}>清空评测集</button>
                                 <button class="btn btn-sm btn-primary" onclick="showCaseEditorModal('${evalset.id}', '${projectId}', null)">+ 新增用例</button>
                             </div>
                         </div>
                         <div style="padding: 8px 16px; color: var(--ink-4); font-size: 12px;">
-                            共 ${cases.length} 条 · 启用 ${enabledCount} 条${allTags.length ? ' · 标签 ' + allTags.length + ' 个' : ''}
+                            共 ${cases.length} 条 · 启用 ${enabledCount} 条${allTags.length ? ' · 标签 ' + allTags.length + ' 个' : ''}${tagFilter.length ? ' · 已筛选 ' + filteredCases.length + ' 条' : ''}
                         </div>
+                        ${allTags.length === 0 ? '' : `
+                        <div class="evalset-tag-filter" style="padding: 8px 16px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+                            <span style="font-size: 12px; color: var(--ink-4);">按标签筛选：</span>
+                            <div style="display: flex; gap: 4px; flex-wrap: wrap;">
+                                ${allTags.map(t => `<button class="tag-chip filter-chip ${tagFilter.includes(t) ? 'active' : ''}" onclick='toggleEvalsetTagFilter(${escapeHtml(JSON.stringify(t))})'>${escapeHtml(t)}</button>`).join('')}
+                            </div>
+                            ${tagFilter.length ? `<button class="btn btn-sm btn-secondary" style="font-size: 11px; padding: 2px 8px;" onclick="clearEvalsetTagFilter()">清除筛选</button>` : ''}
+                        </div>
+                        `}
                         <div id="batchOpsBar" style="display: none; padding: 8px 16px; background: var(--gray-bg); border-bottom: 1px solid var(--border); align-items: center; gap: 8px;">
                             <span id="batchSelectedCount" style="font-size: 13px; color: var(--ink-3);">已选 0 条</span>
                             <button class="btn btn-sm btn-secondary" onclick="batchToggleCases('${evalset.id}', '${projectId}', true)">批量启用</button>
@@ -1912,7 +1933,7 @@
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    ${cases.length === 0 ? `<tr><td colspan="8" style="text-align: center; color: var(--ink-4); padding: 24px;">暂无用例，点击「+ 新增用例」或「导入」添加${allTags.length === 0 ? '' : ''}</td></tr>` : cases.map(c => `
+                                    ${filteredCases.length === 0 ? `<tr><td colspan="8" style="text-align: center; color: var(--ink-4); padding: 24px;">${cases.length === 0 ? '暂无用例，点击「+ 新增用例」或「导入」添加' : '当前筛选下无匹配用例，清除筛选查看全部'}</td></tr>` : filteredCases.map(c => `
                                         <tr style="${c.enabled === false ? 'opacity: 0.5' : ''}">
                                             <td><input type="checkbox" class="batch-case-cb" value="${escapeHtml(c.id)}" onchange="updateBatchOpsBar()"></td>
                                             <td>${escapeHtml(c.case_name)}</td>
@@ -1946,6 +1967,28 @@
         // B-16: 批量操作辅助函数
         function getSelectedCaseIds() {
             return Array.from(document.querySelectorAll('.batch-case-cb:checked')).map(cb => cb.value);
+        }
+
+        // P-2: 评测集 tab 标签过滤（OR 语义，从缓存重新渲染，不重新拉数据）
+        function toggleEvalsetTagFilter(tag) {
+            const filter = state._evalsetTagFilter || [];
+            const idx = filter.indexOf(tag);
+            if (idx >= 0) filter.splice(idx, 1);
+            else filter.push(tag);
+            _rerenderEvalsetDetail();
+        }
+        function clearEvalsetTagFilter() {
+            state._evalsetTagFilter = [];
+            _rerenderEvalsetDetail();
+        }
+        function _rerenderEvalsetDetail() {
+            if (!state.currentEvalsets || !state.currentEvalsets[0]) return;
+            // 优先从 evalset.project_id 取（不依赖 state.currentProject 是否已加载）
+            const es = state.currentEvalsets[0];
+            const projectId = es.project_id || (state.currentProject ? state.currentProject.id : null);
+            if (!projectId) return;
+            const detail = document.getElementById('evalsetDetail');
+            if (detail) detail.outerHTML = renderEvalsetDetail(es, projectId);
         }
 
         function updateBatchOpsBar() {
@@ -3703,6 +3746,11 @@
                         
                         <!-- 文件导入 -->
                         <div id="importFileTab" class="tab-content active">
+                            <div style="margin-bottom: 12px; padding: 8px 12px; background: var(--gray-bg); border-radius: var(--radius-md); font-size: 12px; color: var(--ink-3); display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+                                <span>第一次导入？没有参照？</span>
+                                <a href="javascript:void(0)" onclick="downloadEvalsetTemplate()" style="color: var(--accent); text-decoration: none; font-weight: 600;">⇩ 下载模版 CSV</a>
+                                <span style="color: var(--ink-4);">（含表头 + 示例行，导入前请删除示例行）</span>
+                            </div>
                             <div class="import-drop-zone" id="dropZone" onclick="document.getElementById('fileInput').click()">
                                 <div style="text-align: center; padding: 40px;">
                                     <div style="font-size: 48px; margin-bottom: 16px;">📁</div>
@@ -3818,6 +3866,34 @@
             modal.querySelector(`.tab[data-tab="${tab}"]`).classList.add('active');
             document.getElementById('importFileTab').style.display = tab === 'file' ? 'block' : 'none';
             document.getElementById('importManualTab').style.display = tab === 'manual' ? 'block' : 'none';
+        }
+
+        // P-3: 下载评测集导入模版 CSV（表头 + 示例行）
+        function downloadEvalsetTemplate() {
+            const headers = ['case_name', 'input', 'expected_output', 'output_requirement', 'eval_type', 'eval_params', 'variables', 'tags', 'enabled'];
+            // 示例行：覆盖 exact/contains/llm_judge 三种典型场景，全部合法可导入（导入前请删除）
+            const exampleRows = [
+                ['示例-精确匹配（导入前请删除本行）', '你好', '你好', '', 'exact', '{}', '', '["smoke"]', 'true'],
+                ['示例-包含判断（导入前请删除本行）', '介绍产品', '', '回答需提及免费', 'contains', '{"substring":"免费"}', '', '["smoke","regression"]', 'true'],
+                ['示例-LLM判定（导入前请删除本行）', '复杂问题', '', '回答需覆盖三点', 'llm_judge', '{}', '{"source":"doc1"}', '["llm"]', 'false'],
+            ];
+            // CSV 转义：含 , " \n 的字段用双引号包裹，内部 " 用 "" 转义
+            const escapeCsv = v => {
+                const s = String(v);
+                return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+            };
+            const csv = [headers, ...exampleRows].map(row => row.map(escapeCsv).join(',')).join('\n');
+            // 加 BOM 让 Excel 正确识别 UTF-8
+            const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'simpleeval-evalset-template.csv';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+            showToast('已下载模版 CSV（含 3 行示例，导入前请删除示例行）');
         }
 
         let importData = { cases: [], errors: [], total: 0 };
@@ -4624,7 +4700,7 @@
 
         function escapeHtml(str) {
             if (!str) return '';
-            return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+            return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
         }
 
         // ==================== 初始化 ====================
