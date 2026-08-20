@@ -205,6 +205,7 @@ simpleeval/
 | REQ-4 | Token 统计模式 UI 优化 | P3 | 低 | paths/fields 切换与 scope 配置的可读性、示例引导 |
 | REQ-5 | Judge 双模式 | **P0** | 中 | Judge 配置与 Target 对齐：OpenAI Compatible + 自定义 API 双模式，允许用工作流/自定义接口做评测 |
 | REQ-6 | Judge token 计入评测成本 | **P0** | 中 | summary 拆分 target_token / judge_token；评测成本 = 被评测消耗 + 评测自身消耗，token_per_pass 口径明确 |
+| REQ-7 | 定时回归 | P1 | 中高 | 项目可配定时规则（每天/每周/cron），自动发起评测；结果 vs baseline（上次或历史均值）跌破阈值时告警。前置：服务常驻（本地 uvicorn 在线才生效），与 REQ-6 配合控制定时成本 |
 
 > 来源说明：六条全部来自 2026-08-19 走访提取场景的真实试用。REQ-3 直接对应"一次返回 result+leader+evidence，现在只能验一个字段"的痛点；REQ-5/REQ-6 对应"Judge 也可以走评测工作流"与"成本账要算全"。
 
@@ -215,7 +216,7 @@ simpleeval/
 | **Phase 0** v0.1.x 补丁批 | B-22 评测集删除 / B-23 项目删除（输入名称确认）/ B-24 截断展开+表头文案 / B-25 图标统一 | 📅 已排期待开工 |
 | **Phase 1** v0.2 核心（评测能力） | REQ-5 Judge 双模式 → REQ-6 Judge token 成本 → REQ-3 多字段验证 | 📅 待排期 |
 | **Phase 2** v0.2 体验 | REQ-1 / REQ-2 配置复用 + REQ-4 Token UI + V-1 未保存提醒 + V-2 case 级采样分析（含稳定 case_id 对齐） | 📅 待排期 |
-| **Phase 3** v2 | RAG 评测 / 轨迹级 Agent 评测 / 历史 run 对比视图 / 自配置 API+人工标注 / pass@k 采样策略 / 并发执行 / token 硬限制（PRD 原有 v2 范围） | 📅 远期 |
+| **Phase 3** v2 | RAG 评测 / 轨迹级 Agent 评测 / 历史 run 对比视图 / 自配置 API+人工标注 / pass@k 采样策略 / 并发执行 / token 硬限制 / **REQ-7 定时回归** | 📅 远期 |
 
 **Phase 1 内依赖**：REQ-5 先行（Judge 调用路径改造），REQ-6 紧随（同一路径上取 token）；REQ-3 独立可并行（EvalCase 多字段结构 + 判定组合）。
 
