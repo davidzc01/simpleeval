@@ -182,9 +182,12 @@ def get_project_last_run(project_id: str) -> Optional[EvalRun]:
 
 
 def get_project_trend(project_id: str, limit: int = 8) -> list[dict]:
-    """获取项目最近 N 次 run 的 pass_rate + total_token 趋势"""
+    """获取项目最近 N 次 run 的 pass_rate + total_token 趋势（按时间正序：旧→新）
+
+    时序图惯例是左旧右新；list_runs 返回倒序（新→旧），取最近 N 次后反转。
+    """
     runs = list_runs(project_id)
-    runs = runs[:limit]
+    runs = list(reversed(runs[:limit]))
     return [{
         "run_id": r.id,
         "pass_rate": r.summary.pass_rate if r.summary else 0,

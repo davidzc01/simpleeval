@@ -271,8 +271,9 @@ class TestProjectTrend:
 
         trend = get_project_trend("proj-test-001", limit=8)
         assert len(trend) == 5
-        # 最近的在前面
-        assert trend[0]["run_id"] == "run-4"
+        # 时间正序（旧→新）：最早的 run-0 在前，最近的 run-4 在最后
+        assert trend[0]["run_id"] == "run-0"
+        assert trend[-1]["run_id"] == "run-4"
 
     def test_get_project_trend_limit(self, setup_test_env):
         """趋势数据限制"""
