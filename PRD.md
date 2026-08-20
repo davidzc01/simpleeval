@@ -1,7 +1,7 @@
 # PRD：simpleEval
 
-> 版本：MVP v0.1（定稿）
-> 日期：2026-08-17
+> 版本：MVP v0.1（已交付 2026-08-19）+ v0.2 需求池 + 版本路线图
+> 日期：2026-08-17（初版）· 2026-08-19（试用反馈更新）
 > 作者：David
 
 ---
@@ -190,3 +190,37 @@ simpleeval/
 | 6. README 量化故事 | 半天 |
 
 **合计约 3-4 天碎片时间，1-2 周内可交付。**
+
+> 注：MVP 已按上述计划交付并上线 GitHub（2026-08-19），期间额外落地：api_type 双模式、响应解析四键模型、采样稳定性（pass@k/pass^k）、多变量输入（EvalCase.variables）、content 二次解包、任务队列化、批量操作等（详见 docs/ 与 git 历史）。以下为 v0.2 需求池与路线图。
+
+---
+
+## 九、v0.2 需求池（2026-08-19 试用反馈）
+
+| # | 需求 | 优先级 | 复杂度 | 说明 |
+|---|------|--------|--------|------|
+| REQ-1 | LLM Judge 配置复用 | P2 | 低 | Judge 与 Target 同 base_url/key/model 时一键引用，免重复填写；改动同步 |
+| REQ-2 | Target API 配置复用与管理 | P2 | 中 | base_url、output_paths、token 解析方式存为配置模板，跨项目引用 |
+| REQ-3 | 单返回多字段验证 | **P0** | 中高 | 一次响应返回多字段（如 result/leader/evidence），各字段独立验证方式（result 用 exact、evidence 用 contains 等） |
+| REQ-4 | Token 统计模式 UI 优化 | P3 | 低 | paths/fields 切换与 scope 配置的可读性、示例引导 |
+| REQ-5 | Judge 双模式 | **P0** | 中 | Judge 配置与 Target 对齐：OpenAI Compatible + 自定义 API 双模式，允许用工作流/自定义接口做评测 |
+| REQ-6 | Judge token 计入评测成本 | **P0** | 中 | summary 拆分 target_token / judge_token；评测成本 = 被评测消耗 + 评测自身消耗，token_per_pass 口径明确 |
+
+> 来源说明：六条全部来自 2026-08-19 走访提取场景的真实试用。REQ-3 直接对应"一次返回 result+leader+evidence，现在只能验一个字段"的痛点；REQ-5/REQ-6 对应"Judge 也可以走评测工作流"与"成本账要算全"。
+
+## 十、版本路线图
+
+| Phase | 内容 | 状态 |
+|-------|------|------|
+| **Phase 0** v0.1.x 补丁批 | B-22 评测集删除 / B-23 项目删除（输入名称确认）/ B-24 截断展开+表头文案 / B-25 图标统一 | 📅 已排期待开工 |
+| **Phase 1** v0.2 核心（评测能力） | REQ-5 Judge 双模式 → REQ-6 Judge token 成本 → REQ-3 多字段验证 | 📅 待排期 |
+| **Phase 2** v0.2 体验 | REQ-1 / REQ-2 配置复用 + REQ-4 Token UI + V-1 未保存提醒 + V-2 case 级采样分析（含稳定 case_id 对齐） | 📅 待排期 |
+| **Phase 3** v2 | RAG 评测 / 轨迹级 Agent 评测 / 历史 run 对比视图 / 自配置 API+人工标注 / pass@k 采样策略 / 并发执行 / token 硬限制（PRD 原有 v2 范围） | 📅 远期 |
+
+**Phase 1 内依赖**：REQ-5 先行（Judge 调用路径改造），REQ-6 紧随（同一路径上取 token）；REQ-3 独立可并行（EvalCase 多字段结构 + 判定组合）。
+
+**下一步计划**（开工顺序建议）：
+1. Phase 0 补丁批（半天，与试用继续并行）
+2. Phase 1：REQ-5 + REQ-6（Judge 架构统一，半天～1 天）→ REQ-3（多字段验证，1 天）
+3. Phase 2 按体验痛点排序逐一消化
+4. 每个 Phase 完成后跑一次全量走访验证集作为回归
