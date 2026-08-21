@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+import anyio
+
 from .models import Project, EvalSet, EvalRun, TargetConfig, JudgeConfig
 
 
@@ -197,7 +199,6 @@ async def async_save_run(run: EvalRun) -> None:
       （写文件动作仍在主进程，但异步上下文不会让 reload 的 worker 静默重启
       卡死整个事件循环）。
     """
-    import anyio
     await anyio.to_thread.run_sync(_save_run_sync, run)
 
 

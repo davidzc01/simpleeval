@@ -1,5 +1,8 @@
 """simpleEval FastAPI 入口"""
 
+import asyncio
+import logging
+
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -21,6 +24,25 @@ app.include_router(router)
 static_path = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=str(static_path), html="index.html"))
 
+logger = logging.getLogger(__name__)
+
+# T3-4: 定时回归调度任务句柄（全局引用防止被 GC）
+_scheduler_task = None
+
+
+async def _scheduled_regression_loop():
+    """T3-4: 每 60 秒检查项目定时规则，到点自动发起 run。
+
+    规则持久化在 Project.schedule（JSON 文件），服务重启后自动恢复。
+    """
+    while True:
+        try:
+            from .scheduler import check_and_trigger_scheduled_runs
+            await check_and_trigger_scheduled_runs()
+        except Exception as e:
+            logger.warning("定时回归调度异常: %s", e)
+        await asyncio.sleep(60)
+
 
 @app.on_event("startup")
 async def reclaim_orphan_runs():
@@ -40,6 +62,11 @@ async def reclaim_orphan_runs():
             run.error = "服务重启导致任务中断"
             run.finished_at = _utc_now()
             save_run(run)
+
+    # T3-4: 启动定时回归调度循环
+    global _scheduler_task
+    if _scheduler_task is None or _scheduler_task.done():
+        _scheduler_task = asyncio.create_task(_scheduled_regression_loop())
 
 
 # 根路径返回 index.html

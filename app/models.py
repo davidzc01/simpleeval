@@ -123,6 +123,29 @@ class TokenBudget(BaseModel):
 
 # ============== 核心模型 ==============
 
+class ProjectVersion(BaseModel):
+    """T3-3: 项目版本（时间锚点，run 归属版本用于跨版本对比）"""
+    id: str
+    name: str
+    created_at: str  # ISO 时间
+
+
+class ScheduleConfig(BaseModel):
+    """T3-4: 定时回归配置
+
+    - enabled: 开关
+    - cron: 5 字段标准 cron 表达式（分 时 日 月 周），如 "*/30 * * * *" = 每 30 分钟
+    - tags: 按标签筛选 case（空 = 全部启用 case）
+    - version_id: 归属版本（None = 自动落入最近版本）
+    - regression_threshold: pass_rate 绝对降幅阈值（默认 0.1 = 10%）
+    """
+    enabled: bool = False
+    cron: str = "* * * * *"
+    tags: list[str] = Field(default_factory=list)
+    version_id: Optional[str] = None
+    regression_threshold: float = 0.1
+
+
 class Project(BaseModel):
     id: str
     name: str
@@ -133,6 +156,13 @@ class Project(BaseModel):
     # REQ-16: 引用全局 Judge 配置 id（优先于内联 judge_config）；
     # None 时 fallback 到内联 judge_config，向后兼容旧项目
     judge_config_id: Optional[str] = None
+    # T3-1: 项目级最大并发数（1 = 串行，run 级 concurrency 不能超过此值）
+    # 旧项目无此字段时默认 1，行为与现状完全一致
+    max_concurrency: int = 1
+    # T3-3: 版本列表（时间锚点），旧项目无此字段时为空列表
+    versions: list[ProjectVersion] = Field(default_factory=list)
+    # T3-4: 定时回归配置（None = 未配置，向后兼容）
+    schedule: Optional[ScheduleConfig] = None
 
 
 class EvalCheck(BaseModel):
@@ -175,6 +205,10 @@ class EvalSet(BaseModel):
     project_id: str
     name: str
     cases: list[EvalCase]
+    # T3-2: 评测集内容更新时间（PUT/replace 导入时刷新）
+    # 采样统计只纳入 run.created_at ≥ content_updated_at 的 run；
+    # None（旧数据）= 全部纳入，与现状一致
+    content_updated_at: Optional[str] = None
 
 
 # ============== 结果模型 ==============
@@ -194,6 +228,8 @@ class CaseResult(BaseModel):
     judge_token: int = 0
     # T1-5: 多字段验证明细
     check_results: list[dict] = Field(default_factory=list)
+    # T3-1: 同一 run 内同一 case 的 k 次采样序号（1..k）；samples=1 时为 None，向后兼容
+    sample_index: Optional[int] = None
 
 
 class EvalSummary(BaseModel):
@@ -208,6 +244,8 @@ class EvalSummary(BaseModel):
     judge_token: int = 0
     # T2-4: 预算硬限制触发标记（warn_only=false 且超限时为 True）
     budget_exceeded: bool = False
+    # T3-1: 本次 run 实际并发数（1=串行）；UI 指标卡 tooltip 标注采集条件
+    concurrency: int = 1
 
 
 class EvalRun(BaseModel):
@@ -222,6 +260,8 @@ class EvalRun(BaseModel):
     error: Optional[str] = None
     results: list[CaseResult] = Field(default_factory=list)
     summary: Optional[EvalSummary] = None
+    # T3-3: 归属版本 id（显式指定或按 created_at 落入最近版本）；旧 run 无此字段为 None
+    version_id: Optional[str] = None
 
 
 # ============== API 请求/响应模型 ==============
@@ -256,6 +296,17 @@ class RunEvalRequest(BaseModel):
     evalset_id: str
     # T1-2: 按标签筛选 case（可选，None/空 = 全部启用 case）
     case_filter: Optional[CaseFilter] = None
+    # T3-1: 每 case 采样次数 k（默认 1 = 单次执行，行为同现状）
+    samples: int = 1
+    # T3-1: 本次 run 的并发数（None = 串行；指定值 ≤ project.max_concurrency，超出 422）
+    concurrency: Optional[int] = None
+    # T3-3: 显式指定归属版本 id（None = 按 created_at 自动落入最近版本）
+    version_id: Optional[str] = None
+
+
+class CreateVersionRequest(BaseModel):
+    """T3-3: 开新版本请求"""
+    name: str
 
 
 class TestTargetRequest(BaseModel):

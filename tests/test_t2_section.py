@@ -609,6 +609,53 @@ class TestTokenBudgetEnforce:
         assert result.summary.budget_exceeded is False
         assert len(result.results) == 3
 
+    @pytest.mark.asyncio
+    async def test_concurrent_budget_skips_unstarted_samples(self, monkeypatch):
+        """并发路径预算超限 → 未开始的样本标 skipped 不执行 call_target"""
+        from app import runner
+        call_count = [0]
+
+        async def fake_call_target(**kwargs):
+            call_count[0] += 1
+            return ("output", 100, False)
+        monkeypatch.setattr(runner, "call_target", fake_call_target)
+        async def fake_check_judge(project):
+            return (True, "")
+        monkeypatch.setattr(runner, "check_judge_available", fake_check_judge)
+        async def fake_async_save_run(r):
+            return None
+        monkeypatch.setattr(runner, "async_save_run", fake_async_save_run)
+
+        project = self._mk_project_with_budget(limit=250, warn_only=False)
+        project.max_concurrency = 2
+        evalset = self._mk_evalset(n_cases=6)
+        run = EvalRun(id="run-conc-budget", project_id="proj-budget",
+                       evalset_id="es-budget",
+                       created_at=datetime.now(timezone.utc).isoformat())
+
+        result = await runner.execute_run(
+            run, project, evalset, case_filter=None,
+            samples=1, concurrency=2,
+        )
+
+        # 预算超限标记
+        assert result.summary.budget_exceeded is True
+        # 总结果数不丢失
+        assert len(result.results) == 6
+        # 部分样本被 skip
+        skipped = [r for r in result.results
+                    if r.skipped_reason == "budget_exceeded"]
+        executed = [r for r in result.results
+                    if r.skipped_reason != "budget_exceeded"]
+        assert len(skipped) >= 1, "应有未开始的样本被标记 skipped"
+        # skipped 样本的字段正确
+        for r in skipped:
+            assert r.actual_output == "[SKIPPED] budget_exceeded"
+            assert r.passed is False
+        # 被 skip 的样本不应调用 call_target
+        assert call_count[0] == len(executed), \
+            f"call_target 应只被已执行样本调用：{call_count[0]} != {len(executed)}"
+
 
 # ============== T2-3: 配置模板 ==============
 

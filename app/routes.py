@@ -13,7 +13,7 @@ from .models import (
     Project, EvalSet, EvalRun, EvalCase, JudgeConfig,
     CreateProjectRequest, CreateEvalSetRequest, RunEvalRequest,
     TestTargetRequest, TestMappingRequest, TestParsingRequest, TestJudgeRequest,
-    CaseResult, ErrorResponse,
+    CaseResult, ErrorResponse, CreateVersionRequest, ProjectVersion,
 )
 from .storage import (
     list_projects, get_project, save_project, delete_project,
@@ -67,6 +67,29 @@ def _project_to_response(project: Project) -> dict:
 def _generate_id(prefix: str) -> str:
     """生成 ID"""
     return f"{prefix}-{uuid.uuid4().hex[:8]}"
+
+
+def _resolve_version_id(project: Project, run_created_at: str, explicit: Optional[str] = None) -> Optional[str]:
+    """T3-3: 解析 run 的归属版本 id。
+
+    - explicit 非空：校验是否在 project.versions 中，存在则用，不存在返回 None（不阻断，兼容旧数据）
+    - explicit 为空：按 run_created_at 落入最近版本（version.created_at ≤ run_created_at 的最大者）
+    - 项目无版本：返回 None（向后兼容，旧 run 无 version_id）
+    """
+    versions = project.versions or []
+    if not versions:
+        return None
+    if explicit:
+        if any(v.id == explicit for v in versions):
+            return explicit
+        return None
+    # 按 created_at 降序找第一个 <= run_created_at 的版本
+    sorted_vers = sorted(versions, key=lambda v: v.created_at, reverse=True)
+    for v in sorted_vers:
+        if v.created_at <= run_created_at:
+            return v.id
+    # run 创建时间早于所有版本 → 归入最早的版本
+    return sorted_vers[-1].id if sorted_vers else None
 
 
 # ============== Projects ==============
@@ -275,6 +298,98 @@ async def list_project_evalsets(project_id: str):
     return {"evalsets": [e.model_dump() for e in evalsets]}
 
 
+# ============== T3-3: 版本管理 ==============
+
+@router.post("/projects/{project_id}/versions", status_code=201)
+async def create_version(project_id: str, req: CreateVersionRequest):
+    """开新版本（时间锚点，后续 run 自动归属此版本直到下一版本创建）"""
+    project = get_project(project_id)
+    if not project:
+        project_not_found(project_id)
+    if not req.name or not req.name.strip():
+        raise HTTPException(status_code=422, detail={
+            "error": {"code": "invalid_config", "message": "版本名称必填"}
+        })
+    version = ProjectVersion(
+        id=_generate_id("ver"),
+        name=req.name.strip(),
+        created_at=_utc_now(),
+    )
+    project.versions = (project.versions or []) + [version]
+    save_project(project)
+    return version.model_dump()
+
+
+@router.delete("/projects/{project_id}/versions/{version_id}")
+async def delete_version(project_id: str, version_id: str):
+    """删除版本（不连带删 run；run.version_id 变为孤儿引用，对比时归入「未分版本」桶）"""
+    project = get_project(project_id)
+    if not project:
+        project_not_found(project_id)
+    original_len = len(project.versions or [])
+    project.versions = [v for v in (project.versions or []) if v.id != version_id]
+    if len(project.versions) == original_len:
+        raise HTTPException(status_code=404, detail={
+            "error": {"code": "version_not_found", "message": f"版本 {version_id} 不存在"}
+        })
+    save_project(project)
+    return {"deleted": version_id}
+
+
+@router.get("/projects/{project_id}/versions/compare")
+async def compare_versions(project_id: str):
+    """跨版本对比：每版本聚合 pass_rate / total_token / token_per_pass / run 数 + delta
+
+    - 无版本的项目返回空数组（向后兼容）
+    - run.version_id 为 None（旧 run 或无版本时创建）归入「未分版本」桶
+    """
+    project = get_project(project_id)
+    if not project:
+        project_not_found(project_id)
+    runs = list_runs(project_id)
+    completed = [r for r in runs if r.status == "completed" and r.summary]
+    versions = project.versions or []
+
+    def _aggregate(run_list):
+        if not run_list:
+            return {"run_count": 0, "pass_rate": 0.0, "total_token": 0,
+                    "token_per_pass": 0.0, "latency_p50": 0.0}
+        n = len(run_list)
+        avg_pass = sum(r.summary.pass_rate for r in run_list) / n
+        total_tok = sum(r.summary.total_token for r in run_list)
+        avg_tpp = sum(r.summary.token_per_pass for r in run_list) / n
+        avg_p50 = sum(r.summary.latency_p50 for r in run_list) / n
+        return {"run_count": n, "pass_rate": round(avg_pass, 4),
+                "total_token": total_tok, "token_per_pass": round(avg_tpp, 4),
+                "latency_p50": round(avg_p50, 2)}
+
+    buckets = {}
+    for v in versions:
+        buckets[v.id] = {"version_id": v.id, "version_name": v.name,
+                         "version_created_at": v.created_at, **_aggregate(
+                             [r for r in completed if r.version_id == v.id])}
+    # 未分版本桶
+    unassigned = [r for r in completed if not r.version_id or r.version_id not in {v.id for v in versions}]
+    buckets["_unassigned"] = {"version_id": None, "version_name": "未分版本",
+                              "version_created_at": None, **_aggregate(unassigned)}
+
+    version_list = [buckets[v.id] for v in versions]
+    if unassigned:
+        version_list.append(buckets["_unassigned"])
+
+    # delta：相邻版本 pass_rate / total_token 差值
+    for i in range(1, len(version_list)):
+        prev = version_list[i - 1]
+        curr = version_list[i]
+        curr["delta_pass_rate"] = round(curr["pass_rate"] - prev["pass_rate"], 4)
+        curr["delta_total_token"] = curr["total_token"] - prev["total_token"]
+    if version_list:
+        version_list[0]["delta_pass_rate"] = 0.0
+        version_list[0]["delta_total_token"] = 0
+
+    return {"project_id": project_id, "versions": version_list}
+
+
 # ============== EvalSets ==============
 
 @router.post("/evalsets", status_code=201)
@@ -324,6 +439,8 @@ async def update_evalset(evalset_id: str, evalset: EvalSet):
     for i, case in enumerate(evalset.cases):
         if not case.id:
             case.id = _generate_id("case")
+    # T3-2: 全量替换后采样历史失效（内容已变），刷新 content_updated_at
+    evalset.content_updated_at = _utc_now()
     save_evalset(evalset)
     return evalset.model_dump()
 
@@ -431,6 +548,8 @@ async def import_evalset(
 
     if mode == "replace":
         evalset.cases = new_cases
+        # T3-2: replace 后采样历史失效（内容已变），刷新 content_updated_at
+        evalset.content_updated_at = _utc_now()
     else:  # merge：T2-1 按 case_name 匹配，同名复用 id + 更新内容（重导不换 id，采样历史连续）
         existing_by_name = {c.case_name: c for c in evalset.cases}
         seen_new_names: set = set()
@@ -492,7 +611,11 @@ async def export_evalset(evalset_id: str, project_id: str):
 
 @router.post("/runs", status_code=201)
 async def create_run(req: RunEvalRequest, background_tasks: BackgroundTasks):
-    """发起评测（异步）"""
+    """发起评测（异步）
+
+    T1-2: case_filter 按标签筛选 case
+    T3-1: samples = 每 case 采样次数 k；concurrency = run 级并发数（≤ project.max_concurrency）
+    """
     # 验证项目存在
     project = get_project(req.project_id)
     if not project:
@@ -503,6 +626,26 @@ async def create_run(req: RunEvalRequest, background_tasks: BackgroundTasks):
     if not evalset:
         evalset_not_found(req.evalset_id)
 
+    # T3-1: samples 必须 ≥ 1
+    if req.samples < 1:
+        raise HTTPException(status_code=422, detail={
+            "error": {"code": "invalid_config",
+                      "message": "samples 必须 ≥ 1（1 = 单次执行）"}
+        })
+
+    # T3-1: concurrency 越限校验——超过 project.max_concurrency 时 422
+    max_conc = project.max_concurrency or 1
+    if req.concurrency is not None and req.concurrency > max_conc:
+        raise HTTPException(status_code=422, detail={
+            "error": {"code": "invalid_config",
+                      "message": f"concurrency={req.concurrency} 超过项目最大并发 {max_conc}"}
+        })
+    if req.concurrency is not None and req.concurrency < 1:
+        raise HTTPException(status_code=422, detail={
+            "error": {"code": "invalid_config",
+                      "message": "concurrency 必须 ≥ 1"}
+        })
+
     # 检查是否有启用的 case（T1-2: 按 case_filter 筛选后判断）
     enabled_cases = [c for c in evalset.cases if c.enabled]
     filtered_cases = _apply_case_filter(enabled_cases, req.case_filter)
@@ -511,17 +654,24 @@ async def create_run(req: RunEvalRequest, background_tasks: BackgroundTasks):
 
     # 创建 run 记录
     run_id = _generate_run_id()
+    run_created_at = _utc_now()
+    # T3-3: 解析归属版本（显式指定或按 created_at 自动落入最近版本）
+    version_id = _resolve_version_id(project, run_created_at, req.version_id)
     run = EvalRun(
         id=run_id,
         project_id=req.project_id,
         evalset_id=req.evalset_id,
         status="queued",
-        created_at=_utc_now(),
+        created_at=run_created_at,
+        version_id=version_id,
     )
     save_run(run)
 
-    # 后台执行（T1-2: 传 case_filter）
-    background_tasks.add_task(execute_run, run, project, evalset, req.case_filter)
+    # 后台执行（T1-2: 传 case_filter；T3-1: 传 samples/concurrency）
+    background_tasks.add_task(
+        execute_run, run, project, evalset, req.case_filter,
+        req.samples, req.concurrency,
+    )
 
     return {"run_id": run_id, "status": "queued"}
 
@@ -552,6 +702,7 @@ async def list_project_runs(project_id: str):
             "evalset_id": r.evalset_id,
             "status": r.status,
             "created_at": r.created_at,
+            "version_id": r.version_id,
             "summary": r.summary.model_dump() if r.summary else None,
         })
 
@@ -567,6 +718,16 @@ async def get_project_sampling(project_id: str):
     # 延迟导入避免循环依赖（sampling 依赖 storage，storage 不依赖 routes）
     from .sampling import compute_project_sampling
     return compute_project_sampling(project_id)
+
+
+@router.get("/projects/{project_id}/regression-alerts")
+async def get_regression_alerts_route(project_id: str):
+    """T3-4: 查询项目回归告警（最新 run 相对 baseline 的 pass_rate 降幅）"""
+    project = get_project(project_id)
+    if not project:
+        project_not_found(project_id)
+    from .scheduler import get_regression_alerts
+    return {"alerts": get_regression_alerts(project_id)}
 
 
 @router.get("/evalsets/{evalset_id}/sampling")

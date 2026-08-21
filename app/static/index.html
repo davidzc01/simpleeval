@@ -1730,11 +1730,13 @@
                 `;
 
                 container.innerHTML = `
+                    <div id="regressionAlertBanner"></div>
                     <div class="tabs">
                         <div class="tab active" data-tab="overview" onclick="switchTab('overview')">概览</div>
                         <div class="tab" data-tab="evalsets" onclick="switchTab('evalsets')">评测集</div>
                         <div class="tab" data-tab="config" onclick="switchTab('config')">配置</div>
                         <div class="tab" data-tab="history" onclick="switchTab('history')">历史</div>
+                        <div class="tab" data-tab="versions" onclick="switchTab('versions')">版本</div>
                     </div>
 
                     <div id="tabContent">
@@ -1743,6 +1745,7 @@
                 `;
 
                 loadSamplingCard(project.id);
+                loadRegressionAlertBanner(project.id);
 
                 if (params.openRunModal) {
                     showRunModal(project.id);
@@ -1788,6 +1791,9 @@
                     break;
                 case 'history':
                     renderHistoryTab(content, project.id);
+                    break;
+                case 'versions':
+                    renderVersionsTab(content, project.id);
                     break;
             }
         }
@@ -2213,6 +2219,10 @@
                         <div style="padding: 8px 16px; color: var(--ink-4); font-size: 12px;">
                             共 ${cases.length} 条 · 启用 ${enabledCount} 条${allTags.length ? ' · 标签 ' + allTags.length + ' 个' : ''}${tagFilter.length ? ' · 已筛选 ' + filteredCases.length + ' 条' : ''}
                         </div>
+                        ${evalset.content_updated_at && state._evalsetSampling && state._evalsetSampling.total_runs === 0 ? `
+                        <div style="padding: 6px 16px; background: var(--amber-bg, #fffbeb); border-bottom: 1px solid var(--amber-bd, #fde68a); color: var(--amber, #b45309); font-size: 12px;">
+                            评测集内容已更新，旧采样统计已清零，需积累新采样
+                        </div>` : ''}
                         ${allTags.length === 0 ? '' : `
                         <div class="evalset-tag-filter" style="padding: 8px 16px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
                             <span style="font-size: 12px; color: var(--ink-4);">按标签筛选：</span>
@@ -3063,6 +3073,52 @@
                     </div>
                 </div>
 
+                <div class="card mb-4">
+                    <div class="card-header">
+                        <span class="card-title">采样与并发</span>
+                    </div>
+                    <div style="padding: 0 0 12px; color: var(--ink-4); font-size: 12px;">
+                        T3-1: 设置项目级最大并发数。发起评测时可在 run 级选 ≤ 此值的并发；
+                        并发会引入延迟噪声，性能指标卡会标注「在 N 并发下采集，仅参考」。
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">最大并发数（max_concurrency，1 = 串行）</label>
+                        <input type="number" class="form-input mono" id="maxConcurrency" min="1" max="20" placeholder="1" value="${escapeHtml(String(project.max_concurrency ?? 1))}">
+                    </div>
+                </div>
+
+                <div class="card mb-4">
+                    <div class="card-header">
+                        <span class="card-title">定时回归</span>
+                    </div>
+                    <div style="padding: 0 0 12px; color: var(--ink-4); font-size: 12px;">
+                        T3-4: 按 cron 表达式定时自动发起 run，对比 baseline pass_rate。
+                        降幅超过阈值时项目详情页顶部显示回归告警横幅。
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">
+                            <input type="checkbox" id="scheduleEnabled" ${project.schedule?.enabled ? 'checked' : ''} onchange="updateScheduleToggle()">
+                            启用定时回归
+                        </label>
+                    </div>
+                    <div id="scheduleFields" style="${project.schedule?.enabled ? '' : 'display: none;'}">
+                        <div class="form-group">
+                            <label class="form-label">cron 表达式（分 时 日 月 周）</label>
+                            <input type="text" class="form-input mono" id="scheduleCron" placeholder="*/30 * * * *" value="${escapeHtml(project.schedule?.cron || '*/30 * * * *')}">
+                            <div style="font-size: 11px; color: var(--ink-4); margin-top: 4px;">如 <code>*/30 * * * *</code> = 每 30 分钟；<code>0 * * * *</code> = 每小时整点</div>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">按标签筛选（逗号分隔，空 = 全部）</label>
+                            <input type="text" class="form-input" id="scheduleTags" placeholder="回归测试" value="${escapeHtml((project.schedule?.tags || []).join(', '))}">
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">回归阈值（pass_rate 绝对降幅）</label>
+                            <input type="number" class="form-input mono" id="scheduleThreshold" min="0" max="1" step="0.05" placeholder="0.1" value="${escapeHtml(String(project.schedule?.regression_threshold ?? 0.1))}">
+                            <div style="font-size: 11px; color: var(--ink-4); margin-top: 4px;">0.1 = pass_rate 下降 10% 触发告警</div>
+                        </div>
+                    </div>
+                </div>
+
                 <button class="btn btn-primary" onclick="saveProjectConfig('${project.id}')">保存配置</button>
             `;
 
@@ -3497,8 +3553,12 @@
 
         async function renderHistoryTab(container, projectId) {
             try {
-                const data = await api(`/projects/${projectId}/runs`);
+                const [data, alertsData] = await Promise.all([
+                    api(`/projects/${projectId}/runs`),
+                    api(`/projects/${projectId}/regression-alerts`).catch(() => ({ alerts: [] }))
+                ]);
                 const runs = data.runs || [];
+                const regressionRunIds = new Set((alertsData.alerts || []).map(a => a.run_id));
 
                 if (runs.length === 0) {
                     container.innerHTML = `
@@ -3519,6 +3579,7 @@
                                         <th>Run ID</th>
                                         <th>评测集</th>
                                         <th>状态</th>
+                                        <th>版本</th>
                                         <th>时间</th>
                                         <th>pass rate</th>
                                         <th>token</th>
@@ -3526,17 +3587,25 @@
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    ${runs.map(r => `
-                                        <tr>
+                                    ${runs.map(r => {
+                                        const isRegression = regressionRunIds.has(r.id);
+                                        const rowStyle = isRegression ? 'style="background: #fef2f2;"' : '';
+                                        const passRateCell = isRegression && r.summary
+                                            ? `<span style="color: var(--red); font-weight: 600;" title="回归：pass_rate 相对 baseline 下降超过阈值">⚠ ${(r.summary.pass_rate * 100).toFixed(1)}%</span>`
+                                            : (r.summary ? (r.summary.pass_rate * 100).toFixed(1) + '%' : '-');
+                                        return `
+                                        <tr ${rowStyle}>
                                             <td class="mono">${escapeHtml(r.id)}</td>
                                             <td>${escapeHtml(r.evalset_id)}</td>
                                             <td><span class="status-badge status-${escapeHtml(r.status)}"><span class="status-dot"></span>${escapeHtml(r.status)}</span></td>
+                                            <td>${r.version_id ? `<span class="tag-chip" style="font-size: 11px;">${escapeHtml(state._versionNames?.[r.version_id] || r.version_id)}</span>` : '<span class="text-muted">-</span>'}</td>
                                             <td class="text-muted">${formatRelativeTime(r.created_at)}</td>
-                                            <td class="num">${r.summary ? (r.summary.pass_rate * 100).toFixed(1) + '%' : '-'}</td>
+                                            <td class="num">${passRateCell}</td>
                                             <td class="num">${r.summary ? formatNumber(r.summary.total_token) : '-'}</td>
                                             <td><button class="btn btn-sm btn-secondary" onclick="navigateTo('run-detail', {id: '${escapeHtml(r.id)}', projectId: '${escapeHtml(projectId)}'})">查看</button></td>
                                         </tr>
-                                    `).join('')}
+                                        `;
+                                    }).join('')}
                                 </tbody>
                             </table>
                         </div>
@@ -3545,6 +3614,196 @@
             } catch (err) {
                 container.innerHTML = `<div class="empty-state"><div class="empty-state-icon">❌</div><div class="empty-state-text">加载失败</div></div>`;
             }
+        }
+
+        // ==================== T3-3: 版本管理 ====================
+
+        async function renderVersionsTab(container, projectId) {
+            const project = state.currentProject;
+            const versions = project?.versions || [];
+            // 缓存 version_id → name 映射，供历史 tab 标注
+            state._versionNames = {};
+            versions.forEach(v => { state._versionNames[v.id] = v.name; });
+
+            // 骨架屏
+            container.innerHTML = `
+                <div class="card mb-4">
+                    <div class="card-header">
+                        <span class="card-title">版本时间线</span>
+                        <button class="btn btn-sm btn-primary" onclick="showCreateVersionModal('${escapeHtml(projectId)}')">+ 开新版本</button>
+                    </div>
+                    <div id="versionTimeline" style="padding: 16px;">
+                        <div style="color: var(--ink-4); font-size: 13px;">加载中...</div>
+                    </div>
+                </div>
+                <div class="card">
+                    <div class="card-header"><span class="card-title">跨版本对比</span></div>
+                    <div id="versionCompare" style="padding: 16px;">
+                        <div style="color: var(--ink-4); font-size: 13px;">加载中...</div>
+                    </div>
+                </div>
+            `;
+
+            // 渲染时间线
+            const timelineEl = document.getElementById('versionTimeline');
+            if (versions.length === 0) {
+                timelineEl.innerHTML = `
+                    <div class="empty-state" style="padding: 24px;">
+                        <div class="empty-state-icon">📋</div>
+                        <div class="empty-state-text">还没有版本。开新版本后，后续 run 自动归属该版本，用于跨版本对比。</div>
+                    </div>
+                `;
+            } else {
+                timelineEl.innerHTML = versions.map((v, i) => `
+                    <div style="display: flex; align-items: center; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--border);">
+                        <div style="width: 28px; height: 28px; border-radius: 50%; background: var(--accent); color: #fff; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 600;">${i + 1}</div>
+                        <div style="flex: 1;">
+                            <div style="font-weight: 500;">${escapeHtml(v.name)}</div>
+                            <div style="font-size: 12px; color: var(--ink-4);">${formatRelativeTime(v.created_at)} · ${escapeHtml(v.id)}</div>
+                        </div>
+                        <button class="btn btn-sm btn-danger" onclick="deleteVersion('${escapeHtml(projectId)}', '${escapeHtml(v.id)}', '${escapeHtml(v.name).replace(/'/g, "&#39;")}')">删除</button>
+                    </div>
+                `).join('');
+            }
+
+            // 渲染对比表
+            const compareEl = document.getElementById('versionCompare');
+            try {
+                const data = await api(`/projects/${projectId}/versions/compare`);
+                const rows = data.versions || [];
+                if (rows.length === 0) {
+                    compareEl.innerHTML = `
+                        <div class="empty-state" style="padding: 24px;">
+                            <div class="empty-state-icon">📊</div>
+                            <div class="empty-state-text">开版本并跑评测后，这里会显示跨版本对比。</div>
+                        </div>
+                    `;
+                } else {
+                    compareEl.innerHTML = `
+                        <div class="table-wrapper">
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th>版本</th>
+                                        <th>run 数</th>
+                                        <th>pass rate</th>
+                                        <th>Δ pass rate</th>
+                                        <th>总 token</th>
+                                        <th>Δ token</th>
+                                        <th>P50 延迟</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    ${rows.map(r => {
+                                        const dpr = r.delta_pass_rate;
+                                        const dt = r.delta_total_token;
+                                        const dprColor = dpr > 0 ? 'var(--green)' : dpr < 0 ? 'var(--red)' : 'var(--ink-4)';
+                                        const dtColor = dt > 0 ? 'var(--red)' : dt < 0 ? 'var(--green)' : 'var(--ink-4)';
+                                        const dprSign = dpr > 0 ? '+' : '';
+                                        const dtSign = dt > 0 ? '+' : '';
+                                        return `
+                                        <tr>
+                                            <td><strong>${escapeHtml(r.version_name)}</strong></td>
+                                            <td class="num">${r.run_count}</td>
+                                            <td class="num">${(r.pass_rate * 100).toFixed(1)}%</td>
+                                            <td class="num" style="color: ${dprColor};">${r.delta_pass_rate !== undefined ? dprSign + (dpr * 100).toFixed(1) + '%' : '-'}</td>
+                                            <td class="num">${formatNumber(r.total_token)}</td>
+                                            <td class="num" style="color: ${dtColor};">${r.delta_total_token !== undefined ? dtSign + formatNumber(dt) : '-'}</td>
+                                            <td class="num">${r.latency_p50 ? (r.latency_p50 / 1000).toFixed(1) + 's' : '-'}</td>
+                                        </tr>
+                                        `;
+                                    }).join('')}
+                                </tbody>
+                            </table>
+                        </div>
+                    `;
+                }
+            } catch (err) {
+                compareEl.innerHTML = `<div style="color: var(--red); font-size: 13px;">对比数据加载失败: ${escapeHtml(err.message)}</div>`;
+            }
+        }
+
+        function showCreateVersionModal(projectId) {
+            const modal = document.createElement('div');
+            modal.className = 'modal-overlay';
+            modal.id = 'createVersionModal';
+            modal.innerHTML = `
+                <div class="modal">
+                    <div class="modal-header">
+                        <span class="modal-title">开新版本</span>
+                        <button class="modal-close" onclick="closeModal('createVersionModal')">×</button>
+                    </div>
+                    <div style="padding: 16px;">
+                        <div style="color: var(--ink-3); font-size: 13px; margin-bottom: 12px;">
+                            开新版本后，后续 run 自动归属此版本。用于跨版本对比（如配置变更前后的效果差异）。
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">版本名称</label>
+                            <input type="text" class="form-input" id="newVersionName" placeholder="如 v1 / 基线 / 优化后" oninput="document.getElementById('createVersionBtn').disabled = !this.value.trim()">
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button class="btn btn-secondary" onclick="closeModal('createVersionModal')">取消</button>
+                        <button class="btn btn-primary" id="createVersionBtn" disabled onclick="confirmCreateVersion('${escapeHtml(projectId)}')">确认开版本</button>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(modal);
+            setTimeout(() => document.getElementById('newVersionName')?.focus(), 50);
+        }
+
+        async function confirmCreateVersion(projectId) {
+            const name = document.getElementById('newVersionName')?.value?.trim();
+            if (!name) return;
+            try {
+                await api(`/projects/${projectId}/versions`, {
+                    method: 'POST',
+                    body: JSON.stringify({ name }),
+                });
+                // 刷新 project 数据（versions 字段更新）
+                const updated = await api(`/projects/${projectId}`);
+                state.currentProject = updated;
+                closeModal('createVersionModal');
+                showToast('版本已创建');
+                renderVersionsTab(document.getElementById('tabContent'), projectId);
+            } catch (err) {}
+        }
+
+        async function deleteVersion(projectId, versionId, versionName) {
+            if (!confirm(`确认删除版本「${versionName}」？\n\n历史 run 的 version_id 变为孤儿引用，对比时归入「未分版本」桶。`)) return;
+            try {
+                await api(`/projects/${projectId}/versions/${versionId}`, { method: 'DELETE' });
+                const updated = await api(`/projects/${projectId}`);
+                state.currentProject = updated;
+                showToast('版本已删除');
+                renderVersionsTab(document.getElementById('tabContent'), projectId);
+            } catch (err) {}
+        }
+
+        // ==================== T3-4: 定时回归告警 ====================
+
+        async function loadRegressionAlertBanner(projectId) {
+            const banner = document.getElementById('regressionAlertBanner');
+            if (!banner) return;
+            try {
+                const data = await api(`/projects/${projectId}/regression-alerts`);
+                const alerts = data.alerts || [];
+                if (alerts.length === 0) {
+                    banner.innerHTML = '';
+                    return;
+                }
+                banner.innerHTML = alerts.map(a => `
+                    <div class="card mb-4" style="background: #fef2f2; border: 1px solid #fecaca; padding: 12px 16px; display: flex; align-items: center; gap: 12px;">
+                        <span style="font-size: 20px;">⚠</span>
+                        <div style="flex: 1;">
+                            <strong>回归告警</strong>：最新 run pass_rate ${(a.pass_rate * 100).toFixed(1)}%
+                            相比 baseline ${(a.baseline_pass_rate * 100).toFixed(1)}% 下降 ${(Math.abs(a.delta * 100)).toFixed(1)}%
+                            （阈值 ${(a.threshold * 100).toFixed(0)}%）
+                        </div>
+                        <button class="btn btn-sm btn-secondary" onclick="navigateTo('run-detail', {id: '${escapeHtml(a.run_id)}', projectId: '${escapeHtml(projectId)}'})">查看 run</button>
+                    </div>
+                `).join('');
+            } catch (e) { /* 静默失败，告警非关键 */ }
         }
 
         // ==================== Run 详情页 ====================
@@ -3715,13 +3974,13 @@
                         <div class="metric-value num">${tppVal}</div>
                         <div class="metric-label">每万 token 完成率</div>
                     </div>
-                    <div class="metric-card">
+                    <div class="metric-card" title="${s && s.concurrency > 1 ? `延迟在 ${s.concurrency} 并发下采集，仅参考（并发会引入噪声）` : 'P50 中位数延迟'}">
                         <div class="metric-value num">${s ? (s.latency_p50 / 1000).toFixed(1) + 's' : '-'}</div>
-                        <div class="metric-label">P50 延迟</div>
+                        <div class="metric-label">P50 延迟${s && s.concurrency > 1 ? ` <span style="font-size: 10px; color: var(--amber);">[${s.concurrency} 并发]</span>` : ''}</div>
                     </div>
-                    <div class="metric-card">
+                    <div class="metric-card" title="${s && s.concurrency > 1 ? `延迟在 ${s.concurrency} 并发下采集，仅参考（并发会引入噪声）` : 'P95 长尾延迟'}">
                         <div class="metric-value num">${s ? (s.latency_p95 / 1000).toFixed(1) + 's' : '-'}</div>
-                        <div class="metric-label">P95 延迟</div>
+                        <div class="metric-label">P95 延迟${s && s.concurrency > 1 ? ` <span style="font-size: 10px; color: var(--amber);">[${s.concurrency} 并发]</span>` : ''}</div>
                     </div>
                     <div class="metric-card">
                         <div class="metric-value num" style="color: ${failed > 0 ? 'var(--red)' : 'inherit'}">${failed}</div>
@@ -4556,6 +4815,10 @@
                 }
                 progressDiv.innerHTML = '<div style="color: var(--green);">✓ 导入完成（' + result.imported + ' 条，模式: ' + result.mode + '）</div>';
                 showToast('成功导入 ' + result.imported + ' 条用例', 'success');
+                // T3-2: replace 模式会触发 content_updated_at 更新，旧采样统计清零
+                if (mode === 'replace') {
+                    setTimeout(() => showToast('采样统计已按新评测集重置，需积累新采样', 'warning'), 900);
+                }
                 // 重置导入状态，避免下次打开残留
                 importData = { cases: [], errors: [], total: 0 };
                 switchTab('evalsets');
@@ -4645,6 +4908,9 @@
                 // T1-6: dirty 检测——若配置页有未保存改动，发起评测弹窗提示
                 const dirtyNow = state._configDirty;
 
+                // T3-1: 取项目最大并发作为 concurrency 默认与上限
+                const maxConc = parseInt(proj?.max_concurrency ?? 1, 10) || 1;
+
                 body.innerHTML = `
                     ${dirtyNow ? `
                         <div class="dirty-bar">
@@ -4675,6 +4941,18 @@
                             </div>
                         </div>
                     ` : ''}
+                    <div class="form-group" style="display: flex; gap: 12px; margin-top: 12px;">
+                        <div style="flex: 1;">
+                            <label class="form-label">采样次数 k（每 case 跑几次）</label>
+                            <input type="number" class="form-input mono" id="runSamples" min="1" max="20" value="1" onchange="updateRunEvalsetInfo()">
+                            <div style="font-size: 11px; color: var(--ink-4); margin-top: 4px;">k=1 = 单次执行（默认）</div>
+                        </div>
+                        <div style="flex: 1;">
+                            <label class="form-label">并发数（≤ 项目最大 ${escapeHtml(String(maxConc))}）</label>
+                            <input type="number" class="form-input mono" id="runConcurrency" min="1" max="${escapeHtml(String(maxConc))}" value="${escapeHtml(String(maxConc))}" ${maxConc <= 1 ? 'disabled' : ''} onchange="updateRunEvalsetInfo()">
+                            <div style="font-size: 11px; color: var(--ink-4); margin-top: 4px;">${maxConc <= 1 ? '项目最大并发=1，串行执行' : '留空 = 串行；填值 = 并发（含延迟噪声）'}</div>
+                        </div>
+                    </div>
                     ${(warnTarget || warnJudge) ? `
                         <div style="margin-top: 12px; padding: 10px 12px; background: var(--amber-bg); border: 1px solid var(--amber-bd); border-radius: var(--radius-md); color: var(--amber); font-size: 12px;">
                             ${warnTarget ? '<div>⚠ Target API 未配置完整，发起后所有 case 将失败</div>' : ''}
@@ -4709,11 +4987,14 @@
                         : selectedTags.some(t => ct.includes(t));
                 });
             }
+            // T3-1: 采样次数 k 与并发数（用于"将运行 N×k 次调用"提示）
+            const samples = Math.max(1, parseInt(document.getElementById('runSamples')?.value || '1', 10) || 1);
             const byType = {};
             enabledCases.forEach(c => { byType[c.eval_type] = (byType[c.eval_type] || 0) + 1; });
             const typeBreakdown = Object.entries(byType).map(([t, n]) => `<span class="tag tag-${t}" style="margin-right: 4px;">${escapeHtml(t)} ×${n}</span>`).join('');
+            const totalCalls = enabledCases.length * samples;
             info.innerHTML = `
-                <div style="color: var(--ink-3); font-size: 12px;">将运行 <b style="color: var(--ink-1);">${enabledCases.length}</b> 条${selectedTags.length > 0 ? '（按标签筛选后）' : '启用'}用例</div>
+                <div style="color: var(--ink-3); font-size: 12px;">将运行 <b style="color: var(--ink-1);">${enabledCases.length}</b> 条${selectedTags.length > 0 ? '（按标签筛选后）' : '启用'}用例${samples > 1 ? ` × 采样 <b>${samples}</b> 次 = <b style="color: var(--ink-1);">${totalCalls}</b> 次调用` : ''}</div>
                 <div style="margin-top: 6px;">${typeBreakdown || '<span style="color: var(--red);">无启用用例</span>'}</div>
             `;
             const confirmBtn = document.getElementById('confirmRunBtn');
@@ -4736,7 +5017,12 @@
             const selectedTags = Array.from(document.querySelectorAll('#runTagChips .tag-chip-toggle:not(.off)'))
                 .map(el => el.dataset.tag);
             const tagMode = document.querySelector('input[name="runTagMode"]:checked')?.value || 'any';
-            const body = { project_id: projectId, evalset_id: evalsetId };
+            // T3-1: 采样次数与并发数
+            const samples = Math.max(1, parseInt(document.getElementById('runSamples')?.value || '1', 10) || 1);
+            const concRaw = document.getElementById('runConcurrency')?.value;
+            const concurrency = concRaw ? Math.max(1, parseInt(concRaw, 10) || 1) : null;
+            const body = { project_id: projectId, evalset_id: evalsetId, samples };
+            if (concurrency !== null) body.concurrency = concurrency;
             if (selectedTags.length > 0) {
                 body.case_filter = { tags: selectedTags, mode: tagMode };
             }
@@ -5142,7 +5428,9 @@
                     response_mapping: [],
                     response_parsing: collectResponseParsing()
                 },
-                token_budget: collectTokenBudget()
+                token_budget: collectTokenBudget(),
+                max_concurrency: parseInt(document.getElementById('maxConcurrency')?.value || '1', 10) || 1,
+                schedule: collectSchedule()
             };
 
             try {
@@ -5185,8 +5473,33 @@
                 judge_config_id: document.getElementById('judgeConfigIdSelect')?.value,
                 budget_limit: document.getElementById('budgetLimit')?.value,
                 budget_warn_only: document.getElementById('budgetWarnOnly')?.checked,
+                max_concurrency: document.getElementById('maxConcurrency')?.value,
+                schedule_enabled: document.getElementById('scheduleEnabled')?.checked,
+                schedule_cron: document.getElementById('scheduleCron')?.value,
+                schedule_tags: document.getElementById('scheduleTags')?.value,
+                schedule_threshold: document.getElementById('scheduleThreshold')?.value,
                 _judgeExtras: judgeExtras
             };
+        }
+
+        // T3-4: 收集定时回归配置
+        function collectSchedule() {
+            const enabled = document.getElementById('scheduleEnabled')?.checked || false;
+            if (!enabled) {
+                return { enabled: false };
+            }
+            const cron = document.getElementById('scheduleCron')?.value?.trim() || '*/30 * * * *';
+            const tagsStr = document.getElementById('scheduleTags')?.value || '';
+            const tags = tagsStr.split(',').map(t => t.trim()).filter(Boolean);
+            const threshold = parseFloat(document.getElementById('scheduleThreshold')?.value || '0.1') || 0.1;
+            return { enabled: true, cron, tags, regression_threshold: threshold };
+        }
+
+        // T3-4: 开关切换显示/隐藏定时回归字段
+        function updateScheduleToggle() {
+            const enabled = document.getElementById('scheduleEnabled')?.checked;
+            const fields = document.getElementById('scheduleFields');
+            if (fields) fields.style.display = enabled ? '' : 'none';
         }
 
         // T1-6: 比较当前快照与初始快照，返回 dirty 状态

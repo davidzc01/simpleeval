@@ -354,6 +354,7 @@ def _build_run_result(
     status: str = "completed",
     error: str = None,
     budget_exceeded: bool = False,
+    concurrency: int = 1,
 ) -> EvalRun:
     """构建评测结果"""
     total = len(results)
@@ -382,6 +383,7 @@ def _build_run_result(
         latency_p95=round(latency_p95, 2),
         judge_token=judge_token_total,
         budget_exceeded=budget_exceeded,
+        concurrency=concurrency,
     )
 
     return EvalRun(
@@ -397,11 +399,79 @@ def _build_run_result(
     )
 
 
-async def execute_run(run: EvalRun, project: Project, evalset: EvalSet, case_filter: Optional[CaseFilter] = None) -> EvalRun:
+async def _execute_one_sample(
+    project: Project,
+    case,
+    judge_available: bool,
+    judge_error: str,
+    sample_index: Optional[int],
+) -> CaseResult:
+    """T3-1: 跑一次 case（k=1 的最小单元；供串行/并发两条路径复用）"""
+    prompt = case.input
+    start = time.perf_counter()
+    try:
+        actual, token, token_missing = await _call_target_with_hard_timeout(
+            base_url=project.target_config.base_url,
+            api_key=project.target_config.api_key,
+            model=project.target_config.model or "",
+            prompt=prompt,
+            request_template=project.target_config.request_template,
+            auth=project.target_config.auth,
+            response_mapping=project.target_config.response_mapping,
+            response_parsing=project.target_config.response_parsing,
+            api_type=project.target_config.api_type,
+            variables=case.variables,
+            case_name=case.case_name,
+            task_shape=case.task_shape or project.task_shape,
+        )
+        latency_ms = (time.perf_counter() - start) * 1000
+        passed, score, skipped_reason, judge_token, check_results, actual = await _evaluate_case(
+            project, case, actual, token, token_missing,
+            judge_available, judge_error,
+        )
+    except (APIError, NetworkError, ResponseFormatError) as e:
+        latency_ms = (time.perf_counter() - start) * 1000
+        actual = f"[ERROR] {type(e).__name__}: {e.message}"
+        passed = False
+        score = 0.0
+        token = 0
+        skipped_reason = None
+        token_missing = _token_missing_on_error(project)
+        judge_token = 0
+        check_results = []
+
+    return CaseResult(
+        case_name=case.case_name,
+        case_id=case.id,
+        actual_output=actual,
+        passed=passed,
+        score=score,
+        latency_ms=latency_ms,
+        token_used=token,
+        skipped_reason=skipped_reason,
+        token_missing=token_missing,
+        judge_token=judge_token,
+        check_results=check_results,
+        sample_index=sample_index,
+    )
+
+
+async def execute_run(
+    run: EvalRun,
+    project: Project,
+    evalset: EvalSet,
+    case_filter: Optional[CaseFilter] = None,
+    samples: int = 1,
+    concurrency: Optional[int] = None,
+) -> EvalRun:
     """异步执行评测（供 BackgroundTasks 调用）
 
     T1-2: case_filter 按标签筛选 case（None/空 = 全部启用 case）
     T2-4: token 预算硬限制——warn_only=false 时累计超限即停，剩余 case 标 skipped_reason
+    T3-1: samples=k 时每 case 跑 k 次采样，结果带 sample_index(1..k)；
+          concurrency=N 时用 asyncio.Semaphore 并发，落盘加 asyncio.Lock 防写竞争；
+          samples=1 + concurrency=None = 完全串行，行为与 T3-1 前一致（向后兼容）
+    T3-5: 并发作用域同时覆盖采样与 case 级——samples=1 + concurrency=N 即 case 级并发
     """
     # 过滤启用的 case，再按 case_filter 筛选
     enabled_cases = [c for c in evalset.cases if c.enabled]
@@ -411,6 +481,12 @@ async def execute_run(run: EvalRun, project: Project, evalset: EvalSet, case_fil
     run.status = "running"
     run.started_at = _utc_now()
     await async_save_run(run)
+
+    # T3-1: 决定实际并发数与采样次数
+    # concurrency=None 或 1 → 串行（行为同现状）；>1 → 并发
+    use_concurrency = concurrency and concurrency > 1
+    actual_concurrency = concurrency if use_concurrency else 1
+    use_samples = max(1, samples)
 
     try:
         # 检查 Judge 可用性
@@ -422,84 +498,90 @@ async def execute_run(run: EvalRun, project: Project, evalset: EvalSet, case_fil
         budget = project.token_budget
         enforce_budget = bool(budget) and not budget.warn_only
         budget_exceeded = False
-        cost_token_accum = 0
 
-        for case in enabled_cases:
-            # 模板渲染在 call_target 内统一处理（run_evalset 同构）
-            prompt = case.input
-            start = time.perf_counter()
+        if not use_concurrency:
+            # === 串行路径（默认；samples>1 时仍逐 case 串行 k 次）===
+            for case in enabled_cases:
+                # T3-2-4: 预算超限后剩余 case 全部标记 skipped
+                if budget_exceeded:
+                    results.append(CaseResult(
+                        case_name=case.case_name, case_id=case.id,
+                        actual_output="[SKIPPED] budget_exceeded",
+                        passed=False, skipped_reason="budget_exceeded",
+                        token_missing=_token_missing_on_error(project),
+                    ))
+                    continue
 
-            try:
-                actual, token, token_missing = await _call_target_with_hard_timeout(
-                    base_url=project.target_config.base_url,
-                    api_key=project.target_config.api_key,
-                    model=project.target_config.model or "",
-                    prompt=prompt,
-                    request_template=project.target_config.request_template,
-                    auth=project.target_config.auth,
-                    response_mapping=project.target_config.response_mapping,
-                    response_parsing=project.target_config.response_parsing,
-                    api_type=project.target_config.api_type,
-                    variables=case.variables,
-                    case_name=case.case_name,
-                    task_shape=case.task_shape or project.task_shape,
-                )
-                latency_ms = (time.perf_counter() - start) * 1000
+                # T3-1: 同一 case 跑 k 次采样
+                for sidx in range(use_samples):
+                    sample_index = (sidx + 1) if use_samples > 1 else None
+                    r = await _execute_one_sample(
+                        project, case, judge_available, judge_error, sample_index,
+                    )
+                    results.append(r)
 
-                passed, score, skipped_reason, judge_token, check_results, actual = await _evaluate_case(
-                    project, case, actual, token, token_missing,
-                    judge_available, judge_error,
-                )
+                    # T2-4: 累计成本 token，超限即停（已在 budget_exceeded 时上方 break/continue）
+                    if enforce_budget:
+                        cost_now = sum(rr.token_used + rr.judge_token for rr in results)
+                        if cost_now > budget.limit:
+                            budget_exceeded = True
+                            break
 
-            except (APIError, NetworkError, ResponseFormatError) as e:
-                latency_ms = (time.perf_counter() - start) * 1000
-                actual = f"[ERROR] {type(e).__name__}: {e.message}"
-                passed = False
-                score = 0.0
-                token = 0
-                skipped_reason = None
-                token_missing = _token_missing_on_error(project)
-                judge_token = 0
-                check_results = []
+                # B-20: 每 case 落盘（status 保持 running，前端轮询可见 results 增长）
+                run.results = list(results)
+                await async_save_run(run)
+        else:
+            # === 并发路径（T3-1 / T3-5）===
+            # 把 (case, sample_index) 平铺成任务列表；concurrency 同时作用于采样与 case 级
+            sem = asyncio.Semaphore(actual_concurrency)
+            save_lock = asyncio.Lock()
+            # T2-4: 预算累计需在多协程间原子更新（用 list 容器避免 nonlocal 歧义）
+            budget_lock = asyncio.Lock() if enforce_budget else None
+            shared_cost = [0]
 
-            results.append(
-                CaseResult(
-                    case_name=case.case_name,
-                    case_id=case.id,
-                    actual_output=actual,
-                    passed=passed,
-                    score=score,
-                    latency_ms=latency_ms,
-                    token_used=token,
-                    skipped_reason=skipped_reason,
-                    token_missing=token_missing,
-                    judge_token=judge_token,
-                    check_results=check_results,
-                )
-            )
-            # T2-4: 累计成本 token，超限即停剩余 case（标 skipped_reason="budget_exceeded"）
-            cost_token_accum = sum(r.token_used + r.judge_token for r in results)
-            if enforce_budget and cost_token_accum > budget.limit:
-                budget_exceeded = True
-                # 剩余 case 全部标记为 budget_exceeded
-                remaining_cases = enabled_cases[len(results):]
-                for rc in remaining_cases:
-                    results.append(
-                        CaseResult(
-                            case_name=rc.case_name,
-                            case_id=rc.id,
+            # 构建任务清单：每个 (case, sample_index) 一个 task
+            task_specs: list[tuple] = []
+            for case in enabled_cases:
+                for sidx in range(use_samples):
+                    sample_index = (sidx + 1) if use_samples > 1 else None
+                    task_specs.append((case, sample_index))
+
+            async def _run_one(case, sample_index):
+                nonlocal budget_exceeded
+                async with sem:
+                    # T2-4: 预算超限后，未开始的样本（仍在等 sem）直接标 skipped 不执行
+                    if enforce_budget and budget_exceeded:
+                        return CaseResult(
+                            case_name=case.case_name, case_id=case.id,
                             actual_output="[SKIPPED] budget_exceeded",
-                            passed=False,
-                            skipped_reason="budget_exceeded",
+                            passed=False, skipped_reason="budget_exceeded",
                             token_missing=_token_missing_on_error(project),
                         )
+                    r = await _execute_one_sample(
+                        project, case, judge_available, judge_error, sample_index,
                     )
-                break
+                    # T2-4: 累计成本，超限设标志——后续等 sem 的样本会被上面跳过
+                    if enforce_budget:
+                        async with budget_lock:
+                            shared_cost[0] += r.token_used + r.judge_token
+                            if shared_cost[0] > budget.limit:
+                                budget_exceeded = True
+                    return r
 
-            # B-20: 每 case 落盘，前端轮询能看到 results 增长（status 保持 running）
-            # BUG-1 根治：使用 async_save_run 卸到线程池，避免同步 IO 阻塞事件循环
-            run.results = list(results)
-            await async_save_run(run)
+            # gather 全部任务；任一异常不向上抛（单 case 失败已在 _execute_one_sample 内吞掉）
+            # return_exceptions=False 但 _execute_one_sample 已保证不抛 → 安全
+            raw_results = await asyncio.gather(*[
+                _run_one(c, si) for c, si in task_specs
+            ])
+
+            # 按提交顺序（与串行路径一致：case×samples 笛卡尔积）合并
+            results = list(raw_results)
+
+            # 并发落盘：加锁，避免多协程同时完成时的写竞争（本路径只有一次最终落盘，
+            # 但保留 lock 以便未来增量落盘扩展）
+            async with save_lock:
+                run.results = list(results)
+                await async_save_run(run)
 
         # 构建结果并保存
         completed_run = _build_run_result(
@@ -508,6 +590,7 @@ async def execute_run(run: EvalRun, project: Project, evalset: EvalSet, case_fil
             evalset_id=run.evalset_id,
             results=results,
             budget_exceeded=budget_exceeded,
+            concurrency=actual_concurrency,
         )
         await async_save_run(completed_run)
         return completed_run
