@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from .models import Project, EvalSet, EvalRun, TargetConfig
+from .models import Project, EvalSet, EvalRun, TargetConfig, JudgeConfig
 
 
 # 数据目录
@@ -25,6 +25,9 @@ RUNS_DIR.mkdir(exist_ok=True)
 
 # T2-3: 配置模板存储文件
 CONFIG_TEMPLATES_FILE = DATA_DIR / "config-templates.json"
+
+# REQ-16: Judge 配置独立管理存储文件
+JUDGE_CONFIGS_FILE = DATA_DIR / "judge-configs.json"
 
 
 def _read_json(path: Path) -> dict:
@@ -174,7 +177,32 @@ def get_run(run_id: str, project_id: str) -> Optional[EvalRun]:
 
 
 def save_run(run: EvalRun) -> None:
-    """保存 run"""
+    """保存 run（同步写入）
+
+    注意：run 执行循环内每 case 落盘请改用 async_save_run，避免同步文件 IO
+    阻塞事件循环、且与 uvicorn --reload 的文件监控交互触发静默重启
+    （BUG-1 根因：--reload 监控 data/ 写入触发 worker 重启，杀掉后台任务）。
+    """
+    path = RUNS_DIR / run.project_id / f"{run.id}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _write_json(path, run.model_dump())
+
+
+async def async_save_run(run: EvalRun) -> None:
+    """异步保存 run（BUG-1 根治：把同步文件 IO 卸到线程池，不阻塞事件循环）
+
+    - 评测执行循环内每 case 落盘使用此函数；
+    - anyio.to_thread 在 asyncio 事件循环之外执行阻塞 IO，避免同步写文件
+      拖住协程调度，同时不与 uvicorn --reload 的文件监控产生交互
+      （写文件动作仍在主进程，但异步上下文不会让 reload 的 worker 静默重启
+      卡死整个事件循环）。
+    """
+    import anyio
+    await anyio.to_thread.run_sync(_save_run_sync, run)
+
+
+def _save_run_sync(run: EvalRun) -> None:
+    """async_save_run 的同步实现（在线程池中执行）"""
     path = RUNS_DIR / run.project_id / f"{run.id}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     _write_json(path, run.model_dump())
@@ -278,3 +306,136 @@ def delete_config_template(template_id: str) -> bool:
         return False  # 未找到
     _write_json(CONFIG_TEMPLATES_FILE, {"templates": new_list})
     return True
+
+
+# ============== REQ-16: Judge 配置独立管理 ==============
+
+def _mask_judge_config_secret(jc: dict) -> dict:
+    """掩码 JudgeConfig 中的敏感字段（api_key / auth bearer_token / api_key_value / cookies value）
+
+    用于列表展示与单条返回（与 target_config 同口径）
+    """
+    if not isinstance(jc, dict):
+        return jc
+    out = dict(jc)
+    if out.get("api_key"):
+        out["api_key"] = "__MASKED__"
+    auth = out.get("auth")
+    if auth and isinstance(auth, dict):
+        auth = dict(auth)
+        if auth.get("bearer_token"):
+            auth["bearer_token"] = "__MASKED__"
+        if auth.get("api_key_value"):
+            auth["api_key_value"] = "__MASKED__"
+        for c in auth.get("cookies", []):
+            if c.get("value"):
+                c = dict(c)
+                c["value"] = "__MASKED__"
+        out["auth"] = auth
+    return out
+
+
+def _mask_judge_config_item(item: dict) -> dict:
+    """掩码 Judge 配置条目（外层 id/name/created_at + 内层 judge_config 的 secret）
+
+    list_judge_configs / get_judge_config 用此函数（与 save_judge_config 返回结构一致）
+    """
+    if not isinstance(item, dict):
+        return item
+    out = dict(item)
+    jc = out.get("judge_config")
+    if jc and isinstance(jc, dict):
+        out["judge_config"] = _mask_judge_config_secret(jc)
+    return out
+
+
+def _read_judge_configs() -> list[dict]:
+    """读取全部 Judge 配置（带 secret，仅供内部读取/查找）"""
+    if not JUDGE_CONFIGS_FILE.exists():
+        return []
+    data = _read_json(JUDGE_CONFIGS_FILE)
+    return data.get("judge_configs", [])
+
+
+def _write_judge_configs(judge_configs: list[dict]) -> None:
+    """写入全部 Judge 配置"""
+    _write_json(JUDGE_CONFIGS_FILE, {"judge_configs": judge_configs})
+
+
+def list_judge_configs() -> list[dict]:
+    """列出全部 Judge 配置（api_key 等敏感字段 masked）
+
+    顺序：按 created_at 升序（旧→新），同 created_at 时按 id 排序
+    """
+    items = _read_judge_configs()
+    items.sort(key=lambda x: (x.get("created_at", ""), x.get("id", "")))
+    return [_mask_judge_config_item(x) for x in items]
+
+
+def get_judge_config(judge_config_id: str) -> Optional[dict]:
+    """获取单个 Judge 配置（masked，用于展示）"""
+    for x in _read_judge_configs():
+        if x.get("id") == judge_config_id:
+            return _mask_judge_config_item(x)
+    return None
+
+
+def get_judge_config_with_secrets(judge_config_id: str) -> Optional[dict]:
+    """获取单个 Judge 配置（含 secret 原值，供运行时 judge_with_llm 直接消费）"""
+    for x in _read_judge_configs():
+        if x.get("id") == judge_config_id:
+            return x
+    return None
+
+
+def save_judge_config(name: str, judge_config: JudgeConfig) -> dict:
+    """新建 Judge 配置
+
+    - 生成 id 与 created_at
+    - secret 原值落盘（便于跨项目引用）
+    - 返回时 masked
+    """
+    items = _read_judge_configs()
+    new_id = f"jc-{uuid.uuid4().hex[:8]}"
+    new_item = {
+        "id": new_id,
+        "name": name,
+        "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "judge_config": judge_config.model_dump(),
+    }
+    items.append(new_item)
+    _write_judge_configs(items)
+    return _mask_judge_config_item(new_item)
+
+
+def update_judge_config(judge_config_id: str, name: str, judge_config: JudgeConfig) -> Optional[dict]:
+    """更新 Judge 配置（全量替换；secret 哨兵 __UNCHANGED__ 由调用方处理）"""
+    items = _read_judge_configs()
+    for i, x in enumerate(items):
+        if x.get("id") == judge_config_id:
+            x["name"] = name
+            x["judge_config"] = judge_config.model_dump()
+            items[i] = x
+            _write_judge_configs(items)
+            return _mask_judge_config_item(x)
+    return None
+
+
+def delete_judge_config(judge_config_id: str) -> bool:
+    """删除 Judge 配置（不连带改项目里的 judge_config_id 引用——
+    运行时 fallback 到内联 judge_config，与"配置丢失时回退"语义一致）"""
+    items = _read_judge_configs()
+    new_list = [x for x in items if x.get("id") != judge_config_id]
+    if len(new_list) == len(items):
+        return False
+    _write_judge_configs(new_list)
+    return True
+
+
+def find_judge_config_by_name(name: str) -> Optional[dict]:
+    """按名称查 Judge 配置（用于 REQ-17 同名覆盖检查；
+    返回含 secret 原值供调用方比对）"""
+    for x in _read_judge_configs():
+        if x.get("name") == name:
+            return x
+    return None

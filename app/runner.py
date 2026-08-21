@@ -1,17 +1,23 @@
 """评测执行器：跑一个评测集，产出结果 + 性能统计 + 成本对比"""
 
+import asyncio
 import json
 import time
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
-from .models import Project, EvalSet, CaseResult, EvalSummary, EvalRun, CaseFilter
+from .models import Project, EvalSet, CaseResult, EvalSummary, EvalRun, CaseFilter, JudgeConfig
 from .eval_types import run_rule_based
 from .judge import call_target, judge_with_llm, APIError, NetworkError, ResponseFormatError
-from .storage import save_run
+from .storage import async_save_run
 
 JUDGE_THRESHOLD = 0.5  # llm_judge 分数超过该阈值判为通过
+
+# BUG-1 防御：调用目标 API / Judge 的硬超时（秒）。
+# httpx 的 timeout 对"连接活跃但缓慢返回"场景会持续重置 read timeout，
+# 用 asyncio.wait_for 在外层独立计时，强制 150s 内必须返回。
+HARD_CALL_TIMEOUT_SECONDS = 150
 
 
 def _token_missing_on_error(project: Project) -> bool:
@@ -21,6 +27,33 @@ def _token_missing_on_error(project: Project) -> bool:
     - 配置了 response_parsing：call 失败 → 无法获取 token → missing
     """
     return project.target_config.response_parsing is not None
+
+
+async def _call_target_with_hard_timeout(**kwargs):
+    """BUG-1 防御：call_target 外层包 asyncio.wait_for 硬超时。
+
+    httpx 的 timeout=120 对"连接活跃但缓慢返回"场景会持续重置 read timeout，
+    导致 case 调用挂起；外层独立计时强制 150s 内必须返回，超时映射为
+    NetworkError("评测调用超时")，由调用方的 except 分支统一处理。
+    """
+    try:
+        return await asyncio.wait_for(
+            call_target(**kwargs),
+            timeout=HARD_CALL_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError as e:
+        raise NetworkError(f"评测调用超时（{HARD_CALL_TIMEOUT_SECONDS}s 硬超时）: {e}")
+
+
+async def _judge_with_llm_with_hard_timeout(**kwargs):
+    """BUG-1 防御：judge_with_llm 外层包 asyncio.wait_for 硬超时。"""
+    try:
+        return await asyncio.wait_for(
+            judge_with_llm(**kwargs),
+            timeout=HARD_CALL_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError as e:
+        raise NetworkError(f"Judge 调用超时（{HARD_CALL_TIMEOUT_SECONDS}s 硬超时）: {e}")
 
 
 def _utc_now() -> str:
@@ -98,15 +131,15 @@ async def check_judge_available(project: Project) -> tuple[bool, str]:
     """测试 Judge LLM 是否可用，返回 (可用, 错误信息)
 
     T1-3: 支持双模式——custom 模式用 project.judge_config 的 request_template/auth/response_parsing
-    T2-2: use_target_config=True 时复用 target 的 base_url/api_key/model（仅 openai_compatible）
+    REQ-16: project.judge_config_id 优先于内联 judge_config；旧项目无该字段时 fallback
+    BUG-1 防御：外层包硬超时（_judge_with_llm_with_hard_timeout）
     """
     try:
-        jc = project.judge_config
-        base_url, api_key, model = _resolve_judge_config(project)
-        await judge_with_llm(
-            base_url=base_url,
-            api_key=api_key,
-            model=model,
+        jc = _resolve_effective_judge_config(project)
+        await _judge_with_llm_with_hard_timeout(
+            base_url=jc.base_url,
+            api_key=jc.api_key,
+            model=jc.model or "",
             requirement="测试",
             output="测试",
             judge_prompt=jc.prompt_template,
@@ -125,16 +158,28 @@ async def check_judge_available(project: Project) -> tuple[bool, str]:
         return True, ""
 
 
-def _resolve_judge_config(project: Project) -> tuple[str, str, str]:
-    """T2-2: 解析 Judge 实际使用的 base_url/api_key/model。
+def _resolve_effective_judge_config(project: Project) -> JudgeConfig:
+    """REQ-16: 解析项目实际使用的 JudgeConfig。
 
-    - use_target_config=True 且 target 为 openai_compatible → 取 target 的 base_url/api_key/model
-    - 否则取 judge 自身配置
+    - project.judge_config_id 存在 → 从全局 judge-configs.json 取（含 secret 原值）
+    - 找不到对应全局配置（被删了） → fallback 到 project.judge_config（内联），向后兼容
+    - 未设 judge_config_id → 用 project.judge_config（内联），旧项目零迁移
     """
-    jc = project.judge_config
-    if jc.use_target_config and project.target_config.api_type == "openai_compatible":
-        tc = project.target_config
-        return tc.base_url, tc.api_key, tc.model or ""
+    if project.judge_config_id:
+        # 延迟导入避免循环依赖（storage 不依赖 runner）
+        from .storage import get_judge_config_with_secrets
+        global_jc = get_judge_config_with_secrets(project.judge_config_id)
+        if global_jc and "judge_config" in global_jc:
+            return JudgeConfig(**global_jc["judge_config"])
+    return project.judge_config
+
+
+def _resolve_judge_config(project: Project) -> tuple[str, str, str]:
+    """解析 Judge 实际使用的 base_url/api_key/model（保留旧签名供 _evaluate_case 调用）
+
+    REQ-16 后：不再"复用 Target"，直接从 effective judge_config 取值
+    """
+    jc = _resolve_effective_judge_config(project)
     return jc.base_url, jc.api_key, jc.model or ""
 
 
@@ -166,12 +211,12 @@ async def _evaluate_case(
             token = 0
         else:
             requirement = case.output_requirement or case.expected_output or ""
-            jc = project.judge_config
-            base_url, api_key, model = _resolve_judge_config(project)
-            score, judge_token = await judge_with_llm(
-                base_url=base_url,
-                api_key=api_key,
-                model=model,
+            # REQ-16: 通过 _resolve_effective_judge_config 取全局或内联配置
+            jc = _resolve_effective_judge_config(project)
+            score, judge_token = await _judge_with_llm_with_hard_timeout(
+                base_url=jc.base_url,
+                api_key=jc.api_key,
+                model=jc.model or "",
                 requirement=requirement,
                 output=actual,
                 judge_prompt=jc.prompt_template,
@@ -198,12 +243,11 @@ async def _evaluate_case(
                     chk_score = 0.0
                 else:
                     chk_requirement = chk.expected or ""
-                    jc = project.judge_config
-                    base_url, api_key, model = _resolve_judge_config(project)
-                    chk_score, chk_judge_token = await judge_with_llm(
-                        base_url=base_url,
-                        api_key=api_key,
-                        model=model,
+                    jc = _resolve_effective_judge_config(project)
+                    chk_score, chk_judge_token = await _judge_with_llm_with_hard_timeout(
+                        base_url=jc.base_url,
+                        api_key=jc.api_key,
+                        model=jc.model or "",
                         requirement=chk_requirement,
                         output=chk_value,
                         judge_prompt=jc.prompt_template,
@@ -245,7 +289,7 @@ async def run_evalset(project: Project, evalset: EvalSet) -> EvalRun:
         start = time.perf_counter()
 
         try:
-            actual, token, token_missing = await call_target(
+            actual, token, token_missing = await _call_target_with_hard_timeout(
                 base_url=project.target_config.base_url,
                 api_key=project.target_config.api_key,
                 model=project.target_config.model or "",
@@ -366,7 +410,7 @@ async def execute_run(run: EvalRun, project: Project, evalset: EvalSet, case_fil
     # 更新状态为 running
     run.status = "running"
     run.started_at = _utc_now()
-    save_run(run)
+    await async_save_run(run)
 
     try:
         # 检查 Judge 可用性
@@ -386,7 +430,7 @@ async def execute_run(run: EvalRun, project: Project, evalset: EvalSet, case_fil
             start = time.perf_counter()
 
             try:
-                actual, token, token_missing = await call_target(
+                actual, token, token_missing = await _call_target_with_hard_timeout(
                     base_url=project.target_config.base_url,
                     api_key=project.target_config.api_key,
                     model=project.target_config.model or "",
@@ -453,8 +497,9 @@ async def execute_run(run: EvalRun, project: Project, evalset: EvalSet, case_fil
                 break
 
             # B-20: 每 case 落盘，前端轮询能看到 results 增长（status 保持 running）
+            # BUG-1 根治：使用 async_save_run 卸到线程池，避免同步 IO 阻塞事件循环
             run.results = list(results)
-            save_run(run)
+            await async_save_run(run)
 
         # 构建结果并保存
         completed_run = _build_run_result(
@@ -464,7 +509,7 @@ async def execute_run(run: EvalRun, project: Project, evalset: EvalSet, case_fil
             results=results,
             budget_exceeded=budget_exceeded,
         )
-        save_run(completed_run)
+        await async_save_run(completed_run)
         return completed_run
 
     except Exception as e:
@@ -472,5 +517,5 @@ async def execute_run(run: EvalRun, project: Project, evalset: EvalSet, case_fil
         run.status = "failed"
         run.error = str(e)
         run.finished_at = _utc_now()
-        save_run(run)
+        await async_save_run(run)
         raise

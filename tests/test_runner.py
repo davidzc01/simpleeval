@@ -321,7 +321,7 @@ class TestExecuteRun:
 
         with patch("app.runner.call_target", new_callable=AsyncMock) as mock_call, \
              patch("app.runner.check_judge_available", new_callable=AsyncMock) as mock_check, \
-             patch("app.runner.save_run") as mock_save:
+             patch("app.runner.async_save_run", new_callable=AsyncMock) as mock_save:
 
             mock_call.return_value = ("你好！", 50, False)
             mock_check.return_value = (True, "")
@@ -331,7 +331,7 @@ class TestExecuteRun:
             assert result.status == "completed"
             assert len(result.results) == 1
             assert result.results[0].passed is True
-            # save_run 应该被调用
+            # async_save_run 应该被调用（每 case 落盘 + 最终落盘）
             assert mock_save.called
 
     @pytest.mark.asyncio
@@ -357,7 +357,7 @@ class TestExecuteRun:
         with patch("app.runner.call_target", new_callable=AsyncMock) as mock_call, \
              patch("app.runner.judge_with_llm", new_callable=AsyncMock) as mock_judge, \
              patch("app.runner.check_judge_available", new_callable=AsyncMock) as mock_check, \
-             patch("app.runner.save_run") as mock_save:
+             patch("app.runner.async_save_run", new_callable=AsyncMock) as mock_save:
 
             mock_call.return_value = ("礼貌的回复", 50, False)
             mock_judge.return_value = (0.8, 20)
@@ -390,7 +390,7 @@ class TestExecuteRun:
 
         with patch("app.runner.call_target", new_callable=AsyncMock) as mock_call, \
              patch("app.runner.check_judge_available", new_callable=AsyncMock) as mock_check, \
-             patch("app.runner.save_run"):
+             patch("app.runner.async_save_run", new_callable=AsyncMock):
 
             mock_call.return_value = ("回复内容", 50, False)
             mock_check.return_value = (False, "llm_unavailable: 网络错误")
@@ -423,7 +423,7 @@ class TestExecuteRun:
 
         with patch("app.runner.call_target", new_callable=AsyncMock) as mock_call, \
              patch("app.runner.check_judge_available", new_callable=AsyncMock) as mock_check, \
-             patch("app.runner.save_run"):
+             patch("app.runner.async_save_run", new_callable=AsyncMock):
 
             mock_call.side_effect = NetworkError("网络不可达")
             mock_check.return_value = (True, "")
@@ -454,7 +454,7 @@ class TestExecuteRun:
 
         with patch("app.runner.call_target", new_callable=AsyncMock) as mock_call, \
              patch("app.runner.check_judge_available", new_callable=AsyncMock) as mock_check, \
-             patch("app.runner.save_run"):
+             patch("app.runner.async_save_run", new_callable=AsyncMock):
 
             # 模拟一个未捕获的异常
             mock_call.side_effect = RuntimeError("未知错误")
@@ -523,4 +523,132 @@ class TestTokenMissing:
 
             run = await run_evalset(project, evalset)
             assert run.results[0].token_missing is False
+
+
+class TestBug1HardTimeout:
+    """BUG-1 防御：call_target / judge_with_llm 外层硬超时 + async_save_run 异步落盘"""
+
+    @pytest.mark.asyncio
+    async def test_call_target_hard_timeout_raises_network_error(self):
+        """call_target 硬超时映射为 NetworkError("评测调用超时...")"""
+        from app.runner import _call_target_with_hard_timeout, HARD_CALL_TIMEOUT_SECONDS
+        from app.judge import NetworkError
+        import asyncio
+
+        async def hang_forever(**kwargs):
+            # 模拟"连接活跃但永不返回"——sleep 时间远大于硬超时
+            await asyncio.sleep(HARD_CALL_TIMEOUT_SECONDS + 30)
+            return ("never", 0, False)
+
+        with patch("app.runner.call_target", new=hang_forever):
+            # 把硬超时改小到 0.05s 以加速测试
+            with patch("app.runner.HARD_CALL_TIMEOUT_SECONDS", 0.05):
+                with pytest.raises(NetworkError) as exc_info:
+                    await _call_target_with_hard_timeout(base_url="", api_key="", model="")
+            assert "评测调用超时" in exc_info.value.message
+
+    @pytest.mark.asyncio
+    async def test_judge_with_llm_hard_timeout_raises_network_error(self):
+        """judge_with_llm 硬超时映射为 NetworkError("Judge 调用超时...")"""
+        from app.runner import _judge_with_llm_with_hard_timeout
+        from app.judge import NetworkError
+        import asyncio
+
+        async def hang_forever(**kwargs):
+            await asyncio.sleep(60)
+            return (0.5, 0)
+
+        with patch("app.runner.judge_with_llm", new=hang_forever):
+            with patch("app.runner.HARD_CALL_TIMEOUT_SECONDS", 0.05):
+                with pytest.raises(NetworkError) as exc_info:
+                    await _judge_with_llm_with_hard_timeout(base_url="", api_key="", model="")
+            assert "Judge 调用超时" in exc_info.value.message
+
+    @pytest.mark.asyncio
+    async def test_call_target_hard_timeout_propagates_to_case_result(self, sample_project, sample_evalset):
+        """硬超时被映射为 NetworkError，execute_run 捕获后写 [ERROR] 而非挂起"""
+        from app.runner import execute_run
+        from app.models import EvalRun
+        import asyncio
+
+        project = Project(**sample_project)
+        evalset = EvalSet(**sample_evalset)
+        evalset.cases = [c for c in evalset.cases if c.id == "case-001"]
+
+        run = EvalRun(
+            id="run-hard-timeout-001",
+            project_id=project.id,
+            evalset_id=evalset.id,
+            status="queued",
+            created_at="2024-01-01T00:00:00Z",
+        )
+
+        async def hang_forever(**kwargs):
+            await asyncio.sleep(60)
+            return ("never", 0, False)
+
+        with patch("app.runner.call_target", new=hang_forever), \
+             patch("app.runner.check_judge_available", new_callable=AsyncMock) as mock_check, \
+             patch("app.runner.async_save_run", new_callable=AsyncMock), \
+             patch("app.runner.HARD_CALL_TIMEOUT_SECONDS", 0.05):
+            mock_check.return_value = (True, "")
+            result = await execute_run(run, project, evalset)
+
+        assert result.status == "completed"
+        assert "[ERROR]" in result.results[0].actual_output
+        assert "评测调用超时" in result.results[0].actual_output
+        assert result.results[0].passed is False
+
+    @pytest.mark.asyncio
+    async def test_async_save_run_runs_in_thread_pool(self):
+        """async_save_run 真异步：在线程池执行，不阻塞事件循环"""
+        from app.storage import async_save_run, _save_run_sync
+        from app.models import EvalRun
+        import asyncio
+        import threading
+        from unittest.mock import patch
+
+        run = EvalRun(
+            id="run-async-001",
+            project_id="proj-async",
+            evalset_id="es-async",
+            status="queued",
+            created_at="2024-01-01T00:00:00Z",
+        )
+
+        main_thread = threading.get_ident()
+        captured_thread_ids = []
+
+        original = _save_run_sync
+
+        def spy(run_arg):
+            captured_thread_ids.append(threading.get_ident())
+            return original(run_arg)
+
+        with patch("app.storage._save_run_sync", side_effect=spy):
+            await async_save_run(run)
+
+        # 应该在线程池执行，主线程 ID 不应等于执行线程 ID
+        assert len(captured_thread_ids) == 1
+        assert captured_thread_ids[0] != main_thread, \
+            "async_save_run 应在线程池执行（线程 ID 不等于主线程）"
+
+    @pytest.mark.asyncio
+    async def test_save_run_sync_still_works_directly(self):
+        """同步 save_run 仍可被 main.py startup 等同步上下文调用"""
+        from app.storage import save_run
+        from app.models import EvalRun
+
+        run = EvalRun(
+            id="run-sync-001",
+            project_id="proj-sync",
+            evalset_id="es-sync",
+            status="failed",
+            created_at="2024-01-01T00:00:00Z",
+            error="服务重启导致任务中断",
+        )
+        save_run(run)
+        # 文件应该存在
+        from app.storage import RUNS_DIR
+        assert (RUNS_DIR / "proj-sync" / "run-sync-001.json").exists()
 

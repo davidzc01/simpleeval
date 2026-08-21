@@ -21,6 +21,9 @@ def setup_test_env(monkeypatch):
     monkeypatch.setattr(storage_module, "PROJECTS_DIR", test_dir / "projects")
     monkeypatch.setattr(storage_module, "EVALSETS_DIR", test_dir / "evalsets")
     monkeypatch.setattr(storage_module, "RUNS_DIR", test_dir / "runs")
+    # REQ-16/T2-3: 全局配置文件也隔离到临时目录，避免污染真实 data/
+    monkeypatch.setattr(storage_module, "JUDGE_CONFIGS_FILE", test_dir / "judge-configs.json")
+    monkeypatch.setattr(storage_module, "CONFIG_TEMPLATES_FILE", test_dir / "config-templates.json")
 
     # 创建目录
     (test_dir / "projects").mkdir(parents=True, exist_ok=True)

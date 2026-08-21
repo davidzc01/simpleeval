@@ -121,12 +121,14 @@ describe('renderJsonTree — 特殊字符 key', () => {
     const data = { 'with-dash': 1, 'with space': 2, '中文键': 3, "with'quote": 4 };
     const out = renderJsonTree(data, '$');
     // 含特殊字符的 key 应使用 ['...'] 包裹，而不是点写法
-    assertIncludes(out, "$['with-dash']", '含连字符 key 用 [\'...\'] 包裹');
-    assertIncludes(out, "$['with space']", '含空格 key 用 [\'...\'] 包裹');
-    assertIncludes(out, "$['中文键']", '中文 key 用 [\'...\'] 包裹');
-    assertIncludes(out, "['with\\'quote']", '含单引号 key 转义');
+    // 注：escapeHtml 安全地把 ' 转义为 &#39;（防 HTML attribute XSS），故 data-path 中 ' 变为 &#39;
+    assertIncludes(out, "$[&#39;with-dash&#39;]", '含连字符 key 用 [&#39;...&#39;] 包裹');
+    assertIncludes(out, "$[&#39;with space&#39;]", '含空格 key 用 [&#39;...&#39;] 包裹');
+    assertIncludes(out, "$[&#39;中文键&#39;]", '中文 key 用 [&#39;...&#39;] 包裹');
+    // 含单引号 key：路径里先 backslash 转义（['with\'quote']），再被 escapeHtml 把所有 ' 转 &#39;
+    assertIncludes(out, "[&#39;with\\&#39;quote&#39;]", '含单引号 key 路径转义');
     // 普通 key 不应包裹（应走 . 写法）
-    assertNotIncludes(out, "$['name']", '普通 key 不应用 [\'...\'] 包裹（这里 data 没有 name，不应出现）');
+    assertNotIncludes(out, "$[&#39;name&#39;]", '普通 key 不应用 [&#39;...&#39;] 包裹（这里 data 没有 name，不应出现）');
 });
 
 describe('renderJsonTree — 空容器', () => {
@@ -156,10 +158,10 @@ describe('renderJsonTree — XSS 转义', () => {
 
 describe('renderJsonTree — XSS 转义（含特殊字符 key）', () => {
     // key 含 < > → 必须用 ['...'] 包裹，且 < > 在 attribute 里被转义为 &lt; &gt;
+    // 注：escapeHtml 把 ' 转 &#39;，故 ['ev<img>il'] 在 attribute 里变 [&#39;ev&lt;img&gt;il&#39;]
     const data = { 'ev<img>il': 'val' };
     const out = renderJsonTree(data, '$');
-    // 路径里包含特殊字符 key（['ev<img>il']），HTML attribute 里 < > 已转义
-    assertIncludes(out, "$['ev&lt;img&gt;il']", "含 < > 的 key 路径走 ['...'] 包裹且转义");
+    assertIncludes(out, "$[&#39;ev&lt;img&gt;il&#39;]", "含 < > 的 key 路径走 [&#39;...&#39;] 包裹且转义");
 });
 
 describe('pickJsonPath — 未设激活目标时提示', () => {

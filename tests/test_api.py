@@ -81,7 +81,7 @@ class TestProjectsAPI:
         assert last_run["failed_count"] == 1
 
     def test_create_project(self, client):
-        """创建项目"""
+        """创建项目（REQ-10: 自动建空评测集 + 返回 evalset_id）"""
         response = client.post(
             "/api/projects",
             json={"name": "测试项目", "task_shape": "general"}
@@ -92,9 +92,12 @@ class TestProjectsAPI:
         assert data["task_shape"] == "general"
         assert "id" in data
         assert data["judge_config"]["api_key"] == {"masked": True}
+        # REQ-10: 返回体附 evalset_id
+        assert "evalset_id" in data
+        assert data["evalset_id"].startswith("evalset-")
 
     def test_get_project(self, client):
-        """获取项目详情"""
+        """获取项目详情（REQ-10: 附 evalset_id，旧项目自动补建）"""
         # 先创建
         create_response = client.post(
             "/api/projects",
@@ -106,6 +109,8 @@ class TestProjectsAPI:
         response = client.get(f"/api/projects/{project_id}")
         assert response.status_code == 200
         assert response.json()["id"] == project_id
+        # REQ-10: 详情也附 evalset_id
+        assert "evalset_id" in response.json()
 
     def test_get_project_not_found(self, client):
         """项目不存在"""
@@ -356,7 +361,7 @@ class TestProjectsAPI:
         assert "judge response_parsing 必填" in response.json()["detail"]["error"]["message"]
 
     def test_list_project_evalsets_empty(self, client):
-        """列出项目下的评测集（空）"""
+        """列出项目下的评测集（REQ-10: 新建项目自动创建一个空评测集）"""
         create_response = client.post(
             "/api/projects",
             json={"name": "评测集列表测试", "task_shape": "general"}
@@ -365,7 +370,11 @@ class TestProjectsAPI:
 
         response = client.get(f"/api/projects/{project_id}/evalsets")
         assert response.status_code == 200
-        assert response.json() == {"evalsets": []}
+        data = response.json()
+        # REQ-10: create_project 自动建一个空评测集
+        assert len(data["evalsets"]) == 1
+        assert data["evalsets"][0]["cases"] == []
+        assert data["evalsets"][0]["name"] == "评测集列表测试-评测集"
 
     def test_list_project_evalsets_with_data(self, client):
         """列出项目下的评测集（有数据）"""
@@ -375,7 +384,7 @@ class TestProjectsAPI:
         )
         project_id = create_response.json()["id"]
 
-        # 创建两个评测集
+        # REQ-10: 项目创建时已自动建一个评测集，再手动创建两个
         client.post("/api/evalsets", json={
             "project_id": project_id, "name": "set1", "cases": []
         })
@@ -386,9 +395,10 @@ class TestProjectsAPI:
         response = client.get(f"/api/projects/{project_id}/evalsets")
         assert response.status_code == 200
         data = response.json()
-        assert len(data["evalsets"]) == 2
+        # 1 auto-created + 2 manual = 3
+        assert len(data["evalsets"]) == 3
         names = {e["name"] for e in data["evalsets"]}
-        assert names == {"set1", "set2"}
+        assert "set1" in names and "set2" in names
 
     def test_list_project_evalsets_project_not_found(self, client):
         """项目不存在时列评测集返回 404"""

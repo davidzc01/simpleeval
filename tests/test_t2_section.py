@@ -322,127 +322,182 @@ class TestEvalsetSamplingEndpoint:
         assert r.status_code == 404
 
 
-# ============== T2-2: Judge 配置复用 ==============
+# ============== T2-2 → REQ-16: Judge 配置独立管理 ==============
+# T2-2 (use_target_config) 已废弃，由 REQ-16 全局 Judge 配置管理替代
 
-class TestJudgeConfigReuse:
-    """T2-2: use_target_config 复用 Target 配置"""
+class TestJudgeConfigIndependence:
+    """REQ-16: JudgeConfig 不再有 use_target_config 字段（T2-2 废弃确认）"""
 
-    def test_default_use_target_config_false(self):
-        """默认不开启复用"""
+    def test_no_use_target_config_field(self):
+        """JudgeConfig 模型不再含 use_target_config（REQ-16 移除）"""
         jc = JudgeConfig(base_url="http://judge", api_key="k", model="m")
-        assert jc.use_target_config is False
+        assert not hasattr(jc, "use_target_config")
 
-    def test_resolve_judge_config_self(self):
-        """未开启复用 → 取 judge 自身配置"""
-        from app.runner import _resolve_judge_config
+    def test_resolve_judge_config_from_inline(self):
+        """无 judge_config_id → fallback 到内联 judge_config（旧项目兼容）"""
+        from app.runner import _resolve_effective_judge_config
         p = Project(
             id="p1", name="t",
             judge_config=JudgeConfig(base_url="http://judge", api_key="jk", model="jm"),
             target_config=TargetConfig(base_url="http://target", api_key="tk", model="tm"),
         )
-        assert _resolve_judge_config(p) == ("http://judge", "jk", "jm")
+        jc = _resolve_effective_judge_config(p)
+        assert jc.base_url == "http://judge"
+        assert jc.api_key == "jk"
+        assert jc.model == "jm"
 
-    def test_resolve_judge_config_reuse_openai(self):
-        """开启复用 + target openai_compatible → 取 target 配置"""
-        from app.runner import _resolve_judge_config
+    def test_resolve_judge_config_from_global(self):
+        """有 judge_config_id → 从全局 judge-configs.json 取（优先于内联）"""
+        from app.runner import _resolve_effective_judge_config
+        from app.storage import save_judge_config, _read_judge_configs, JUDGE_CONFIGS_FILE
+        # 准备：保存一个全局 Judge 配置
+        if JUDGE_CONFIGS_FILE.exists():
+            JUDGE_CONFIGS_FILE.unlink()
+        jc_global = JudgeConfig(base_url="http://global-judge", api_key="gk", model="gm")
+        saved = save_judge_config("全局Judge", jc_global)
+        jc_id = saved["id"]
+        # 项目内联配置与全局不同，验证取全局
         p = Project(
             id="p1", name="t",
-            judge_config=JudgeConfig(
-                base_url="http://judge", api_key="jk", model="jm",
-                use_target_config=True,
-            ),
-            target_config=TargetConfig(
-                base_url="http://target", api_key="tk", model="tm",
-                api_type="openai_compatible",
-            ),
+            judge_config=JudgeConfig(base_url="http://inline", api_key="ik", model="im"),
+            target_config=TargetConfig(base_url="http://target", api_key="tk", model="tm"),
+            judge_config_id=jc_id,
         )
-        assert _resolve_judge_config(p) == ("http://target", "tk", "tm")
+        resolved = _resolve_effective_judge_config(p)
+        assert resolved.base_url == "http://global-judge"
+        assert resolved.api_key == "gk"
+        assert resolved.model == "gm"
+        # 清理
+        JUDGE_CONFIGS_FILE.unlink()
 
-    def test_resolve_judge_config_reuse_blocked_for_custom_target(self):
-        """target 为 custom 时，即使 use_target_config=True 也不复用（fallback judge 自身）"""
-        from app.runner import _resolve_judge_config
+    def test_resolve_judge_config_global_deleted_fallback_inline(self):
+        """judge_config_id 指向的全局配置被删 → fallback 到内联（容错）"""
+        from app.runner import _resolve_effective_judge_config
         p = Project(
             id="p1", name="t",
-            judge_config=JudgeConfig(
-                base_url="http://judge", api_key="jk", model="jm",
-                use_target_config=True,
-                api_type="custom", request_template="tpl",
-            ),
-            target_config=TargetConfig(
-                base_url="http://target", api_key="tk", model=None,
-                api_type="custom", request_template="{input}",
-            ),
+            judge_config=JudgeConfig(base_url="http://inline", api_key="ik", model="im"),
+            target_config=TargetConfig(base_url="http://target", api_key="tk", model="tm"),
+            judge_config_id="jc-nonexistent",
         )
-        # 防御：runner 不应直接复用 custom target（实际由 routes 阻断保存）
-        assert _resolve_judge_config(p) == ("http://judge", "jk", "jm")
+        resolved = _resolve_effective_judge_config(p)
+        assert resolved.base_url == "http://inline"
 
 
-class TestJudgeConfigReuseValidation:
-    """T2-2: PUT /projects 校验 use_target_config 仅 openai_compatible 可用"""
+class TestJudgeConfigCRUDAPI:
+    """REQ-16: /api/judge-configs CRUD"""
 
-    def _base_project_body(self, target_api_type="openai_compatible",
-                           use_target_config=False, judge_api_type="openai_compatible"):
-        return {
-            "id": "p-reuse",
-            "name": "复用测试",
-            "task_shape": "general",
-            "judge_config": {
-                "api_type": judge_api_type,
-                "base_url": "http://judge",
-                "api_key": "jk",
-                "model": "jm" if judge_api_type == "openai_compatible" else None,
-                "request_template": "{input}" if judge_api_type == "custom" else None,
-                "response_parsing": (
-                    {"output_paths": ["$.score"]} if judge_api_type == "custom" else None
-                ),
-                "use_target_config": use_target_config,
-                "prompt_template": "判断：{requirement} {output}",
-            },
-            "target_config": {
-                "api_type": target_api_type,
-                "base_url": "http://target",
-                "api_key": "tk",
-                "model": "tm" if target_api_type == "openai_compatible" else None,
-                "request_template": "{input}" if target_api_type == "custom" else "{input}",
-            },
-            "token_budget": None,
+    def _jc_body(self, api_type="openai_compatible", name="测试Judge"):
+        jc = {
+            "api_type": api_type,
+            "base_url": "http://judge.example.com",
+            "api_key": "sk-secret",
+            "model": "gpt-4o" if api_type == "openai_compatible" else None,
+            "prompt_template": "判断：{requirement} {output}",
         }
+        if api_type == "custom":
+            jc["request_template"] = '{"q": "{requirement}"}'
+            jc["response_parsing"] = {"output_paths": ["$.score"]}
+        return jc
 
-    def _create_project(self, client, name="复用测试"):
-        resp = client.post("/api/projects", json={"name": name})
-        pid = resp.json()["id"]
-        return pid
-
-    def test_save_with_reuse_on_openai_target_ok(self, client):
-        """target=openai_compatible + use_target_config=True → 保存成功"""
-        pid = self._create_project(client, "复用-合法")
-        body = self._base_project_body(
-            target_api_type="openai_compatible", use_target_config=True)
-        body["id"] = pid
-        r = client.put(f"/api/projects/{pid}", json=body)
-        assert r.status_code == 200, r.text
+    def test_create_judge_config(self, client):
+        """POST /judge-configs 创建全局 Judge 配置"""
+        import json as _json
+        r = client.post("/api/judge-configs", data={
+            "name": "DeepSeek-Judge",
+            "judge_config_json": _json.dumps(self._jc_body()),
+        })
+        assert r.status_code == 201, r.text
         data = r.json()
-        assert data["judge_config"]["use_target_config"] is True
+        assert data["name"] == "DeepSeek-Judge"
+        assert data["id"].startswith("jc-")
+        # api_key 必须 masked
+        assert data["judge_config"]["api_key"] == "__MASKED__"
 
-    def test_save_with_reuse_on_custom_target_blocked(self, client):
-        """target=custom + use_target_config=True → 422"""
-        pid = self._create_project(client, "复用-非法")
-        body = self._base_project_body(
-            target_api_type="custom", use_target_config=True)
-        body["id"] = pid
-        r = client.put(f"/api/projects/{pid}", json=body)
+    def test_create_judge_config_empty_name_blocked(self, client):
+        """空名称 → 422"""
+        import json as _json
+        r = client.post("/api/judge-configs", data={
+            "name": "  ",
+            "judge_config_json": _json.dumps(self._jc_body()),
+        })
         assert r.status_code == 422
-        assert "openai_compatible" in r.json()["detail"]["error"]["message"]
 
-    def test_save_with_reuse_off_any_target_ok(self, client):
-        """use_target_config=False + target=custom → 保存成功（不触发复用校验）"""
-        pid = self._create_project(client, "复用-关闭")
-        body = self._base_project_body(
-            target_api_type="custom", use_target_config=False,
-            judge_api_type="openai_compatible")
-        body["id"] = pid
-        r = client.put(f"/api/projects/{pid}", json=body)
+    def test_create_judge_config_invalid_json_blocked(self, client):
+        """judge_config_json 非法 JSON → 422"""
+        r = client.post("/api/judge-configs", data={
+            "name": "坏配置",
+            "judge_config_json": "not-json",
+        })
+        assert r.status_code == 422
+
+    def test_create_judge_config_custom_missing_response_parsing(self, client):
+        """custom 模式缺 response_parsing → 422"""
+        import json as _json
+        jc = self._jc_body(api_type="custom")
+        jc["response_parsing"] = None
+        r = client.post("/api/judge-configs", data={
+            "name": "坏custom",
+            "judge_config_json": _json.dumps(jc),
+        })
+        assert r.status_code == 422
+
+    def test_list_judge_configs(self, client):
+        """GET /judge-configs 列表（masked）"""
+        import json as _json
+        client.post("/api/judge-configs", data={
+            "name": "List-Judge-1",
+            "judge_config_json": _json.dumps(self._jc_body()),
+        })
+        r = client.get("/api/judge-configs")
         assert r.status_code == 200
+        data = r.json()
+        assert "judge_configs" in data
+        # 每条 api_key 都 masked
+        for jc in data["judge_configs"]:
+            if jc.get("judge_config", {}).get("api_key"):
+                assert jc["judge_config"]["api_key"] == "__MASKED__"
+
+    def test_update_judge_config_name_conflict(self, client):
+        """改名冲突需 overwrite=true"""
+        import json as _json
+        r1 = client.post("/api/judge-configs", data={
+            "name": "Conflict-A",
+            "judge_config_json": _json.dumps(self._jc_body()),
+        })
+        r2 = client.post("/api/judge-configs", data={
+            "name": "Conflict-B",
+            "judge_config_json": _json.dumps(self._jc_body()),
+        })
+        id_b = r2.json()["id"]
+        # 把 B 改名为 A → 409
+        r = client.put(f"/api/judge-configs/{id_b}", data={
+            "name": "Conflict-A",
+            "judge_config_json": _json.dumps(self._jc_body()),
+            "overwrite": "false",
+        })
+        assert r.status_code == 409
+        # overwrite=true → 200
+        r = client.put(f"/api/judge-configs/{id_b}", data={
+            "name": "Conflict-A",
+            "judge_config_json": _json.dumps(self._jc_body()),
+            "overwrite": "true",
+        })
+        assert r.status_code == 200
+
+    def test_delete_judge_config(self, client):
+        """DELETE /judge-configs/{id}"""
+        import json as _json
+        r = client.post("/api/judge-configs", data={
+            "name": "Delete-Me",
+            "judge_config_json": _json.dumps(self._jc_body()),
+        })
+        jc_id = r.json()["id"]
+        r = client.delete(f"/api/judge-configs/{jc_id}")
+        assert r.status_code == 200
+        assert r.json()["deleted"] == jc_id
+        # 再删 → 404
+        r = client.delete(f"/api/judge-configs/{jc_id}")
+        assert r.status_code == 404
 
 
 # ============== T2-4: token 预算硬限制 ==============
@@ -479,8 +534,10 @@ class TestTokenBudgetEnforce:
         async def fake_check_judge(project):
             return (True, "")
         monkeypatch.setattr(runner, "check_judge_available", fake_check_judge)
-        # mock save_run（避免写盘）
-        monkeypatch.setattr(runner, "save_run", lambda r: None)
+        # mock async_save_run（避免写盘；BUG-1 根治：runner 用异步落盘）
+        async def fake_async_save_run(r):
+            return None
+        monkeypatch.setattr(runner, "async_save_run", fake_async_save_run)
 
         project = self._mk_project_with_budget(limit=250, warn_only=False)
         evalset = self._mk_evalset(n_cases=4)
@@ -507,7 +564,9 @@ class TestTokenBudgetEnforce:
         async def fake_check_judge(project):
             return (True, "")
         monkeypatch.setattr(runner, "check_judge_available", fake_check_judge)
-        monkeypatch.setattr(runner, "save_run", lambda r: None)
+        async def fake_async_save_run(r):
+            return None
+        monkeypatch.setattr(runner, "async_save_run", fake_async_save_run)
 
         project = self._mk_project_with_budget(limit=250, warn_only=True)
         evalset = self._mk_evalset(n_cases=4)
@@ -531,7 +590,9 @@ class TestTokenBudgetEnforce:
         async def fake_check_judge(project):
             return (True, "")
         monkeypatch.setattr(runner, "check_judge_available", fake_check_judge)
-        monkeypatch.setattr(runner, "save_run", lambda r: None)
+        async def fake_async_save_run(r):
+            return None
+        monkeypatch.setattr(runner, "async_save_run", fake_async_save_run)
 
         project = Project(
             id="proj-nobudget", name="无预算",

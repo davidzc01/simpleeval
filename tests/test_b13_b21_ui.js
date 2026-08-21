@@ -332,10 +332,11 @@ describe('B-16 renderEvalsetDetail — checkbox 列 + 批量操作条', () => {
     assertIncludes(out, 'showBatchDeleteModal', '批量删除调用 showBatchDeleteModal');
 });
 
-describe('B-16 renderEvalsetDetail — colspan 改为 7', () => {
+describe('B-16 renderEvalsetDetail — colspan 改为 11', () => {
     const evalset = { id: EID16, project_id: PID16, name: '空', cases: [] };
     const out = F.renderEvalsetDetail(evalset, PID16);
-    assertIncludes(out, 'colspan="7"', '空态 colspan=7（含新增的 checkbox 列）');
+    // T2-1 后表格列：checkbox/case名/输入/类型/期望/标签/状态/采样n/pass rate/pass^3/操作 = 11 列
+    assertIncludes(out, 'colspan="11"', '空态 colspan=11（T2-1 增采样 3 列后）');
 });
 
 describe('B-16 renderEvalsetDetail — checkbox value 为 case id（转义）', () => {

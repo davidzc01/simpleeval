@@ -2,6 +2,7 @@ fastapi
 uvicorn
 httpx
 pydantic
+anyio
 
 # 测试依赖
 pytest>=7.0.0

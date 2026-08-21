@@ -87,8 +87,6 @@ class JudgeConfig(BaseModel):
     api_key: str = ""  # 留空 = 不带 Authorization 头（custom 模式）
     model: Optional[str] = None  # openai_compatible 模式必填
     request_template: Optional[str] = None  # custom 模式必填
-    # T2-2: 复用 Target API 配置（base_url/api_key/model 取 target 值，仅 openai_compatible 模式可用）
-    use_target_config: bool = False
     auth: AuthConfig = Field(default_factory=AuthConfig)
     response_parsing: Optional[ResponseParsing] = None
     prompt_template: str = (
@@ -132,6 +130,9 @@ class Project(BaseModel):
     judge_config: JudgeConfig
     target_config: TargetConfig
     token_budget: Optional[TokenBudget] = None
+    # REQ-16: 引用全局 Judge 配置 id（优先于内联 judge_config）；
+    # None 时 fallback 到内联 judge_config，向后兼容旧项目
+    judge_config_id: Optional[str] = None
 
 
 class EvalCheck(BaseModel):

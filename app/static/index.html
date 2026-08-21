@@ -929,6 +929,9 @@
                 <div class="nav-item" data-page="projects" onclick="navigateTo('projects')">
                     <span>📁</span> 项目总览
                 </div>
+                <div class="nav-item" data-page="judge-configs" onclick="navigateTo('judge-configs')">
+                    <span>⚖</span> Judge 配置
+                </div>
                 <div style="flex: 1; overflow-y: auto;">
                     <div id="projectList"></div>
                 </div>
@@ -1082,6 +1085,7 @@
             if (page === 'projects') return '#/projects';
             if (page === 'project-detail') return `#/project/${encodeURIComponent(params.id || '')}`;
             if (page === 'run-detail') return `#/run/${encodeURIComponent(params.projectId || '')}/${encodeURIComponent(params.id || '')}`;
+            if (page === 'judge-configs') return '#/judge-configs';
             return '#/projects';
         }
 
@@ -1092,6 +1096,7 @@
             if (parts[0] === 'projects') return { page: 'projects' };
             if (parts[0] === 'project' && parts[1]) return { page: 'project-detail', params: { id: parts[1] } };
             if (parts[0] === 'run' && parts[1] && parts[2]) return { page: 'run-detail', params: { id: parts[2], projectId: parts[1] } };
+            if (parts[0] === 'judge-configs') return { page: 'judge-configs' };
             return null;
         }
 
@@ -1138,7 +1143,7 @@
             // 加载侧栏项目列表（B-11: 有缓存时同步渲染，active 用 URL 判断）
             loadSidebarProjects();
 
-            document.getElementById('pageTitle').textContent = page === 'projects' ? '项目总览' : page === 'project-detail' ? (state.currentProject?.name || '项目详情') : page === 'run-detail' ? (state.currentRun?.id || 'Run 详情') : page;
+            document.getElementById('pageTitle').textContent = page === 'projects' ? '项目总览' : page === 'project-detail' ? (state.currentProject?.name || '项目详情') : page === 'run-detail' ? (state.currentRun?.id || 'Run 详情') : page === 'judge-configs' ? 'Judge 配置管理' : page;
 
             // 清除非侧栏项目的 active（保留侧栏 project-item 的 active，由 loadSidebarProjects 用 URL 同步设好）
             document.querySelectorAll('.nav-item:not(.project-item)').forEach(el => el.classList.remove('active'));
@@ -1156,6 +1161,9 @@
                     break;
                 case 'run-detail':
                     renderRunDetailPage(content, headerActions, params);
+                    break;
+                case 'judge-configs':
+                    renderJudgeConfigsPage(content, headerActions, params);
                     break;
             }
         }
@@ -1231,6 +1239,279 @@
             } catch (err) {
                 // 静默失败，不打扰用户
                 container.innerHTML = '';
+            }
+        }
+
+        // ==================== REQ-16: Judge 配置管理页 ====================
+        async function renderJudgeConfigsPage(container, headerActions, params = {}) {
+            headerActions.innerHTML = `<button class="btn btn-primary" onclick="showJudgeConfigEditorModal(null)">+ 新建 Judge 配置</button>`;
+            container.innerHTML = '<div style="padding: 20px;"><div style="color: var(--ink-4);">加载中...</div></div>';
+            try {
+                const data = await api('/judge-configs');
+                const configs = data.judge_configs || [];
+                if (configs.length === 0) {
+                    container.innerHTML = `
+                        <div class="empty-state" style="padding: 60px 0;">
+                            <div class="empty-state-icon">⚖</div>
+                            <div class="empty-state-text">还没有全局 Judge 配置</div>
+                            <button class="btn btn-primary" onclick="showJudgeConfigEditorModal(null)">+ 新建 Judge 配置</button>
+                        </div>
+                    `;
+                } else {
+                    container.innerHTML = `
+                        <div style="padding: 16px;">
+                            <div style="margin-bottom: 12px; color: var(--ink-4); font-size: 13px;">
+                                全局 Judge 配置可被多个项目引用。各项目在配置页 Judge 卡片选择引用的配置。
+                            </div>
+                            <div class="card">
+                                <table>
+                                    <thead>
+                                        <tr>
+                                            <th>名称</th>
+                                            <th>API 模式</th>
+                                            <th>base_url</th>
+                                            <th>model</th>
+                                            <th>创建时间</th>
+                                            <th>操作</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        ${configs.map(jc => {
+                                            const inner = jc.judge_config || {};
+                                            const created = jc.created_at ? new Date(jc.created_at).toLocaleString('zh-CN') : '-';
+                                            return `
+                                                <tr>
+                                                    <td>${escapeHtml(jc.name || '')}</td>
+                                                    <td>${inner.api_type === 'custom' ? '自定义 API' : 'OpenAI Compatible'}</td>
+                                                    <td class="mono" style="max-width: 200px; overflow: hidden; text-overflow: ellipsis;">${escapeHtml(inner.base_url || '')}</td>
+                                                    <td class="mono">${escapeHtml(inner.model || '-')}</td>
+                                                    <td style="font-size: 12px; color: var(--ink-4);">${created}</td>
+                                                    <td>
+                                                        <button class="btn btn-sm btn-secondary" onclick="showJudgeConfigEditorModal('${escapeHtml(jc.id)}')">编辑</button>
+                                                        <button class="btn btn-sm btn-secondary" style="color: var(--red); border-color: var(--red-bd);" onclick="showDeleteJudgeConfigModal('${escapeHtml(jc.id)}', '${escapeHtml(jc.name)}')">删除</button>
+                                                    </td>
+                                                </tr>
+                                            `;
+                                        }).join('')}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    `;
+                }
+                // 如果带 editId 参数，自动打开编辑弹窗
+                if (params.editId) {
+                    showJudgeConfigEditorModal(params.editId);
+                }
+            } catch (err) {
+                container.innerHTML = `<div class="empty-state"><div class="empty-state-text">加载失败: ${escapeHtml(err.message)}</div></div>`;
+            }
+        }
+
+        async function showJudgeConfigEditorModal(jcId) {
+            let jc = null;
+            let name = '';
+            if (jcId) {
+                try {
+                    jc = await api(`/judge-configs/${encodeURIComponent(jcId)}`);
+                    name = jc.name || '';
+                } catch (e) {
+                    showToast(e.message, 'error');
+                    return;
+                }
+            }
+            const inner = jc?.judge_config || {};
+            const apiType = inner.api_type || 'openai_compatible';
+            const isMasked = v => v && typeof v === 'object' && v.masked === true;
+            const MASK_PLACEHOLDER = '••••••••';
+            const maskVal = v => isMasked(v) ? MASK_PLACEHOLDER : (v || '');
+            const modal = document.getElementById('modalOverlay');
+            const modalContent = document.getElementById('modalContent');
+            modalContent.innerHTML = `
+                <div class="modal-header">
+                    <span class="modal-title">${jcId ? '编辑 Judge 配置' : '新建 Judge 配置'}</span>
+                    <button class="modal-close" onclick="closeModal('modalOverlay')">×</button>
+                </div>
+                <div style="padding: 16px; max-height: 70vh; overflow-y: auto;">
+                    <div class="form-group">
+                        <label class="form-label">名称 <span style="color: var(--red);">*</span></label>
+                        <input type="text" class="form-input" id="jcNameInput" value="${escapeHtml(name)}" placeholder="如：DeepSeek-Judge" style="width: 100%;">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">API 模式</label>
+                        <select class="form-input" id="jcApiType" onchange="toggleJcEditorMode()">
+                            <option value="openai_compatible" ${apiType === 'openai_compatible' ? 'selected' : ''}>OpenAI Compatible</option>
+                            <option value="custom" ${apiType === 'custom' ? 'selected' : ''}>自定义 API</option>
+                        </select>
+                        <div style="font-size: 12px; color: var(--ink-4); margin-top: 4px;" id="jcModeDesc">
+                            ${apiType === 'custom'
+                                ? '任意 HTTP JSON 接口。需请求模板；不注入 model/messages，请求体完全由模板决定。'
+                                : '标准模型接口（OpenAI 风格）。需 base_url + model；api_key 可留空（无认证头）。'}
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">base_url</label>
+                        <input type="text" class="form-input mono" id="jcBaseUrl" value="${escapeHtml(inner.base_url || '')}" style="width: 100%;">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">api_key <span style="color: var(--ink-5); font-weight: normal;">（留空 = 不带 Authorization 头）</span></label>
+                        <input type="password" class="form-input mono" id="jcApiKey" value="${escapeHtml(maskVal(inner.api_key))}" data-masked="${isMasked(inner.api_key) ? 'true' : 'false'}" oninput="this.dataset.masked='false'" style="width: 100%;">
+                    </div>
+                    <div class="form-group" id="jcModelGroup">
+                        <label class="form-label">model <span style="color: var(--red);">*</span></label>
+                        <input type="text" class="form-input mono" id="jcModel" value="${escapeHtml(inner.model || '')}" style="width: 100%;">
+                    </div>
+                    <div class="form-group" id="jcTemplateGroup" style="display: ${apiType === 'custom' ? '' : 'none'};">
+                        <label class="form-label">request_template（JSON，占位符 {requirement} / {output}）</label>
+                        <textarea class="form-input mono" id="jcRequestTemplate" style="min-height: 80px;" placeholder='{"input": "{output}", "requirement": "{requirement}"}'>${escapeHtml(inner.request_template || '')}</textarea>
+                    </div>
+                    <div class="form-group" id="jcAuthGroup" style="display: ${apiType === 'custom' ? '' : 'none'};">
+                        <label class="form-label">auth（JSON，可选）</label>
+                        <textarea class="form-input mono" id="jcAuthJson" style="min-height: 60px;" placeholder='{"type": "none"}'>${escapeHtml(inner.auth ? JSON.stringify(inner.auth, null, 2) : '{"type": "none"}')}</textarea>
+                    </div>
+                    <div class="form-group" id="jcRpGroup" style="display: ${apiType === 'custom' ? '' : 'none'};">
+                        <label class="form-label">response_parsing（JSON，custom 模式必填）</label>
+                        <textarea class="form-input mono" id="jcRpJson" style="min-height: 80px;" placeholder='{"output_paths": ["$.score"], "token_paths": ["$.usage.total_tokens"]}'>${escapeHtml(inner.response_parsing ? JSON.stringify(inner.response_parsing, null, 2) : '')}</textarea>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">prompt 模板（占位符 {requirement} / {output}）</label>
+                        <textarea class="form-input mono" id="jcPromptTemplate" style="min-height: 80px;">${escapeHtml(inner.prompt_template || '')}</textarea>
+                    </div>
+                    <div style="display: flex; gap: 8px; justify-content: flex-end;">
+                        <button class="btn btn-secondary" onclick="closeModal('modalOverlay')">取消</button>
+                        <button class="btn btn-primary" onclick="saveJudgeConfig('${escapeHtml(jcId || '')}')">保存</button>
+                    </div>
+                </div>
+            `;
+            modal.style.display = 'flex';
+        }
+
+        function toggleJcEditorMode() {
+            const mode = document.getElementById('jcApiType')?.value;
+            const showCustom = mode === 'custom';
+            const setDisplay = (id, show) => { const el = document.getElementById(id); if (el) el.style.display = show ? '' : 'none'; };
+            setDisplay('jcTemplateGroup', showCustom);
+            setDisplay('jcAuthGroup', showCustom);
+            setDisplay('jcRpGroup', showCustom);
+            const descEl = document.getElementById('jcModeDesc');
+            if (descEl) {
+                descEl.textContent = showCustom
+                    ? '任意 HTTP JSON 接口。需请求模板；不注入 model/messages，请求体完全由模板决定。'
+                    : '标准模型接口（OpenAI 风格）。需 base_url + model；api_key 可留空（无认证头）。';
+            }
+            const modelReq = document.getElementById('jcModelGroup')?.querySelector('.form-label span');
+            if (modelReq) modelReq.style.display = showCustom ? 'none' : '';
+        }
+
+        async function saveJudgeConfig(jcId) {
+            const name = document.getElementById('jcNameInput')?.value?.trim() || '';
+            if (!name) { showToast('名称必填', 'error'); return; }
+            const apiType = document.getElementById('jcApiType')?.value || 'openai_compatible';
+            const apiKey = document.getElementById('jcApiKey')?.value || '';
+            const isMasked = document.getElementById('jcApiKey')?.dataset?.masked === 'true';
+            const jc = {
+                api_type: apiType,
+                base_url: document.getElementById('jcBaseUrl')?.value || '',
+                api_key: (jcId && isMasked) ? '__UNCHANGED__' : apiKey,
+                model: document.getElementById('jcModel')?.value || null,
+                prompt_template: document.getElementById('jcPromptTemplate')?.value || '',
+            };
+            if (apiType === 'custom') {
+                jc.request_template = document.getElementById('jcRequestTemplate')?.value || '';
+                try { jc.auth = JSON.parse(document.getElementById('jcAuthJson')?.value || '{"type": "none"}'); }
+                catch (e) { showToast('auth JSON 解析失败: ' + e.message, 'error'); return; }
+                try { jc.response_parsing = JSON.parse(document.getElementById('jcRpJson')?.value || 'null'); }
+                catch (e) { showToast('response_parsing JSON 解析失败: ' + e.message, 'error'); return; }
+            }
+            const fd = new FormData();
+            fd.append('name', name);
+            fd.append('judge_config_json', JSON.stringify(jc));
+            try {
+                if (jcId) {
+                    fd.append('overwrite', 'true');
+                    await fetch(`/api/judge-configs/${encodeURIComponent(jcId)}`, { method: 'PUT', body: fd });
+                    showToast('Judge 配置已更新');
+                } else {
+                    await fetch('/api/judge-configs', { method: 'POST', body: fd });
+                    showToast('Judge 配置已创建');
+                }
+                closeModal('modalOverlay');
+                navigateTo('judge-configs');
+            } catch (e) {
+                showToast(e.message, 'error');
+            }
+        }
+
+        async function showDeleteJudgeConfigModal(jcId, jcName) {
+            if (!window.confirm(`确认删除 Judge 配置「${jcName}」？\n引用此配置的项目将回退到内联配置。`)) return;
+            try {
+                await api(`/judge-configs/${encodeURIComponent(jcId)}`, { method: 'DELETE' });
+                showToast('Judge 配置已删除');
+                navigateTo('judge-configs');
+            } catch (e) {
+                showToast(e.message, 'error');
+            }
+        }
+
+        // ==================== REQ-12: 获取真实样例响应 ====================
+        async function fetchRealSample(projectId) {
+            const hintEl = document.getElementById('fetchSampleHint');
+            const btn = event?.target;
+            if (btn) { btn.disabled = true; btn.textContent = '📡 获取中...'; }
+            if (hintEl) hintEl.textContent = '正在取第一条启用 case 调用目标 API...';
+            try {
+                const evalsetData = await api(`/projects/${encodeURIComponent(projectId)}/evalsets`);
+                const evalsets = evalsetData.evalsets || [];
+                if (!evalsets.length) {
+                    if (hintEl) hintEl.textContent = '无评测集，无法获取样例';
+                    showToast('请先导入评测集用例', 'error');
+                    return;
+                }
+                const cases = evalsets[0].cases || [];
+                const enabledCase = cases.find(c => c.enabled);
+                if (!enabledCase) {
+                    if (hintEl) hintEl.textContent = '无启用的 case';
+                    showToast('无启用的 case，无法获取样例', 'error');
+                    return;
+                }
+                const proj = state.currentProject;
+                if (!proj) { showToast('项目数据未加载', 'error'); return; }
+                const tc = proj.target_config;
+                const isMasked = v => v && typeof v === 'object' && v.masked === true;
+                const res = await fetch('/api/test/target?project_id=' + encodeURIComponent(projectId), {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        base_url: tc.base_url,
+                        api_key: isMasked(tc.api_key) ? '__UNCHANGED__' : (tc.api_key || ''),
+                        model: tc.model || null,
+                        request_template: tc.request_template || '{input}',
+                        api_type: tc.api_type || 'openai_compatible',
+                        auth: tc.auth || { type: 'none' },
+                        response_mapping: tc.response_mapping || [],
+                        response_parsing: tc.response_parsing || null,
+                    })
+                });
+                const result = await res.json();
+                if (result.ok) {
+                    // 样例区填入完整响应（截断前 2000 字符避免超长）
+                    const sampleEl = document.getElementById('parsingSample');
+                    if (sampleEl) {
+                        // 尝试获取完整 JSON 响应（output 是截断的，需要完整响应）
+                        // test/target 返回的是截断 output，我们用它作为样例
+                        sampleEl.value = result.output || '';
+                        state._rpSample = sampleEl.value;
+                    }
+                    if (hintEl) hintEl.textContent = `✓ 已获取响应（token: ${result.token_used ?? '?'}）`;
+                    // 自动渲染 JSON 树
+                    if (typeof parseSampleToTree === 'function') parseSampleToTree();
+                } else {
+                    if (hintEl) hintEl.textContent = `✗ ${result.error?.message || '调用失败'}`;
+                }
+            } catch (e) {
+                if (hintEl) hintEl.textContent = `✗ ${e.message}`;
+            } finally {
+                if (btn) { btn.disabled = false; btn.textContent = '📡 获取真实样例（会真实调用，消耗 token）'; }
             }
         }
 
@@ -1837,11 +2118,14 @@
                 if (evalsets.length === 0) {
                     state.currentEvalsets = null;
                     state.currentEvalsetId = null;
+                    // REQ-10: 评测集免新建——空态改为导入引导，不再有「新建评测集」入口
                     container.innerHTML = `
                         <div class="empty-state">
                             <div class="empty-state-icon">📋</div>
-                            <div class="empty-state-text">还没有评测集</div>
-                            <button class="btn btn-primary" onclick="showCreateEvalSetModal('${projectId}')">+ 新建评测集</button>
+                            <div class="empty-state-text">评测集为空，导入 CSV/JSON 或逐条添加用例</div>
+                            <div style="display:flex;gap:8px;justify-content:center;">
+                                <button class="btn btn-primary" onclick="switchTab('config'); navigateTo('project-detail', {id: '${projectId}'})">前往配置</button>
+                            </div>
                         </div>
                     `;
                     return;
@@ -2120,49 +2404,6 @@
                 await api(`/evalsets/${evalsetId}`, { method: 'PUT', body: JSON.stringify({ ...evalset, cases }) });
                 closeModal('batchDeleteModal');
                 showToast('已删除 ' + ids.length + ' 条用例');
-                switchTab('evalsets');
-            } catch (err) {}
-        }
-
-        function showCreateEvalSetModal(projectId) {
-            const modal = document.createElement('div');
-            modal.className = 'modal-overlay';
-            modal.id = 'createEvalSetModal';
-            modal.innerHTML = `
-                <div class="modal">
-                    <div class="modal-header">
-                        <span class="modal-title">新建评测集</span>
-                        <button class="modal-close" onclick="closeModal('createEvalSetModal')">×</button>
-                    </div>
-                    <div class="modal-body">
-                        <div class="form-group">
-                            <label class="form-label">名称</label>
-                            <input type="text" class="form-input" id="evalsetName" placeholder="例如：客服意图评测集">
-                        </div>
-                    </div>
-                    <div class="modal-footer">
-                        <button class="btn btn-secondary" onclick="closeModal('createEvalSetModal')">取消</button>
-                        <button class="btn btn-primary" onclick="createEvalSet('${projectId}')">创建</button>
-                    </div>
-                </div>
-            `;
-            document.body.appendChild(modal);
-        }
-
-        async function createEvalSet(projectId) {
-            const name = document.getElementById('evalsetName').value.trim();
-            if (!name) {
-                showToast('请输入名称', 'error');
-                return;
-            }
-            try {
-                const newSet = await api('/evalsets', {
-                    method: 'POST',
-                    body: JSON.stringify({ project_id: projectId, name, cases: [] })
-                });
-                state.currentEvalsetId = newSet.id;
-                closeModal('createEvalSetModal');
-                showToast('已创建空评测集，请导入用例');
                 switchTab('evalsets');
             } catch (err) {}
         }
@@ -2580,21 +2821,30 @@
                 <div class="card mb-4">
                     <div class="card-header" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
                         <span class="card-title">Target API 配置</span>
-                        <div id="targetTplBar" style="display: flex; gap: 6px; align-items: center; font-size: 12px;">
-                            <select id="targetTplSelect" class="form-input" style="width: auto; min-width: 160px; padding: 4px 8px; font-size: 12px;">
-                                <option value="">配置模板...</option>
-                            </select>
-                            <button class="btn btn-sm btn-secondary" onclick="loadTargetTemplate('${project.id}')" title="加载选中模板到当前表单（secret 字段需手动补）">加载</button>
-                            <button class="btn btn-sm btn-secondary" onclick="saveTargetTemplate('${project.id}')" title="保存当前 Target 配置为模板">保存为模板</button>
-                            <button class="btn btn-sm btn-secondary" onclick="deleteTargetTemplate()" title="删除选中模板" style="color: var(--red);">删除</button>
+                        <div id="targetTplBar" class="tpl-dropdown-wrapper" style="position: relative;">
+                            <button class="btn btn-sm btn-secondary" onclick="toggleTplDropdown(event)" title="配置模板管理">⋯ 配置模板 <span style="font-size: 10px;">▾</span></button>
+                            <div id="tplDropdownMenu" class="tpl-dropdown-menu" style="display: none; position: absolute; right: 0; top: 100%; min-width: 200px; background: var(--card-bg, #1e1e2e); border: 1px solid var(--border, #333); border-radius: 6px; box-shadow: 0 4px 12px rgba(0,0,0,0.3); z-index: 100; padding: 4px 0;">
+                                <div style="padding: 6px 12px; font-size: 11px; color: var(--ink-4); border-bottom: 1px solid var(--border, #333);">配置模板</div>
+                                <div id="tplDropdownList" style="max-height: 200px; overflow-y: auto;">
+                                    <div style="padding: 8px 12px; font-size: 12px; color: var(--ink-4);">加载中...</div>
+                                </div>
+                                <div style="border-top: 1px solid var(--border, #333); padding: 4px 0;">
+                                    <button class="btn btn-sm" style="width: 100%; text-align: left; padding: 6px 12px; background: transparent; border: none; color: var(--ink-2);" onclick="showSaveTemplateModal('${project.id}')">💾 保存当前配置为模板</button>
+                                </div>
+                            </div>
                         </div>
                     </div>
                     <div class="form-group">
                         <label class="form-label">API 模式</label>
                         <select class="form-input" id="targetApiType" onchange="toggleApiMode()">
-                            <option value="openai_compatible" ${(tc.api_type || 'openai_compatible') === 'openai_compatible' ? 'selected' : ''}>OpenAI 兼容（自动注入 model + /chat/completions）</option>
-                            <option value="custom" ${tc.api_type === 'custom' ? 'selected' : ''}>自定义 API（纯模板渲染，不注入 model）</option>
+                            <option value="openai_compatible" ${(tc.api_type || 'openai_compatible') === 'openai_compatible' ? 'selected' : ''}>OpenAI Compatible</option>
+                            <option value="custom" ${tc.api_type === 'custom' ? 'selected' : ''}>自定义 API</option>
                         </select>
+                        <div id="targetApiModeDesc" style="font-size: 12px; color: var(--ink-4); margin-top: 4px;">
+                            ${tc.api_type === 'custom'
+                                ? '任意 HTTP JSON 接口。需请求模板；不注入 model/messages，请求体完全由模板决定。'
+                                : '标准模型接口（OpenAI 风格）。需 base_url + model；api_key 可留空（无认证头）。'}
+                        </div>
                     </div>
                     <div class="form-group">
                         <label class="form-label">base_url ${tc.api_type === 'custom' ? '（完整端点 URL，不补路径）' : '（如 https://api.example.com/v1）'}</label>
@@ -2706,6 +2956,10 @@
                     <div class="form-group">
                         <label class="form-label">样例响应（粘贴真实返回 JSON）</label>
                         <textarea class="form-input mono" id="parsingSample" placeholder='{"choices":[{"message":{"content":"hi"}}], "usage":{"total_tokens": 12}}' style="min-height: 100px;">${escapeHtml(state._rpSample || '')}</textarea>
+                        <div style="margin-top: 6px; display: flex; gap: 8px; align-items: center;">
+                            <button class="btn btn-sm btn-secondary" onclick="fetchRealSample('${project.id}')" title="取第一条启用的 case 调用目标 API 获取真实响应（会消耗 token）">📡 获取真实样例（会真实调用，消耗 token）</button>
+                            <span id="fetchSampleHint" style="font-size: 12px; color: var(--ink-4);"></span>
+                        </div>
                     </div>
 
                     <div id="jsonTreeContainer" class="json-tree-container" style="display: none;">
@@ -2722,29 +2976,33 @@
                 </div>
 
                 <div class="card mb-4">
-                    <div class="card-header">
+                    <div class="card-header" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
                         <span class="card-title">LLM Judge 配置</span>
+                        <div style="display: flex; gap: 6px; align-items: center;">
+                            <button class="btn btn-sm btn-secondary" onclick="navigateTo('judge-configs')" title="管理全局 Judge 配置">⚙ 管理</button>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">全局 Judge 配置（可选，引用全局配置后覆盖下方内联字段）</label>
+                        <div style="display: flex; gap: 6px; align-items: center;">
+                            <select class="form-input" id="judgeConfigIdSelect" onchange="onJudgeConfigSelectChange()" style="flex: 1;">
+                                <option value="">— 使用下方内联配置 —</option>
+                            </select>
+                            <button class="btn btn-sm btn-secondary" onclick="navigateTo('judge-configs')">新建</button>
+                            <button class="btn btn-sm btn-secondary" id="editJudgeConfigBtn" onclick="editSelectedJudgeConfig()" disabled>编辑</button>
+                        </div>
+                        <div id="judgeConfigSummary" style="font-size: 12px; color: var(--ink-4); margin-top: 4px;"></div>
                     </div>
                     <div class="form-group">
                         <label class="form-label">API 模式</label>
                         <select class="form-input" id="judgeApiType" onchange="toggleJudgeApiMode()">
-                            <option value="openai_compatible" ${(jc.api_type || 'openai_compatible') === 'openai_compatible' ? 'selected' : ''}>OpenAI 兼容（messages + model 注入）</option>
-                            <option value="custom" ${jc.api_type === 'custom' ? 'selected' : ''}>自定义 API（模板渲染，不注入 model/messages）</option>
+                            <option value="openai_compatible" ${(jc.api_type || 'openai_compatible') === 'openai_compatible' ? 'selected' : ''}>OpenAI Compatible</option>
+                            <option value="custom" ${jc.api_type === 'custom' ? 'selected' : ''}>自定义 API</option>
                         </select>
-                    </div>
-                    <div class="form-group" id="judgeReuseGroup">
-                        <label style="display: flex; align-items: flex-start; gap: 8px; cursor: pointer;">
-                            <input type="checkbox" id="judgeUseTargetConfig" ${jc.use_target_config ? 'checked' : ''} onchange="toggleJudgeReuse()">
-                            <span>
-                                <strong>复用 Target API 配置</strong>
-                                <span style="display: block; font-size: 12px; color: var(--ink-4); margin-top: 2px;">
-                                    勾选后 base_url/api_key/model 直接取 Target 的值，一处改动两处同步。仅 Target 为 OpenAI 兼容模式时可用。
-                                </span>
-                            </span>
-                        </label>
-                        <div id="judgeReuseSummary" style="display: none; padding: 8px 12px; background: var(--bg-2); border-radius: 6px; margin-top: 8px; font-size: 13px; color: var(--ink-3);"></div>
-                        <div id="judgeReuseDisabledHint" style="display: none; padding: 8px 12px; background: var(--bg-2); border-radius: 6px; margin-top: 8px; font-size: 12px; color: var(--ink-4);">
-                            当前 Target 为自定义 API 模式，不支持复用（Judge 复用仅适用于 OpenAI 兼容模式的 Target）。
+                        <div id="judgeApiModeDesc" style="font-size: 12px; color: var(--ink-4); margin-top: 4px;">
+                            ${(jc.api_type || 'openai_compatible') === 'custom'
+                                ? '任意 HTTP JSON 接口。需请求模板；不注入 model/messages，请求体完全由模板决定。'
+                                : '标准模型接口（OpenAI 风格）。需 base_url + model；api_key 可留空（无认证头）。'}
                         </div>
                     </div>
                     <div class="form-group" id="judgeBaseUrlGroup">
@@ -2812,12 +3070,13 @@
             state._auth = JSON.parse(JSON.stringify(auth));
             renderAuthFields(project.id);
             toggleApiMode();
-            // T1-3: 初始化 Judge API 模式切换（内部会调用 toggleJudgeReuse 评估复用状态）
             toggleJudgeApiMode();
             // B-7: 初始化响应解析行编辑器（从 rp 数据填充）
             initRpPathLists(rp);
-            // T2-3: 加载配置模板列表到下拉框
+            // T2-3/REQ-15: 加载配置模板列表到下拉菜单
             refreshTargetTplList();
+            // REQ-16: 加载全局 Judge 配置列表到下拉选择器
+            refreshJudgeConfigSelect();
 
             // T1-6: 配置页初始化完成后，建立 dirty 基准快照并绑定字段监听
             // _suppressDirtyCheck 防止初始化期间 toggleApiMode 等触发 change 误报 dirty
@@ -2868,18 +3127,21 @@
             const templateHint = document.getElementById('templateHint');
             if (!mode) return;
             if (mode === 'custom') {
-                // custom: model 可选，request_template 必填
                 if (modelRequired) modelRequired.style.display = 'none';
                 if (templateHint) templateHint.textContent = '（必填，JSON 格式，不注入 model/messages）';
                 if (modelGroup) modelGroup.querySelector('label').firstChild.textContent = 'model（可选） ';
             } else {
-                // openai_compatible: model 必填
                 if (modelRequired) modelRequired.style.display = '';
                 if (templateHint) templateHint.textContent = '（留空 {input} = 默认 OpenAI 格式）';
                 if (modelGroup) modelGroup.querySelector('label').firstChild.textContent = 'model ';
             }
-            // T2-2: Target 模式切换后重新评估 Judge 复用开关
-            toggleJudgeReuse();
+            // REQ-11: 统一描述文案
+            const descEl = document.getElementById('targetApiModeDesc');
+            if (descEl) {
+                descEl.textContent = mode === 'custom'
+                    ? '任意 HTTP JSON 接口。需请求模板；不注入 model/messages，请求体完全由模板决定。'
+                    : '标准模型接口（OpenAI 风格）。需 base_url + model；api_key 可留空（无认证头）。';
+            }
         }
 
         function renderAuthFields(projectId) {
@@ -4365,7 +4627,7 @@
                     body.innerHTML = `
                         <div class="empty-state" style="padding: 24px 0;">
                             <div class="empty-state-icon">📋</div>
-                            <div class="empty-state-text">还没有评测集，请先创建并导入用例</div>
+                            <div class="empty-state-text">评测集为空，请先导入用例</div>
                             <button class="btn btn-secondary" onclick="closeModal('runModal'); switchTab('evalsets')">前往评测集</button>
                         </div>
                     `;
@@ -4559,74 +4821,161 @@
                 const el = document.getElementById(id);
                 if (el) el.style.display = show ? '' : 'none';
             };
-            // openai_compatible: model 必填；custom: model 可选，request_template 必填
             setDisplay('judgeRequestTemplateGroup', showCustom);
             setDisplay('judgeAuthGroup', showCustom);
             setDisplay('judgeResponseParsingGroup', showCustom);
             const modelRequired = document.getElementById('judgeModelRequired');
             if (modelRequired) modelRequired.style.display = showCustom ? 'none' : '';
-            // T2-2: 模式切换后重新评估复用开关可用性
-            toggleJudgeReuse();
+            // REQ-11: 统一描述文案
+            const descEl = document.getElementById('judgeApiModeDesc');
+            if (descEl) {
+                descEl.textContent = showCustom
+                    ? '任意 HTTP JSON 接口。需请求模板；不注入 model/messages，请求体完全由模板决定。'
+                    : '标准模型接口（OpenAI 风格）。需 base_url + model；api_key 可留空（无认证头）。';
+            }
         }
 
-        // T2-2: Judge 复用 Target 配置开关
-        function toggleJudgeReuse() {
-            const reuseEl = document.getElementById('judgeUseTargetConfig');
-            const targetMode = document.getElementById('targetApiType')?.value;
-            // 仅 Target 为 openai_compatible 时允许复用
-            const targetIsOpenAI = targetMode === 'openai_compatible';
-            const reuseDisabled = !targetIsOpenAI;
-            if (reuseEl) {
-                reuseEl.disabled = reuseDisabled;
-                if (reuseDisabled) reuseEl.checked = false;
-            }
-            const reuseOn = reuseEl?.checked && !reuseDisabled;
-            const setDisplay = (id, show) => {
-                const el = document.getElementById(id);
-                if (el) el.style.display = show ? '' : 'none';
-            };
-            // 勾选复用 → 隐藏 base_url/api_key/model，显示引用摘要
-            setDisplay('judgeBaseUrlGroup', !reuseOn);
-            setDisplay('judgeApiKeyGroup', !reuseOn);
-            setDisplay('judgeModelGroup', !reuseOn);
-            setDisplay('judgeReuseDisabledHint', reuseDisabled);
-            const summaryEl = document.getElementById('judgeReuseSummary');
+        // REQ-16: 全局 Judge 配置下拉选择
+        async function refreshJudgeConfigSelect() {
+            const sel = document.getElementById('judgeConfigIdSelect');
+            if (!sel) return;
+            try {
+                const data = await api('/judge-configs');
+                const configs = data.judge_configs || [];
+                const currentVal = sel.value;
+                sel.innerHTML = '<option value="">— 使用下方内联配置 —</option>' +
+                    configs.map(jc => `<option value="${escapeHtml(jc.id)}">${escapeHtml(jc.name)}</option>`).join('');
+                // 如果当前项目有 judge_config_id，选中它
+                if (state.currentProject?.judge_config_id) {
+                    sel.value = state.currentProject.judge_config_id;
+                } else if (currentVal && configs.some(jc => jc.id === currentVal)) {
+                    sel.value = currentVal;
+                }
+                onJudgeConfigSelectChange();
+            } catch (e) { /* 静默失败 */ }
+        }
+
+        function onJudgeConfigSelectChange() {
+            const sel = document.getElementById('judgeConfigIdSelect');
+            const editBtn = document.getElementById('editJudgeConfigBtn');
+            const summaryEl = document.getElementById('judgeConfigSummary');
+            const selectedId = sel?.value;
+            if (editBtn) editBtn.disabled = !selectedId;
             if (summaryEl) {
-                if (reuseOn) {
-                    const tcBase = document.getElementById('targetBaseUrl')?.value || '';
-                    const tcModel = document.getElementById('targetModel')?.value || '';
-                    summaryEl.style.display = '';
-                    summaryEl.innerHTML = `当前引用：<strong>${escapeHtml(tcBase)}</strong> · <code>${escapeHtml(tcModel)}</code>`;
+                if (selectedId) {
+                    const name = sel.options[sel.selectedIndex]?.text || '';
+                    summaryEl.textContent = `已引用全局配置「${name}」，运行时使用该配置（覆盖下方内联字段）`;
                 } else {
-                    summaryEl.style.display = 'none';
+                    summaryEl.textContent = '使用下方内联配置';
                 }
             }
+            markConfigDirtyIfChanged();
         }
 
-        // T2-3: 加载配置模板列表到下拉框
+        function editSelectedJudgeConfig() {
+            const sel = document.getElementById('judgeConfigIdSelect');
+            if (!sel?.value) return;
+            navigateTo('judge-configs', { editId: sel.value });
+        }
+
+        // T2-3/REQ-15: 加载配置模板列表到下拉菜单
         async function refreshTargetTplList() {
-            const sel = document.getElementById('targetTplSelect');
-            if (!sel) return;
+            const listEl = document.getElementById('tplDropdownList');
+            if (!listEl) return;
             try {
                 const data = await api('/config-templates');
                 const templates = data.templates || [];
-                const currentVal = sel.value;
-                sel.innerHTML = '<option value="">配置模板...</option>' +
-                    templates.map(t => `<option value="${escapeHtml(t.id)}">${escapeHtml(t.name)}</option>`).join('');
-                // 保留之前选中（如果还存在）
-                if (currentVal && templates.some(t => t.id === currentVal)) {
-                    sel.value = currentVal;
+                if (templates.length === 0) {
+                    listEl.innerHTML = '<div style="padding: 8px 12px; font-size: 12px; color: var(--ink-4);">暂无模板</div>';
+                } else {
+                    listEl.innerHTML = templates.map(t => `
+                        <div style="display: flex; align-items: center; justify-content: space-between; padding: 6px 12px;">
+                            <button class="btn btn-sm" style="flex: 1; text-align: left; padding: 4px 8px; background: transparent; border: none; color: var(--ink-2); font-size: 12px;" onclick="loadTargetTemplateById('${escapeHtml(t.id)}', state.currentProject?.id || '')" title="加载模板到当前表单">
+                                📥 ${escapeHtml(t.name)}
+                            </button>
+                            <button class="btn btn-sm" style="padding: 2px 6px; background: transparent; border: none; color: var(--red); font-size: 14px;" onclick="deleteTargetTemplateById('${escapeHtml(t.id)}', '${escapeHtml(t.name)}')" title="删除模板">✕</button>
+                        </div>
+                    `).join('');
                 }
-            } catch (e) { /* 静默失败，模板非关键 */ }
+            } catch (e) { /* 静默失败 */ }
         }
 
-        // T2-3: 保存当前 Target 配置为模板
-        async function saveTargetTemplate(projectId) {
-            const name = window.prompt('请输入模板名称：');
-            if (!name || !name.trim()) return;
+        // REQ-15: 模板下拉菜单开关
+        function toggleTplDropdown(ev) {
+            ev.stopPropagation();
+            const menu = document.getElementById('tplDropdownMenu');
+            if (!menu) return;
+            const isOpen = menu.style.display !== 'none';
+            menu.style.display = isOpen ? 'none' : '';
+            if (!isOpen) {
+                refreshTargetTplList();
+                // 点击外部关闭
+                setTimeout(() => {
+                    document.addEventListener('click', closeTplDropdownOnOutside, { once: true });
+                }, 0);
+            }
+        }
+
+        function closeTplDropdownOnOutside(ev) {
+            const menu = document.getElementById('tplDropdownMenu');
+            const wrapper = document.querySelector('.tpl-dropdown-wrapper');
+            if (menu && menu.style.display !== 'none' && !wrapper?.contains(ev.target)) {
+                menu.style.display = 'none';
+            }
+        }
+
+        // REQ-17: 保存模板弹窗（名称输入 + 同名覆盖确认）
+        function showSaveTemplateModal(projectId) {
+            document.getElementById('tplDropdownMenu').style.display = 'none';
+            const modal = document.getElementById('modalOverlay');
+            const modalContent = document.getElementById('modalContent');
+            modalContent.innerHTML = `
+                <div class="modal-header">
+                    <span class="modal-title">保存为配置模板</span>
+                    <button class="modal-close" onclick="closeModal('modalOverlay')">×</button>
+                </div>
+                <div style="padding: 16px;">
+                    <div class="form-group">
+                        <label class="form-label">模板名称 <span style="color: var(--red);">*</span></label>
+                        <input type="text" class="form-input" id="tplNameInput" placeholder="如：FastGPT-企业提取" style="width: 100%;">
+                        <div id="tplNameError" style="font-size: 12px; color: var(--red); margin-top: 4px; display: none;"></div>
+                    </div>
+                    <div style="font-size: 12px; color: var(--ink-4); margin-bottom: 12px;">
+                        将保存当前项目的 Target API 配置（base_url/api_type/auth/request_template/response_parsing），<br>
+                        api_key 等敏感字段也会保存（便于跨项目引用，加载时提示手动补 key）。
+                    </div>
+                    <div style="display: flex; gap: 8px; justify-content: flex-end;">
+                        <button class="btn btn-secondary" onclick="closeModal('modalOverlay')">取消</button>
+                        <button class="btn btn-primary" id="tplSaveBtn" onclick="confirmSaveTemplate('${projectId}')">保存</button>
+                    </div>
+                </div>
+            `;
+            modal.style.display = 'flex';
+            setTimeout(() => document.getElementById('tplNameInput')?.focus(), 50);
+        }
+
+        async function confirmSaveTemplate(projectId) {
+            const nameInput = document.getElementById('tplNameInput');
+            const name = nameInput?.value?.trim() || '';
+            const errEl = document.getElementById('tplNameError');
+            if (!name) {
+                if (errEl) { errEl.textContent = '模板名称必填'; errEl.style.display = ''; }
+                nameInput?.focus();
+                return;
+            }
+            // 检查同名
+            let existingId = null;
+            try {
+                const data = await api('/config-templates');
+                const match = (data.templates || []).find(t => t.name === name);
+                if (match) existingId = match.id;
+            } catch (e) {}
+            if (existingId) {
+                if (!window.confirm(`已存在名为「${name}」的模板，是否覆盖？`)) return;
+            }
             try {
                 const fd = new FormData();
-                fd.append('name', name.trim());
+                fd.append('name', name);
                 const res = await fetch(`/api/config-templates?project_id=${encodeURIComponent(projectId)}`, {
                     method: 'POST',
                     body: fd
@@ -4636,58 +4985,40 @@
                     throw new Error(err?.detail?.error?.message || err?.detail || `保存失败 (${res.status})`);
                 }
                 showToast('模板已保存');
+                closeModal('modalOverlay');
                 await refreshTargetTplList();
             } catch (e) {
                 showToast(e.message, 'error');
             }
         }
 
-        // T2-3: 加载选中模板到当前 Target 表单
-        async function loadTargetTemplate(projectId) {
-            const sel = document.getElementById('targetTplSelect');
-            if (!sel || !sel.value) {
-                showToast('请先选择一个模板', 'error');
-                return;
-            }
-            const tplId = sel.value;
+        // T2-3: 按模板 ID 加载到当前 Target 表单
+        async function loadTargetTemplateById(tplId, projectId) {
+            document.getElementById('tplDropdownMenu').style.display = 'none';
             try {
                 const tpl = await api(`/config-templates/${encodeURIComponent(tplId)}`);
                 const tc = tpl.target_config;
                 if (!tc) throw new Error('模板无 target_config');
-                // 填充表单字段
-                const setVal = (id, v) => {
-                    const el = document.getElementById(id);
-                    if (el) el.value = v ?? '';
-                };
+                const setVal = (id, v) => { const el = document.getElementById(id); if (el) el.value = v ?? ''; };
                 setVal('targetApiType', tc.api_type || 'openai_compatible');
                 setVal('targetBaseUrl', tc.base_url || '');
                 setVal('targetModel', tc.model || '');
                 setVal('targetTemplate', tc.request_template || '');
-                // auth 配置填充
                 const authEl = document.getElementById('authType');
                 if (authEl && tc.auth) {
                     authEl.value = tc.auth.type || 'none';
                     state._auth = JSON.parse(JSON.stringify(tc.auth));
                     renderAuthFields(projectId);
                 }
-                // response_parsing 结构化 UI 填充
                 const rp = tc.response_parsing || { output_paths: [], token_paths: [], token_fields: [], token_scope: null, output_unpack_json: false, output_field: null };
                 initRpPathLists(rp);
-                // output_unpack_json + output_field
                 const unpackEl = document.getElementById('rpOutputUnpackJson');
                 if (unpackEl) unpackEl.checked = !!rp.output_unpack_json;
                 setVal('rpOutputField', rp.output_field || '');
                 if (typeof toggleRpUnpackField === 'function') toggleRpUnpackField();
-                // token_scope（如有该字段）
-                setVal('rpTokenScopeJson', rp.token_scope ? JSON.stringify(rp.token_scope, null, 2) : '');
-                // api_key 留空，提示手动补
                 const apiKeyEl = document.getElementById('targetApiKey');
-                if (apiKeyEl) {
-                    apiKeyEl.value = '';
-                    apiKeyEl.dataset.masked = 'false';
-                }
+                if (apiKeyEl) { apiKeyEl.value = ''; apiKeyEl.dataset.masked = 'false'; }
                 toggleApiMode();
-                toggleJudgeReuse();
                 showToast('模板已加载，api_key 等敏感字段请手动补全', 'info');
                 markConfigDirtyIfChanged();
             } catch (e) {
@@ -4695,15 +5026,9 @@
             }
         }
 
-        // T2-3: 删除选中模板
-        async function deleteTargetTemplate() {
-            const sel = document.getElementById('targetTplSelect');
-            if (!sel || !sel.value) {
-                showToast('请先选择一个模板', 'error');
-                return;
-            }
-            const tplId = sel.value;
-            const tplName = sel.options[sel.selectedIndex]?.text || tplId;
+        // T2-3: 按模板 ID 删除
+        async function deleteTargetTemplateById(tplId, tplName) {
+            document.getElementById('tplDropdownMenu').style.display = 'none';
             if (!window.confirm(`确认删除模板「${tplName}」？此操作不可恢复。`)) return;
             try {
                 await api(`/config-templates/${encodeURIComponent(tplId)}`, { method: 'DELETE' });
@@ -4713,6 +5038,7 @@
                 showToast(e.message, 'error');
             }
         }
+
 
         // T1-3: 收集 Judge 配置（auth + response_parsing 从 JSON 文本框解析）
         function collectJudgeConfigExtras() {
@@ -4804,8 +5130,8 @@
                     auth: judgeExtras.auth,
                     response_parsing: judgeExtras.response_parsing,
                     prompt_template: document.getElementById('judgePrompt').value,
-                    use_target_config: document.getElementById('judgeUseTargetConfig')?.checked || false
                 },
+                judge_config_id: document.getElementById('judgeConfigIdSelect')?.value || null,
                 target_config: {
                     api_type: document.getElementById('targetApiType').value,
                     base_url: document.getElementById('targetBaseUrl').value,
@@ -4856,7 +5182,7 @@
                 judge_auth_json: document.getElementById('judgeAuthJson')?.value,
                 judge_rp_json: document.getElementById('judgeResponseParsingJson')?.value,
                 judge_prompt: document.getElementById('judgePrompt')?.value,
-                judge_use_target: document.getElementById('judgeUseTargetConfig')?.checked,
+                judge_config_id: document.getElementById('judgeConfigIdSelect')?.value,
                 budget_limit: document.getElementById('budgetLimit')?.value,
                 budget_warn_only: document.getElementById('budgetWarnOnly')?.checked,
                 _judgeExtras: judgeExtras

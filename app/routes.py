@@ -10,7 +10,7 @@ from typing import Optional
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Form
 
 from .models import (
-    Project, EvalSet, EvalRun, EvalCase,
+    Project, EvalSet, EvalRun, EvalCase, JudgeConfig,
     CreateProjectRequest, CreateEvalSetRequest, RunEvalRequest,
     TestTargetRequest, TestMappingRequest, TestParsingRequest, TestJudgeRequest,
     CaseResult, ErrorResponse,
@@ -21,6 +21,8 @@ from .storage import (
     list_runs, get_run, save_run,
     get_project_last_run, get_project_trend,
     list_config_templates, get_config_template, save_config_template, delete_config_template,
+    list_judge_configs, get_judge_config, get_judge_config_with_secrets, save_judge_config,
+    update_judge_config, delete_judge_config, find_judge_config_by_name,
 )
 from .runner import execute_run, _utc_now, _generate_run_id, _apply_case_filter
 from .judge import call_target, judge_with_llm, NetworkError, APIError, ResponseFormatError
@@ -103,6 +105,24 @@ def _attach_run_summary(data: dict, project_id: str) -> dict:
     return data
 
 
+def _attach_evalset_id(data: dict, project_id: str, project_name: str) -> dict:
+    """REQ-10: 给项目响应附 evalset_id（取该项目的第一个评测集；无则补建空集）"""
+    evalsets = list_evalsets(project_id)
+    if not evalsets:
+        evalset_id = _generate_id("evalset")
+        evalset = EvalSet(
+            id=evalset_id,
+            project_id=project_id,
+            name=f"{project_name}-评测集",
+            cases=[],
+        )
+        save_evalset(evalset)
+        data["evalset_id"] = evalset_id
+    else:
+        data["evalset_id"] = evalsets[0].id
+    return data
+
+
 @router.get("/projects")
 async def list_all_projects():
     """列出所有项目（含 last_run + trend）"""
@@ -111,6 +131,7 @@ async def list_all_projects():
     for p in projects:
         data = _project_to_response(p)
         _attach_run_summary(data, p.id)
+        _attach_evalset_id(data, p.id, p.name)
         result.append(data)
 
     return {"projects": result}
@@ -118,7 +139,11 @@ async def list_all_projects():
 
 @router.post("/projects", status_code=201)
 async def create_project(req: CreateProjectRequest):
-    """新建项目"""
+    """新建项目
+
+    REQ-10: 一并创建一个空评测集（name = 项目名 + "-评测集"），
+    UI 删除「新建评测集」入口；旧项目首次进入评测集 tab 时由前端按需补建。
+    """
     project_id = _generate_id("proj")
     project = Project(
         id=project_id,
@@ -128,17 +153,35 @@ async def create_project(req: CreateProjectRequest):
         target_config={"base_url": "", "api_key": "", "model": None},
     )
     save_project(project)
-    return _project_to_response(project)
+
+    # REQ-10: 顺带创建空评测集
+    evalset_id = _generate_id("evalset")
+    evalset = EvalSet(
+        id=evalset_id,
+        project_id=project_id,
+        name=f"{req.name}-评测集",
+        cases=[],
+    )
+    save_evalset(evalset)
+
+    # 返回体附 evalset_id，方便前端直接进入评测集 tab
+    data = _project_to_response(project)
+    data["evalset_id"] = evalset_id
+    return data
 
 
 @router.get("/projects/{project_id}")
 async def get_project_detail(project_id: str):
-    """获取项目详情（B-15: 附 last_run + trend，与列表接口对齐）"""
+    """获取项目详情（B-15: 附 last_run + trend，与列表接口对齐）
+
+    REQ-10: 附 evalset_id（取该项目的第一个评测集；若旧项目无评测集，自动补建空集）
+    """
     project = get_project(project_id)
     if not project:
         project_not_found(project_id)
     data = _project_to_response(project)
     _attach_run_summary(data, project_id)
+    _attach_evalset_id(data, project_id, project.name)
     return data
 
 
@@ -200,12 +243,9 @@ async def update_project(project_id: str, project: Project):
                           "message": "custom 模式下 judge response_parsing 必填（用于从自定义 API 响应提取分数与 token）"}
             })
 
-    # T2-2: use_target_config 校验——仅 openai_compatible 模式的 Target 可复用
-    if jc.use_target_config and project.target_config.api_type != "openai_compatible":
-        raise HTTPException(status_code=422, detail={
-            "error": {"code": "invalid_config",
-                      "message": "Judge 复用 Target 配置仅支持 openai_compatible 模式的 Target"}
-        })
+    # REQ-16: use_target_config 字段已废弃（保留兼容：旧前端可能仍传，忽略）
+    # judge_config_id 由 Project 模型接收，PUT 时不在这里二次校验——
+    # 引用不存在的 id 时 runner 会 fallback 到内联 judge_config
 
     save_project(project)
     return _project_to_response(project)
@@ -745,3 +785,156 @@ async def remove_template(template_id: str):
             "error": {"code": "template_not_found", "message": f"模板 {template_id} 不存在"}
         })
     return {"deleted": template_id}
+
+
+# ============== REQ-16: Judge 配置独立管理 ==============
+
+@router.get("/judge-configs")
+async def list_judge_configs_route():
+    """列出全部 Judge 配置（secret 字段 masked）"""
+    return {"judge_configs": list_judge_configs()}
+
+
+@router.post("/judge-configs", status_code=201)
+async def create_judge_config_route(name: str = Form(...), judge_config_json: str = Form(...)):
+    """新建 Judge 配置
+
+    Form 字段：
+    - name: 配置名称（必填，非空）
+    - judge_config_json: JudgeConfig 序列化 JSON（必填）
+    secret 字段（api_key/auth bearer_token 等）原值落盘
+    """
+    if not name or not name.strip():
+        raise HTTPException(status_code=422, detail={
+            "error": {"code": "invalid_config", "message": "Judge 配置名称必填"}
+        })
+    try:
+        jc_data = json.loads(judge_config_json)
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=422, detail={
+            "error": {"code": "invalid_config", "message": f"judge_config 不是合法 JSON: {e}"}
+        })
+    # 校验 + 标准化（Pydantic 校验 api_type 模式 / model 必填等）
+    try:
+        jc = JudgeConfig(**jc_data)
+    except Exception as e:
+        raise HTTPException(status_code=422, detail={
+            "error": {"code": "invalid_config", "message": f"Judge 配置校验失败: {e}"}
+        })
+    # api_type 对称校验（与 update_project 同口径）
+    _validate_judge_config(jc)
+    return save_judge_config(name.strip(), jc)
+
+
+@router.get("/judge-configs/{judge_config_id}")
+async def get_judge_config_route(judge_config_id: str):
+    """获取单个 Judge 配置详情（masked，供展示用）"""
+    jc = get_judge_config(judge_config_id)
+    if not jc:
+        raise HTTPException(status_code=404, detail={
+            "error": {"code": "judge_config_not_found", "message": f"Judge 配置 {judge_config_id} 不存在"}
+        })
+    return jc
+
+
+@router.put("/judge-configs/{judge_config_id}")
+async def update_judge_config_route(
+    judge_config_id: str,
+    name: str = Form(...),
+    judge_config_json: str = Form(...),
+    overwrite: str = Form("false"),
+):
+    """更新 Judge 配置（全量替换）
+
+    - name 与原配置同名 → 直接覆盖（无需 overwrite）
+    - name 改为其他已存在的名称 → 需 overwrite=true 二次确认（避免误覆盖）
+    """
+    existing = get_judge_config(judge_config_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail={
+            "error": {"code": "judge_config_not_found", "message": f"Judge 配置 {judge_config_id} 不存在"}
+        })
+    if not name or not name.strip():
+        raise HTTPException(status_code=422, detail={
+            "error": {"code": "invalid_config", "message": "Judge 配置名称必填"}
+        })
+    name = name.strip()
+
+    # 同名覆盖检查（REQ-17 思路）：改名为其他已存在配置的名字需 overwrite
+    if name != existing.get("name"):
+        same_name = find_judge_config_by_name(name)
+        if same_name and same_name.get("id") != judge_config_id:
+            if overwrite.lower() != "true":
+                raise HTTPException(status_code=409, detail={
+                    "error": {"code": "name_conflict",
+                              "message": f"已存在名为「{name}」的 Judge 配置，需 overwrite=true 确认覆盖"}
+                })
+
+    try:
+        jc_data = json.loads(judge_config_json)
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=422, detail={
+            "error": {"code": "invalid_config", "message": f"judge_config 不是合法 JSON: {e}"}
+        })
+
+    # __UNCHANGED__ 哨兵处理：保留原 secret 值（与 update_project 同口径）
+    existing_with_secrets = get_judge_config_with_secrets(judge_config_id)
+    if existing_with_secrets and "judge_config" in existing_with_secrets:
+        old_jc = existing_with_secrets["judge_config"]
+        if jc_data.get("api_key") == "__UNCHANGED__":
+            jc_data["api_key"] = old_jc.get("api_key", "")
+        old_auth = old_jc.get("auth")
+        new_auth = jc_data.get("auth")
+        if new_auth and old_auth and isinstance(new_auth, dict):
+            if new_auth.get("bearer_token") == "__UNCHANGED__":
+                new_auth["bearer_token"] = old_auth.get("bearer_token")
+            if new_auth.get("api_key_value") == "__UNCHANGED__":
+                new_auth["api_key_value"] = old_auth.get("api_key_value")
+            for i, cookie in enumerate(new_auth.get("cookies", [])):
+                if cookie.get("value") == "__UNCHANGED__" and i < len(old_auth.get("cookies", [])):
+                    cookie["value"] = old_auth["cookies"][i].get("value")
+
+    try:
+        jc = JudgeConfig(**jc_data)
+    except Exception as e:
+        raise HTTPException(status_code=422, detail={
+            "error": {"code": "invalid_config", "message": f"Judge 配置校验失败: {e}"}
+        })
+    _validate_judge_config(jc)
+    updated = update_judge_config(judge_config_id, name, jc)
+    if not updated:
+        raise HTTPException(status_code=404, detail={
+            "error": {"code": "judge_config_not_found", "message": f"Judge 配置 {judge_config_id} 不存在"}
+        })
+    return updated
+
+
+@router.delete("/judge-configs/{judge_config_id}")
+async def delete_judge_config_route(judge_config_id: str):
+    """删除 Judge 配置（不连带改项目引用；运行时 fallback 到内联 judge_config）"""
+    ok = delete_judge_config(judge_config_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail={
+            "error": {"code": "judge_config_not_found", "message": f"Judge 配置 {judge_config_id} 不存在"}
+        })
+    return {"deleted": judge_config_id}
+
+
+def _validate_judge_config(jc: JudgeConfig) -> None:
+    """JudgeConfig 对称校验（与 update_project 同口径）"""
+    if jc.api_type == "openai_compatible" and not (jc.model and jc.model.strip()):
+        raise HTTPException(status_code=422, detail={
+            "error": {"code": "invalid_config",
+                      "message": "openai_compatible 模式下 judge model 必填"}
+        })
+    if jc.api_type == "custom":
+        if not (jc.request_template and jc.request_template.strip()):
+            raise HTTPException(status_code=422, detail={
+                "error": {"code": "invalid_config",
+                          "message": "custom 模式下 judge request_template 必填"}
+            })
+        if jc.response_parsing is None:
+            raise HTTPException(status_code=422, detail={
+                "error": {"code": "invalid_config",
+                          "message": "custom 模式下 judge response_parsing 必填"}
+            })
