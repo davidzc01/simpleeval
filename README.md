@@ -55,6 +55,24 @@ python3 -m uvicorn app.main:app --port 8000
 
 ---
 
+## 它长什么样
+
+评测集：15 条用例、五类评测类型、标签筛选。
+
+![评测集管理](docs/screenshots/evalset-tab.png)
+
+评测结果：通过率、成本拆分（含 Judge 消耗）、逐条对比——点开任一条，输入/期望/实际三栏并排。
+
+![评测结果](docs/screenshots/run-detail.png)
+
+项目总览：趋势与采样稳定性。pass@k 与 pass^k 两条线的夹缝宽度，就是这个项目的“不确定性”。
+
+![项目总览](docs/screenshots/overview.png)
+
+![采样稳定性](docs/screenshots/sampling-card.png)
+
+---
+
 ## 功能全景
 
 | 能力 | 说明 |
