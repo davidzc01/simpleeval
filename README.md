@@ -1,6 +1,9 @@
 # simpleEval
 
-一个面向 LLM 工作流与 Agent 的评测工具。给评测集，跑一遍，得到通过率、成本和稳定性——不用再说"观察一下"。
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+[![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
+
+一个面向 LLM 工作流与 Agent 的评测工具。给评测集，跑一遍，得到通过率、成本和稳定性——不用再说“观察一下”。
 
 ---
 
