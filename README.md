@@ -13,12 +13,14 @@ pip install -r requirements.txt
 ### 启动服务
 
 ```bash
-# 方式1：使用 Python 模块
-python3 -m uvicorn app.main:app --reload --port 8000
+# 方式1：使用 Python 模块（评测时推荐：不带 --reload）
+python3 -m uvicorn app.main:app --port 8000
 
 # 方式2：直接运行 uvicorn（需先安装）
-uvicorn app.main:app --reload --port 8000
+uvicorn app.main:app --port 8000
 ```
+
+> ⚠️ **评测时不要用 `--reload`**：reload 监控工作目录，评测过程中每 case 落盘写 `data/` 可能触发静默重启，后台任务被杀且无报错（run 永久停在 running）。`--reload` 仅适合纯前端/接口开发调试。
 
 启动后访问：
 - Web UI: http://localhost:8000
