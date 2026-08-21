@@ -1853,6 +1853,8 @@
                 state.currentEvalsetId = current.id;
 
                 container.innerHTML = renderEvalsetDetail(current, projectId);
+                // T2-1: 异步加载 case 级采样数据（不阻塞表格渲染）
+                loadEvalsetSampling(current.id, projectId);
             } catch (err) {
                 container.innerHTML = `<div class="empty-state"><div class="empty-state-icon">❌</div><div class="empty-state-text">加载失败</div></div>`;
             }
@@ -1867,9 +1869,33 @@
             state._currentEvalsetAllTags = allTags;
             // P-2: 应用标签过滤（OR 语义，空 = 全部）
             const tagFilter = state._evalsetTagFilter || [];
-            const filteredCases = tagFilter.length === 0
+            let filteredCases = tagFilter.length === 0
                 ? cases
                 : cases.filter(c => (c.tags || []).some(t => tagFilter.includes(t)));
+            // T2-1: case 级采样数据（按 case_id 优先 / case_name fallback 匹配）
+            const samplingCases = state._evalsetSampling?.cases || [];
+            const samplingByCaseId = new Map();
+            samplingCases.forEach(sc => {
+                const key = sc.case_id || sc.case_name;
+                samplingByCaseId.set(key, sc);
+            });
+            const getSampling = c => samplingByCaseId.get(c.id) || samplingByCaseId.get(c.case_name);
+            // T2-1: 排序——默认按 pass^3 升序（最不稳的排最上），None 排最后
+            const sortKey = state._evalsetSortKey || 'pass_pow_3';
+            const sortDir = state._evalsetSortDir || 'asc';
+            if (sortKey) {
+                filteredCases = [...filteredCases].sort((a, b) => {
+                    const sa = getSampling(a);
+                    const sb = getSampling(b);
+                    const va = sa ? (sa[sortKey] ?? null) : null;
+                    const vb = sb ? (sb[sortKey] ?? null) : null;
+                    // None 排最后（无论升降序）
+                    if (va === null && vb === null) return 0;
+                    if (va === null) return 1;
+                    if (vb === null) return -1;
+                    return sortDir === 'asc' ? (va - vb) : (vb - va);
+                });
+            }
             // 用例预览文本（按 eval_type 取对应字段）
             const previewField = c => {
                 if (c.eval_type === 'llm_judge') return c.output_requirement;
@@ -1907,7 +1933,7 @@
                         <div class="evalset-tag-filter" style="padding: 8px 16px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
                             <span style="font-size: 12px; color: var(--ink-4);">按标签筛选：</span>
                             <div style="display: flex; gap: 4px; flex-wrap: wrap;">
-                                ${allTags.map(t => `<button class="tag-chip filter-chip ${tagFilter.includes(t) ? 'active' : ''}" onclick='toggleEvalsetTagFilter(${escapeHtml(JSON.stringify(t))})'>${escapeHtml(t)}</button>`).join('')}
+                                ${allTags.map(t => `<button class="tag-chip filter-chip ${tagFilter.includes(t) ? 'active' : ''}" data-tag="${escapeHtml(t)}" onclick="toggleEvalsetTagFilter(this)">${escapeHtml(t)}</button>`).join('')}
                             </div>
                             ${tagFilter.length ? `<button class="btn btn-sm btn-secondary" style="font-size: 11px; padding: 2px 8px;" onclick="clearEvalsetTagFilter()">清除筛选</button>` : ''}
                         </div>
@@ -1929,11 +1955,19 @@
                                         <th>期望/判据</th>
                                         <th>标签</th>
                                         <th>状态</th>
+                                        <th style="cursor: pointer;" onclick="sortEvalsetBy('n')" title="点击排序">采样 n</th>
+                                        <th style="cursor: pointer;" onclick="sortEvalsetBy('pass_rate')" title="点击排序">pass rate</th>
+                                        <th style="cursor: pointer;" onclick="sortEvalsetBy('pass_pow_3')" title="点击排序（默认升序，最不稳的排最上）">pass^3</th>
                                         <th>操作</th>
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    ${filteredCases.length === 0 ? `<tr><td colspan="8" style="text-align: center; color: var(--ink-4); padding: 24px;">${cases.length === 0 ? '暂无用例，点击「+ 新增用例」或「导入」添加' : '当前筛选下无匹配用例，清除筛选查看全部'}</td></tr>` : filteredCases.map(c => `
+                                    ${filteredCases.length === 0 ? `<tr><td colspan="11" style="text-align: center; color: var(--ink-4); padding: 24px;">${cases.length === 0 ? '暂无用例，点击「+ 新增用例」或「导入」添加' : '当前筛选下无匹配用例，清除筛选查看全部'}</td></tr>` : filteredCases.map(c => {
+                                            const sc = getSampling(c);
+                                            const n = sc ? sc.n : 0;
+                                            const pr = sc && sc.n > 0 ? (sc.pass_rate * 100).toFixed(0) + '%' : '-';
+                                            const p3 = sc && sc.pass_pow_3 !== null ? (sc.pass_pow_3 * 100).toFixed(0) + '%' : '-';
+                                            return `
                                         <tr style="${c.enabled === false ? 'opacity: 0.5' : ''}">
                                             <td><input type="checkbox" class="batch-case-cb" value="${escapeHtml(c.id)}" onchange="updateBatchOpsBar()"></td>
                                             <td>${escapeHtml(c.case_name)}</td>
@@ -1947,6 +1981,9 @@
                                                     ${c.enabled ? '启用' : '禁用'}
                                                 </span>
                                             </td>
+                                            <td style="text-align: center; color: ${n > 0 ? 'var(--ink-2)' : 'var(--ink-4)'};">${n || '-'}</td>
+                                            <td style="text-align: center; color: ${sc && sc.n > 0 ? 'var(--ink-2)' : 'var(--ink-4)'};">${pr}</td>
+                                            <td style="text-align: center; color: ${sc && sc.pass_pow_3 !== null ? (sc.pass_pow_3 < 0.5 ? 'var(--red)' : 'var(--green)') : 'var(--ink-4)'};">${p3}</td>
                                             <td style="white-space: nowrap;">
                                                 <button class="btn btn-sm btn-secondary" onclick="toggleCaseEnabled('${evalset.id}', '${projectId}', '${c.id}', ${!c.enabled})" title="${c.enabled ? '禁用' : '启用'}">
                                                     ${c.enabled ? '禁用' : '启用'}
@@ -1955,7 +1992,7 @@
                                                 <button class="btn btn-sm btn-danger" onclick="showDeleteCaseModal('${evalset.id}', '${projectId}', '${c.id}')" title="永久删除">删除</button>
                                             </td>
                                         </tr>
-                                    `).join('')}
+                                    `}).join('')}
                                 </tbody>
                             </table>
                         </div>
@@ -1970,7 +2007,8 @@
         }
 
         // P-2: 评测集 tab 标签过滤（OR 语义，从缓存重新渲染，不重新拉数据）
-        function toggleEvalsetTagFilter(tag) {
+        function toggleEvalsetTagFilter(el) {
+            const tag = el.dataset.tag;
             const filter = state._evalsetTagFilter || [];
             const idx = filter.indexOf(tag);
             if (idx >= 0) filter.splice(idx, 1);
@@ -1989,6 +2027,27 @@
             if (!projectId) return;
             const detail = document.getElementById('evalsetDetail');
             if (detail) detail.outerHTML = renderEvalsetDetail(es, projectId);
+        }
+
+        // T2-1: 异步加载 case 级采样数据 → 存 state → 重渲染表格（数据填充 + 排序）
+        async function loadEvalsetSampling(evalsetId, projectId) {
+            try {
+                const resp = await fetch(`/api/evalsets/${evalsetId}/sampling?project_id=${projectId}`);
+                if (!resp.ok) return;
+                state._evalsetSampling = await resp.json();
+                _rerenderEvalsetDetail();
+            } catch (e) { /* 静默失败，采样数据非关键 */ }
+        }
+
+        // T2-1: 表头点击排序（n / pass rate / pass^3，切换升降序）
+        function sortEvalsetBy(key) {
+            if (state._evalsetSortKey === key) {
+                state._evalsetSortDir = state._evalsetSortDir === 'asc' ? 'desc' : 'asc';
+            } else {
+                state._evalsetSortKey = key;
+                state._evalsetSortDir = 'asc';
+            }
+            _rerenderEvalsetDetail();
         }
 
         function updateBatchOpsBar() {
@@ -2519,8 +2578,16 @@
 
             container.innerHTML = `
                 <div class="card mb-4">
-                    <div class="card-header">
+                    <div class="card-header" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
                         <span class="card-title">Target API 配置</span>
+                        <div id="targetTplBar" style="display: flex; gap: 6px; align-items: center; font-size: 12px;">
+                            <select id="targetTplSelect" class="form-input" style="width: auto; min-width: 160px; padding: 4px 8px; font-size: 12px;">
+                                <option value="">配置模板...</option>
+                            </select>
+                            <button class="btn btn-sm btn-secondary" onclick="loadTargetTemplate('${project.id}')" title="加载选中模板到当前表单（secret 字段需手动补）">加载</button>
+                            <button class="btn btn-sm btn-secondary" onclick="saveTargetTemplate('${project.id}')" title="保存当前 Target 配置为模板">保存为模板</button>
+                            <button class="btn btn-sm btn-secondary" onclick="deleteTargetTemplate()" title="删除选中模板" style="color: var(--red);">删除</button>
+                        </div>
                     </div>
                     <div class="form-group">
                         <label class="form-label">API 模式</label>
@@ -2665,11 +2732,26 @@
                             <option value="custom" ${jc.api_type === 'custom' ? 'selected' : ''}>自定义 API（模板渲染，不注入 model/messages）</option>
                         </select>
                     </div>
-                    <div class="form-group">
+                    <div class="form-group" id="judgeReuseGroup">
+                        <label style="display: flex; align-items: flex-start; gap: 8px; cursor: pointer;">
+                            <input type="checkbox" id="judgeUseTargetConfig" ${jc.use_target_config ? 'checked' : ''} onchange="toggleJudgeReuse()">
+                            <span>
+                                <strong>复用 Target API 配置</strong>
+                                <span style="display: block; font-size: 12px; color: var(--ink-4); margin-top: 2px;">
+                                    勾选后 base_url/api_key/model 直接取 Target 的值，一处改动两处同步。仅 Target 为 OpenAI 兼容模式时可用。
+                                </span>
+                            </span>
+                        </label>
+                        <div id="judgeReuseSummary" style="display: none; padding: 8px 12px; background: var(--bg-2); border-radius: 6px; margin-top: 8px; font-size: 13px; color: var(--ink-3);"></div>
+                        <div id="judgeReuseDisabledHint" style="display: none; padding: 8px 12px; background: var(--bg-2); border-radius: 6px; margin-top: 8px; font-size: 12px; color: var(--ink-4);">
+                            当前 Target 为自定义 API 模式，不支持复用（Judge 复用仅适用于 OpenAI 兼容模式的 Target）。
+                        </div>
+                    </div>
+                    <div class="form-group" id="judgeBaseUrlGroup">
                         <label class="form-label">base_url</label>
                         <input type="text" class="form-input mono" value="${escapeHtml(jc.base_url)}" id="judgeBaseUrl">
                     </div>
-                    <div class="form-group">
+                    <div class="form-group" id="judgeApiKeyGroup">
                         <label class="form-label">api_key <span id="judgeApiKeyHint" style="color: var(--ink-5); font-weight: normal;">（留空 = 不带 Authorization 头）</span></label>
                         ${secretInput('judgeApiKey', jc.api_key)}
                     </div>
@@ -2708,7 +2790,8 @@
                         <span class="card-title">Token 预算</span>
                     </div>
                     <div style="padding: 0 0 12px; color: var(--ink-4); font-size: 12px;">
-                        设置单次 run 的 token 预算上限。超限时按"提醒模式"处理——只警告不中断（MVP 阶段）。
+                        设置单次 run 的 token 预算上限（成本 = target_token + judge_token）。
+                        关闭 warn_only 时超预算会中断评测，剩余 case 标记为 skipped（不计入 pass_rate 分母）。
                     </div>
                     <div class="form-group">
                         <label class="form-label">limit（token 上限，留空 = 不限）</label>
@@ -2717,7 +2800,7 @@
                     <div class="form-group">
                         <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
                             <input type="checkbox" id="budgetWarnOnly" ${project.token_budget?.warn_only !== false ? 'checked' : ''}>
-                            <span>warn_only（仅提醒，不中断 run）</span>
+                            <span><strong>warn_only</strong>（开启 = 超预算仅提醒不中断；关闭 = 超预算中断评测，剩余 case 跳过）</span>
                         </label>
                     </div>
                 </div>
@@ -2729,10 +2812,12 @@
             state._auth = JSON.parse(JSON.stringify(auth));
             renderAuthFields(project.id);
             toggleApiMode();
-            // T1-3: 初始化 Judge API 模式切换
+            // T1-3: 初始化 Judge API 模式切换（内部会调用 toggleJudgeReuse 评估复用状态）
             toggleJudgeApiMode();
             // B-7: 初始化响应解析行编辑器（从 rp 数据填充）
             initRpPathLists(rp);
+            // T2-3: 加载配置模板列表到下拉框
+            refreshTargetTplList();
 
             // T1-6: 配置页初始化完成后，建立 dirty 基准快照并绑定字段监听
             // _suppressDirtyCheck 防止初始化期间 toggleApiMode 等触发 change 误报 dirty
@@ -2793,6 +2878,8 @@
                 if (templateHint) templateHint.textContent = '（留空 {input} = 默认 OpenAI 格式）';
                 if (modelGroup) modelGroup.querySelector('label').firstChild.textContent = 'model ';
             }
+            // T2-2: Target 模式切换后重新评估 Judge 复用开关
+            toggleJudgeReuse();
         }
 
         function renderAuthFields(projectId) {
@@ -3245,6 +3332,7 @@
                 container.innerHTML = `
                     <div class="card mb-4">
                         <div id="runStatusRow" style="margin-bottom: 12px;"></div>
+                        <div id="runBudgetBanner"></div>
                         <div id="runError"></div>
                     </div>
 
@@ -3321,6 +3409,23 @@
                 errDiv.innerHTML = run.error
                     ? `<div class="code-block" style="color: var(--red);">Error: ${escapeHtml(run.error)}</div>`
                     : '';
+            }
+
+            // T2-4: budget_exceeded 横幅
+            const budgetBanner = document.getElementById('runBudgetBanner');
+            if (budgetBanner) {
+                const s = run.summary;
+                if (s && s.budget_exceeded) {
+                    const skippedCount = (run.results || []).filter(r => r.skipped_reason === 'budget_exceeded').length;
+                    budgetBanner.innerHTML = `
+                        <div style="padding: 10px 14px; margin: 12px 0; background: rgba(255, 159, 28, 0.12); border: 1px solid rgba(255, 159, 28, 0.4); border-radius: 6px; color: var(--ink-2); font-size: 13px;">
+                            <strong style="color: var(--amber);">⚠ 评测因 token 预算中断</strong>
+                            <span style="color: var(--ink-3);"> · 跳过 ${skippedCount} 条 case（预算上限 ${formatNumber(s.total_token + s.judge_token)} token）</span>
+                        </div>
+                    `;
+                } else {
+                    budgetBanner.innerHTML = '';
+                }
             }
 
             const metrics = document.getElementById('metricsGrid');
@@ -4460,6 +4565,153 @@
             setDisplay('judgeResponseParsingGroup', showCustom);
             const modelRequired = document.getElementById('judgeModelRequired');
             if (modelRequired) modelRequired.style.display = showCustom ? 'none' : '';
+            // T2-2: 模式切换后重新评估复用开关可用性
+            toggleJudgeReuse();
+        }
+
+        // T2-2: Judge 复用 Target 配置开关
+        function toggleJudgeReuse() {
+            const reuseEl = document.getElementById('judgeUseTargetConfig');
+            const targetMode = document.getElementById('targetApiType')?.value;
+            // 仅 Target 为 openai_compatible 时允许复用
+            const targetIsOpenAI = targetMode === 'openai_compatible';
+            const reuseDisabled = !targetIsOpenAI;
+            if (reuseEl) {
+                reuseEl.disabled = reuseDisabled;
+                if (reuseDisabled) reuseEl.checked = false;
+            }
+            const reuseOn = reuseEl?.checked && !reuseDisabled;
+            const setDisplay = (id, show) => {
+                const el = document.getElementById(id);
+                if (el) el.style.display = show ? '' : 'none';
+            };
+            // 勾选复用 → 隐藏 base_url/api_key/model，显示引用摘要
+            setDisplay('judgeBaseUrlGroup', !reuseOn);
+            setDisplay('judgeApiKeyGroup', !reuseOn);
+            setDisplay('judgeModelGroup', !reuseOn);
+            setDisplay('judgeReuseDisabledHint', reuseDisabled);
+            const summaryEl = document.getElementById('judgeReuseSummary');
+            if (summaryEl) {
+                if (reuseOn) {
+                    const tcBase = document.getElementById('targetBaseUrl')?.value || '';
+                    const tcModel = document.getElementById('targetModel')?.value || '';
+                    summaryEl.style.display = '';
+                    summaryEl.innerHTML = `当前引用：<strong>${escapeHtml(tcBase)}</strong> · <code>${escapeHtml(tcModel)}</code>`;
+                } else {
+                    summaryEl.style.display = 'none';
+                }
+            }
+        }
+
+        // T2-3: 加载配置模板列表到下拉框
+        async function refreshTargetTplList() {
+            const sel = document.getElementById('targetTplSelect');
+            if (!sel) return;
+            try {
+                const data = await api('/config-templates');
+                const templates = data.templates || [];
+                const currentVal = sel.value;
+                sel.innerHTML = '<option value="">配置模板...</option>' +
+                    templates.map(t => `<option value="${escapeHtml(t.id)}">${escapeHtml(t.name)}</option>`).join('');
+                // 保留之前选中（如果还存在）
+                if (currentVal && templates.some(t => t.id === currentVal)) {
+                    sel.value = currentVal;
+                }
+            } catch (e) { /* 静默失败，模板非关键 */ }
+        }
+
+        // T2-3: 保存当前 Target 配置为模板
+        async function saveTargetTemplate(projectId) {
+            const name = window.prompt('请输入模板名称：');
+            if (!name || !name.trim()) return;
+            try {
+                const fd = new FormData();
+                fd.append('name', name.trim());
+                const res = await fetch(`/api/config-templates?project_id=${encodeURIComponent(projectId)}`, {
+                    method: 'POST',
+                    body: fd
+                });
+                if (!res.ok) {
+                    const err = await res.json().catch(() => ({}));
+                    throw new Error(err?.detail?.error?.message || err?.detail || `保存失败 (${res.status})`);
+                }
+                showToast('模板已保存');
+                await refreshTargetTplList();
+            } catch (e) {
+                showToast(e.message, 'error');
+            }
+        }
+
+        // T2-3: 加载选中模板到当前 Target 表单
+        async function loadTargetTemplate(projectId) {
+            const sel = document.getElementById('targetTplSelect');
+            if (!sel || !sel.value) {
+                showToast('请先选择一个模板', 'error');
+                return;
+            }
+            const tplId = sel.value;
+            try {
+                const tpl = await api(`/config-templates/${encodeURIComponent(tplId)}`);
+                const tc = tpl.target_config;
+                if (!tc) throw new Error('模板无 target_config');
+                // 填充表单字段
+                const setVal = (id, v) => {
+                    const el = document.getElementById(id);
+                    if (el) el.value = v ?? '';
+                };
+                setVal('targetApiType', tc.api_type || 'openai_compatible');
+                setVal('targetBaseUrl', tc.base_url || '');
+                setVal('targetModel', tc.model || '');
+                setVal('targetTemplate', tc.request_template || '');
+                // auth 配置填充
+                const authEl = document.getElementById('authType');
+                if (authEl && tc.auth) {
+                    authEl.value = tc.auth.type || 'none';
+                    state._auth = JSON.parse(JSON.stringify(tc.auth));
+                    renderAuthFields(projectId);
+                }
+                // response_parsing 结构化 UI 填充
+                const rp = tc.response_parsing || { output_paths: [], token_paths: [], token_fields: [], token_scope: null, output_unpack_json: false, output_field: null };
+                initRpPathLists(rp);
+                // output_unpack_json + output_field
+                const unpackEl = document.getElementById('rpOutputUnpackJson');
+                if (unpackEl) unpackEl.checked = !!rp.output_unpack_json;
+                setVal('rpOutputField', rp.output_field || '');
+                if (typeof toggleRpUnpackField === 'function') toggleRpUnpackField();
+                // token_scope（如有该字段）
+                setVal('rpTokenScopeJson', rp.token_scope ? JSON.stringify(rp.token_scope, null, 2) : '');
+                // api_key 留空，提示手动补
+                const apiKeyEl = document.getElementById('targetApiKey');
+                if (apiKeyEl) {
+                    apiKeyEl.value = '';
+                    apiKeyEl.dataset.masked = 'false';
+                }
+                toggleApiMode();
+                toggleJudgeReuse();
+                showToast('模板已加载，api_key 等敏感字段请手动补全', 'info');
+                markConfigDirtyIfChanged();
+            } catch (e) {
+                showToast(e.message, 'error');
+            }
+        }
+
+        // T2-3: 删除选中模板
+        async function deleteTargetTemplate() {
+            const sel = document.getElementById('targetTplSelect');
+            if (!sel || !sel.value) {
+                showToast('请先选择一个模板', 'error');
+                return;
+            }
+            const tplId = sel.value;
+            const tplName = sel.options[sel.selectedIndex]?.text || tplId;
+            if (!window.confirm(`确认删除模板「${tplName}」？此操作不可恢复。`)) return;
+            try {
+                await api(`/config-templates/${encodeURIComponent(tplId)}`, { method: 'DELETE' });
+                showToast('模板已删除');
+                await refreshTargetTplList();
+            } catch (e) {
+                showToast(e.message, 'error');
+            }
         }
 
         // T1-3: 收集 Judge 配置（auth + response_parsing 从 JSON 文本框解析）
@@ -4551,7 +4803,8 @@
                     request_template: judgeExtras.request_template,
                     auth: judgeExtras.auth,
                     response_parsing: judgeExtras.response_parsing,
-                    prompt_template: document.getElementById('judgePrompt').value
+                    prompt_template: document.getElementById('judgePrompt').value,
+                    use_target_config: document.getElementById('judgeUseTargetConfig')?.checked || false
                 },
                 target_config: {
                     api_type: document.getElementById('targetApiType').value,
@@ -4603,6 +4856,7 @@
                 judge_auth_json: document.getElementById('judgeAuthJson')?.value,
                 judge_rp_json: document.getElementById('judgeResponseParsingJson')?.value,
                 judge_prompt: document.getElementById('judgePrompt')?.value,
+                judge_use_target: document.getElementById('judgeUseTargetConfig')?.checked,
                 budget_limit: document.getElementById('budgetLimit')?.value,
                 budget_warn_only: document.getElementById('budgetWarnOnly')?.checked,
                 _judgeExtras: judgeExtras

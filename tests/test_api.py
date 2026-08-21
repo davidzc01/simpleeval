@@ -667,7 +667,7 @@ case-2,测试2,天气,天气好,contains,"{""substring"": ""天气""}",true"""
         assert cases[0]["task_shape"] == "coding"
 
     def test_import_evalset_merge_dedup(self, client):
-        """P2-8: merge 模式按 id 去重，同 id 不重复添加"""
+        """T2-1: merge 模式按 case_name 匹配复用 id（重导不换 id，采样历史连续）"""
         project_response = client.post("/api/projects", json={"name": "merge 测试"})
         project_id = project_response.json()["id"]
         evalset_response = client.post(
@@ -688,9 +688,9 @@ case-2,测试2,天气,天气好,contains,"{""substring"": ""天气""}",true"""
         assert r1.status_code == 200
         assert r1.json()["imported"] == 2
 
-        # 第二次：merge 一条新 + 一条已存在（id=a）
+        # 第二次：merge 一条同名（复用 id=a）+ 一条新名（新增）
         content2 = json.dumps([
-            {"id": "a", "case_name": "A-改名", "input": "x2", "eval_type": "exact"},
+            {"id": "new-id", "case_name": "A", "input": "x2", "eval_type": "exact"},
             {"id": "c", "case_name": "C", "input": "z", "eval_type": "exact"}
         ])
         r2 = client.post(
@@ -699,11 +699,14 @@ case-2,测试2,天气,天气好,contains,"{""substring"": ""天气""}",true"""
         )
         assert r2.status_code == 200
         cases = r2.json()["evalset"]["cases"]
-        # merge 模式：a 已存在不重复添加，c 新增 → 共 3 条
+        # T2-1: case_name=A 同名复用 id=a（不新增），C 新增 → 共 3 条
         assert len(cases) == 3
-        ids = [c["id"] for c in cases]
-        assert ids.count("a") == 1
-        assert "c" in ids
+        # 同名 case 的 id 被复用为原 id（"a"），而非 new-id
+        a_case = [c for c in cases if c["case_name"] == "A"][0]
+        assert a_case["id"] == "a", f"同名 case 应复用原 id，实际 {a_case['id']}"
+        names = [c["case_name"] for c in cases]
+        assert names.count("A") == 1
+        assert "C" in names
 
     def test_import_evalset_row_level_errors(self, client):
         """P2-8: 行级错误收集——有错误时不保存，返回 422 + errors 列表"""

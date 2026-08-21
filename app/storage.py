@@ -2,10 +2,12 @@
 
 import json
 import os
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from .models import Project, EvalSet, EvalRun
+from .models import Project, EvalSet, EvalRun, TargetConfig
 
 
 # 数据目录
@@ -20,6 +22,9 @@ EVALSETS_DIR.mkdir(exist_ok=True)
 
 RUNS_DIR = DATA_DIR / "runs"
 RUNS_DIR.mkdir(exist_ok=True)
+
+# T2-3: 配置模板存储文件
+CONFIG_TEMPLATES_FILE = DATA_DIR / "config-templates.json"
 
 
 def _read_json(path: Path) -> dict:
@@ -193,3 +198,83 @@ def get_project_trend(project_id: str, limit: int = 8) -> list[dict]:
         "pass_rate": r.summary.pass_rate if r.summary else 0,
         "total_token": r.summary.total_token if r.summary else 0,
     } for r in runs]
+
+
+# ============== T2-3: 配置模板存储 ==============
+
+def _mask_target_config_secret(tc: dict) -> dict:
+    """掩码 target_config 中的敏感字段（用于列表展示）"""
+    out = dict(tc)
+    if out.get("api_key"):
+        out["api_key"] = "__MASKED__"
+    auth = out.get("auth")
+    if auth:
+        if auth.get("bearer_token"):
+            auth = dict(auth)
+            auth["bearer_token"] = "__MASKED__"
+            if auth.get("api_key_value"):
+                auth["api_key_value"] = "__MASKED__"
+            for c in auth.get("cookies", []):
+                if c.get("value"):
+                    c = dict(c)
+                    c["value"] = "__MASKED__"
+            out["auth"] = auth
+    return out
+
+
+def list_config_templates() -> list[dict]:
+    """列出全部 Target 配置模板（api_key 等敏感字段 masked）"""
+    if not CONFIG_TEMPLATES_FILE.exists():
+        return []
+    data = _read_json(CONFIG_TEMPLATES_FILE)
+    templates = data.get("templates", [])
+    # 对每条 target_config 做 secret 掩码
+    for t in templates:
+        if t.get("target_config"):
+            t["target_config"] = _mask_target_config_secret(t["target_config"])
+    return templates
+
+
+def get_config_template(template_id: str) -> Optional[dict]:
+    """获取单个配置模板（含完整 target_config，含 api_key 原值用于加载到其他项目）"""
+    templates = list_config_templates_with_secrets()
+    for t in templates:
+        if t["id"] == template_id:
+            return t
+    return None
+
+
+def list_config_templates_with_secrets() -> list[dict]:
+    """列出全部配置模板（保留 secret，仅供加载模板时内部使用）"""
+    if not CONFIG_TEMPLATES_FILE.exists():
+        return []
+    data = _read_json(CONFIG_TEMPLATES_FILE)
+    return data.get("templates", [])
+
+
+def save_config_template(name: str, target_config: TargetConfig) -> dict:
+    """保存当前 target_config 为命名模板，返回新模板对象（含 masked 字段）"""
+    templates = list_config_templates_with_secrets()
+    new_id = f"tpl-{uuid.uuid4().hex[:8]}"
+    new_tpl = {
+        "id": new_id,
+        "name": name,
+        "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "target_config": target_config.model_dump(),
+    }
+    templates.append(new_tpl)
+    _write_json(CONFIG_TEMPLATES_FILE, {"templates": templates})
+    # 返回时 mask
+    new_tpl_masked = dict(new_tpl)
+    new_tpl_masked["target_config"] = _mask_target_config_secret(new_tpl["target_config"])
+    return new_tpl_masked
+
+
+def delete_config_template(template_id: str) -> bool:
+    """删除配置模板"""
+    templates = list_config_templates_with_secrets()
+    new_list = [t for t in templates if t["id"] != template_id]
+    if len(new_list) == len(templates):
+        return False  # 未找到
+    _write_json(CONFIG_TEMPLATES_FILE, {"templates": new_list})
+    return True

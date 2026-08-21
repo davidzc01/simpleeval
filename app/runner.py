@@ -98,13 +98,15 @@ async def check_judge_available(project: Project) -> tuple[bool, str]:
     """测试 Judge LLM 是否可用，返回 (可用, 错误信息)
 
     T1-3: 支持双模式——custom 模式用 project.judge_config 的 request_template/auth/response_parsing
+    T2-2: use_target_config=True 时复用 target 的 base_url/api_key/model（仅 openai_compatible）
     """
     try:
         jc = project.judge_config
+        base_url, api_key, model = _resolve_judge_config(project)
         await judge_with_llm(
-            base_url=jc.base_url,
-            api_key=jc.api_key,
-            model=jc.model or "",
+            base_url=base_url,
+            api_key=api_key,
+            model=model,
             requirement="测试",
             output="测试",
             judge_prompt=jc.prompt_template,
@@ -121,6 +123,19 @@ async def check_judge_available(project: Project) -> tuple[bool, str]:
     except ResponseFormatError as e:
         # 格式错误但 API 可达，也算可用
         return True, ""
+
+
+def _resolve_judge_config(project: Project) -> tuple[str, str, str]:
+    """T2-2: 解析 Judge 实际使用的 base_url/api_key/model。
+
+    - use_target_config=True 且 target 为 openai_compatible → 取 target 的 base_url/api_key/model
+    - 否则取 judge 自身配置
+    """
+    jc = project.judge_config
+    if jc.use_target_config and project.target_config.api_type == "openai_compatible":
+        tc = project.target_config
+        return tc.base_url, tc.api_key, tc.model or ""
+    return jc.base_url, jc.api_key, jc.model or ""
 
 
 async def _evaluate_case(
@@ -152,10 +167,11 @@ async def _evaluate_case(
         else:
             requirement = case.output_requirement or case.expected_output or ""
             jc = project.judge_config
+            base_url, api_key, model = _resolve_judge_config(project)
             score, judge_token = await judge_with_llm(
-                base_url=jc.base_url,
-                api_key=jc.api_key,
-                model=jc.model or "",
+                base_url=base_url,
+                api_key=api_key,
+                model=model,
                 requirement=requirement,
                 output=actual,
                 judge_prompt=jc.prompt_template,
@@ -183,10 +199,11 @@ async def _evaluate_case(
                 else:
                     chk_requirement = chk.expected or ""
                     jc = project.judge_config
+                    base_url, api_key, model = _resolve_judge_config(project)
                     chk_score, chk_judge_token = await judge_with_llm(
-                        base_url=jc.base_url,
-                        api_key=jc.api_key,
-                        model=jc.model or "",
+                        base_url=base_url,
+                        api_key=api_key,
+                        model=model,
                         requirement=chk_requirement,
                         output=chk_value,
                         judge_prompt=jc.prompt_template,
@@ -263,6 +280,7 @@ async def run_evalset(project: Project, evalset: EvalSet) -> EvalRun:
         results.append(
             CaseResult(
                 case_name=case.case_name,
+                case_id=case.id,
                 actual_output=actual,
                 passed=passed,
                 score=score,
@@ -291,6 +309,7 @@ def _build_run_result(
     results: list[CaseResult],
     status: str = "completed",
     error: str = None,
+    budget_exceeded: bool = False,
 ) -> EvalRun:
     """构建评测结果"""
     total = len(results)
@@ -318,6 +337,7 @@ def _build_run_result(
         latency_p50=round(latency_p50, 2),
         latency_p95=round(latency_p95, 2),
         judge_token=judge_token_total,
+        budget_exceeded=budget_exceeded,
     )
 
     return EvalRun(
@@ -337,6 +357,7 @@ async def execute_run(run: EvalRun, project: Project, evalset: EvalSet, case_fil
     """异步执行评测（供 BackgroundTasks 调用）
 
     T1-2: case_filter 按标签筛选 case（None/空 = 全部启用 case）
+    T2-4: token 预算硬限制——warn_only=false 时累计超限即停，剩余 case 标 skipped_reason
     """
     # 过滤启用的 case，再按 case_filter 筛选
     enabled_cases = [c for c in evalset.cases if c.enabled]
@@ -352,6 +373,12 @@ async def execute_run(run: EvalRun, project: Project, evalset: EvalSet, case_fil
         judge_available, judge_error = await check_judge_available(project)
 
         results: list[CaseResult] = []
+
+        # T2-4: 预算硬限制
+        budget = project.token_budget
+        enforce_budget = bool(budget) and not budget.warn_only
+        budget_exceeded = False
+        cost_token_accum = 0
 
         for case in enabled_cases:
             # 模板渲染在 call_target 内统一处理（run_evalset 同构）
@@ -394,6 +421,7 @@ async def execute_run(run: EvalRun, project: Project, evalset: EvalSet, case_fil
             results.append(
                 CaseResult(
                     case_name=case.case_name,
+                    case_id=case.id,
                     actual_output=actual,
                     passed=passed,
                     score=score,
@@ -405,6 +433,25 @@ async def execute_run(run: EvalRun, project: Project, evalset: EvalSet, case_fil
                     check_results=check_results,
                 )
             )
+            # T2-4: 累计成本 token，超限即停剩余 case（标 skipped_reason="budget_exceeded"）
+            cost_token_accum = sum(r.token_used + r.judge_token for r in results)
+            if enforce_budget and cost_token_accum > budget.limit:
+                budget_exceeded = True
+                # 剩余 case 全部标记为 budget_exceeded
+                remaining_cases = enabled_cases[len(results):]
+                for rc in remaining_cases:
+                    results.append(
+                        CaseResult(
+                            case_name=rc.case_name,
+                            case_id=rc.id,
+                            actual_output="[SKIPPED] budget_exceeded",
+                            passed=False,
+                            skipped_reason="budget_exceeded",
+                            token_missing=_token_missing_on_error(project),
+                        )
+                    )
+                break
+
             # B-20: 每 case 落盘，前端轮询能看到 results 增长（status 保持 running）
             run.results = list(results)
             save_run(run)
@@ -415,6 +462,7 @@ async def execute_run(run: EvalRun, project: Project, evalset: EvalSet, case_fil
             project_id=run.project_id,
             evalset_id=run.evalset_id,
             results=results,
+            budget_exceeded=budget_exceeded,
         )
         save_run(completed_run)
         return completed_run

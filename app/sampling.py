@@ -66,7 +66,7 @@ def pass_pow_k_case(n: int, c: int, k: int) -> Optional[float]:
 
 
 def _aggregate_runs(runs: list[EvalRun]) -> dict[str, list[bool]]:
-    """把多次 run 的 results 按 case_name 聚合成 pass/fail 序列。
+    """把多次 run 的 results 按 case_name 聚合成 pass/fail 序列（项目级，旧契约）。
 
     - 只纳入 status == "completed" 的 run
     - 跳过 skipped_reason 非空的 case（不计入 n）
@@ -86,6 +86,86 @@ def _aggregate_runs(runs: list[EvalRun]) -> dict[str, list[bool]]:
                 continue
             case_records.setdefault(name, []).append(r.passed)
     return case_records
+
+
+def _aggregate_runs_by_case_id(runs: list[EvalRun]) -> dict[str, dict]:
+    """T2-1: 把多次 run 的 results 按 case_id（fallback case_name）聚合。
+
+    Returns:
+        {case_key: {"case_id": str|None, "case_name": str, "records": list[bool]}}
+        case_key = case_id if case_id else case_name（旧 run 无 case_id 时 fallback）
+    """
+    case_records: dict[str, dict] = {}
+    for run in runs:
+        if run.status != "completed":
+            continue
+        seen_in_run: set[str] = set()
+        for r in run.results:
+            # case_id 优先，无则 fallback case_name
+            case_key = r.case_id if r.case_id else r.case_name
+            if case_key in seen_in_run:
+                continue
+            seen_in_run.add(case_key)
+            if r.skipped_reason:
+                continue
+            entry = case_records.setdefault(
+                case_key, {"case_id": r.case_id, "case_name": r.case_name, "records": []}
+            )
+            entry["records"].append(r.passed)
+            # 若旧 run 无 case_id，entry["case_id"] 可能是 None；后续新 run 有则补
+            if entry["case_id"] is None and r.case_id:
+                entry["case_id"] = r.case_id
+    return case_records
+
+
+def compute_evalset_sampling(project_id: str, evalset_id: str) -> dict:
+    """T2-1: 评测集级 case 粒度采样分析。
+
+    按 case_id（fallback case_name）分组，返回每 case 的 n/c/pass_rate/pass_at_3/pass_pow_3。
+    评测集级均值（compute_project_sampling）保持不变。
+
+    Returns:
+        {
+          "project_id": str,
+          "evalset_id": str,
+          "total_runs": int,
+          "cases": [
+            {"case_id": str|None, "case_name": str, "n": int, "c": int,
+             "pass_rate": float, "pass_at_3": float|None, "pass_pow_3": float|None}
+          ],
+        }
+    """
+    runs = list_runs(project_id)
+    completed_runs = [r for r in runs if r.status == "completed"]
+    case_records = _aggregate_runs_by_case_id(runs)
+
+    cases_out = []
+    for case_key, entry in case_records.items():
+        records = entry["records"]
+        n = len(records)
+        c = sum(1 for p in records if p)
+        pass_rate = c / n if n > 0 else 0.0
+        pass_at_3 = pass_at_k_case(n, c, 3)
+        pass_pow_3 = pass_pow_k_case(n, c, 3)
+        cases_out.append({
+            "case_id": entry["case_id"],
+            "case_name": entry["case_name"],
+            "n": n,
+            "c": c,
+            "pass_rate": round(pass_rate, 4),
+            "pass_at_3": round(pass_at_3, 4) if pass_at_3 is not None else None,
+            "pass_pow_3": round(pass_pow_3, 4) if pass_pow_3 is not None else None,
+        })
+
+    # 默认按 pass^3 升序（最不稳的排最上，失败模式先说话）；None 排最后
+    cases_out.sort(key=lambda x: (x["pass_pow_3"] is None, x["pass_pow_3"] if x["pass_pow_3"] is not None else 1.0))
+
+    return {
+        "project_id": project_id,
+        "evalset_id": evalset_id,
+        "total_runs": len(completed_runs),
+        "cases": cases_out,
+    }
 
 
 def compute_project_sampling(project_id: str) -> dict:

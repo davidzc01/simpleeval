@@ -87,6 +87,8 @@ class JudgeConfig(BaseModel):
     api_key: str = ""  # 留空 = 不带 Authorization 头（custom 模式）
     model: Optional[str] = None  # openai_compatible 模式必填
     request_template: Optional[str] = None  # custom 模式必填
+    # T2-2: 复用 Target API 配置（base_url/api_key/model 取 target 值，仅 openai_compatible 模式可用）
+    use_target_config: bool = False
     auth: AuthConfig = Field(default_factory=AuthConfig)
     response_parsing: Optional[ResponseParsing] = None
     prompt_template: str = (
@@ -179,6 +181,7 @@ class EvalSet(BaseModel):
 class CaseResult(BaseModel):
     """单条 case 的评测结果"""
     case_name: str
+    case_id: Optional[str] = None  # T2-1: 从 EvalCase.id 带入；旧 run 无此字段，聚合时 fallback case_name
     actual_output: str
     passed: bool
     score: float = 0.0
@@ -202,6 +205,8 @@ class EvalSummary(BaseModel):
     latency_p95: float
     # T1-4: Judge token 总消耗（评测成本 = 被评测消耗 + 评测自身消耗）
     judge_token: int = 0
+    # T2-4: 预算硬限制触发标记（warn_only=false 且超限时为 True）
+    budget_exceeded: bool = False
 
 
 class EvalRun(BaseModel):

@@ -20,6 +20,7 @@ from .storage import (
     list_evalsets, get_evalset, save_evalset, delete_evalset,
     list_runs, get_run, save_run,
     get_project_last_run, get_project_trend,
+    list_config_templates, get_config_template, save_config_template, delete_config_template,
 )
 from .runner import execute_run, _utc_now, _generate_run_id, _apply_case_filter
 from .judge import call_target, judge_with_llm, NetworkError, APIError, ResponseFormatError
@@ -198,6 +199,13 @@ async def update_project(project_id: str, project: Project):
                 "error": {"code": "invalid_config",
                           "message": "custom 模式下 judge response_parsing 必填（用于从自定义 API 响应提取分数与 token）"}
             })
+
+    # T2-2: use_target_config 校验——仅 openai_compatible 模式的 Target 可复用
+    if jc.use_target_config and project.target_config.api_type != "openai_compatible":
+        raise HTTPException(status_code=422, detail={
+            "error": {"code": "invalid_config",
+                      "message": "Judge 复用 Target 配置仅支持 openai_compatible 模式的 Target"}
+        })
 
     save_project(project)
     return _project_to_response(project)
@@ -383,10 +391,22 @@ async def import_evalset(
 
     if mode == "replace":
         evalset.cases = new_cases
-    else:  # merge：按 id 去重
-        existing_ids = {c.id for c in evalset.cases}
+    else:  # merge：T2-1 按 case_name 匹配，同名复用 id + 更新内容（重导不换 id，采样历史连续）
+        existing_by_name = {c.case_name: c for c in evalset.cases}
+        seen_new_names: set = set()
         for case in new_cases:
-            if case.id not in existing_ids:
+            if case.case_name in seen_new_names:
+                # 导入数据内同名（罕见）→ 跳过，避免重复
+                continue
+            seen_new_names.add(case.case_name)
+            if case.case_name in existing_by_name:
+                # 同名：复用已有 id，用新内容覆盖旧 case 字段（input/eval_type 等可能变化）
+                old = existing_by_name[case.case_name]
+                case.id = old.id
+                idx = evalset.cases.index(old)
+                evalset.cases[idx] = case
+            else:
+                # 不同名：新增
                 evalset.cases.append(case)
 
     save_evalset(evalset)
@@ -507,6 +527,16 @@ async def get_project_sampling(project_id: str):
     # 延迟导入避免循环依赖（sampling 依赖 storage，storage 不依赖 routes）
     from .sampling import compute_project_sampling
     return compute_project_sampling(project_id)
+
+
+@router.get("/evalsets/{evalset_id}/sampling")
+async def get_evalset_sampling(evalset_id: str, project_id: str):
+    """T2-1: 评测集级 case 粒度采样分析（pass_at_3 / pass_pow_3 per case）"""
+    evalset = get_evalset(evalset_id, project_id)
+    if not evalset:
+        evalset_not_found(evalset_id)
+    from .sampling import compute_evalset_sampling
+    return compute_evalset_sampling(project_id, evalset_id)
 
 
 @router.get("/runs/{run_id}/export")
@@ -665,3 +695,53 @@ async def test_judge(req: TestJudgeRequest, project_id: Optional[str] = None):
 async def health():
     """健康检查"""
     return {"status": "ok"}
+
+
+# ============== T2-3: 配置模板 ==============
+
+@router.get("/config-templates")
+async def list_templates():
+    """列出全部 Target 配置模板（secret 字段 masked）"""
+    return {"templates": list_config_templates()}
+
+
+@router.post("/config-templates", status_code=201)
+async def save_template(project_id: str, name: str = Form(...)):
+    """保存当前项目 target_config 为命名模板
+
+    - secret 字段（api_key/auth bearer_token 等）原值存盘，便于跨项目引用
+    - 返回时 masked，前端展示用 ***
+    """
+    project = get_project(project_id)
+    if not project:
+        project_not_found(project_id)
+    if not name or not name.strip():
+        raise HTTPException(status_code=422, detail={
+            "error": {"code": "invalid_config", "message": "模板名称必填"}
+        })
+    return save_config_template(name.strip(), project.target_config)
+
+
+@router.get("/config-templates/{template_id}")
+async def get_template(template_id: str):
+    """获取单个模板详情（含完整 target_config，用于加载到其他项目表单）
+
+    注意：返回值含 secret 原值——加载到新项目时由前端提示用户手动补 key。
+    """
+    tpl = get_config_template(template_id)
+    if not tpl:
+        raise HTTPException(status_code=404, detail={
+            "error": {"code": "template_not_found", "message": f"模板 {template_id} 不存在"}
+        })
+    return tpl
+
+
+@router.delete("/config-templates/{template_id}")
+async def remove_template(template_id: str):
+    """删除配置模板"""
+    ok = delete_config_template(template_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail={
+            "error": {"code": "template_not_found", "message": f"模板 {template_id} 不存在"}
+        })
+    return {"deleted": template_id}

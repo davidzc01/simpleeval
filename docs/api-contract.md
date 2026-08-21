@@ -290,6 +290,75 @@
 
 `GET /api/health` ✅ 现状已实现，返回 `{"status": "ok"}`，可扩展带 `active_runs` 计数。
 
+### 2.7 Config Templates（T2-3: Target 配置模板，跨项目复用）
+
+> 存储：`data/config-templates.json`（数组：`{id, name, created_at, target_config 快照}`）
+
+| 接口 | 状态 | 说明 |
+|---|---|---|
+| `GET /api/config-templates` | ➕ | 列表，target_config 中的 secret 字段（api_key/auth）masked |
+| `POST /api/config-templates?project_id=xxx` | ➕ | 保存当前项目 target_config 为命名模板（form-data: name） |
+| `GET /api/config-templates/{tid}` | ➕ | 单条详情，含完整 target_config（secret 原值，供加载到其他项目） |
+| `DELETE /api/config-templates/{tid}` | ➕ | 删除模板 |
+
+**列表响应示例**（secret masked）：
+```json
+{
+  "templates": [
+    {
+      "id": "tpl-0be845cd",
+      "name": "FastGPT 模板",
+      "created_at": "2026-08-21T05:10:42Z",
+      "target_config": {
+        "api_type": "openai_compatible",
+        "base_url": "https://api.example.com/v1",
+        "api_key": "__MASKED__",
+        "model": "gpt-4",
+        "request_template": "{input}",
+        "auth": { "type": "none" },
+        "response_mapping": [],
+        "response_parsing": null
+      }
+    }
+  ]
+}
+```
+
+**单条详情**（`GET /{tid}`）返回的 `target_config.api_key` 为原值（非 masked），供前端加载到其他项目表单；加载后前端提示用户手动补 key。
+
+---
+
+### 2.8 Evalset Sampling（T2-1: case 级采样分析）
+
+| 接口 | 状态 | 说明 |
+|---|---|---|
+| `GET /api/evalsets/{evalset_id}/sampling?project_id=xxx` | ➕ | 评测集级 case 粒度采样分析（每 case 的 n/c/pass_rate/pass_at_3/pass_pow_3） |
+
+**响应示例**：
+```json
+{
+  "project_id": "proj-01",
+  "evalset_id": "evalset-abc",
+  "total_runs": 5,
+  "cases": [
+    {
+      "case_id": "case-001",
+      "case_name": "走访提取-张三",
+      "n": 5,
+      "c": 3,
+      "pass_rate": 0.6,
+      "pass_at_3": 1.0,
+      "pass_pow_3": 0.5
+    }
+  ]
+}
+```
+
+> - 按 `case_id`（fallback `case_name`）分组；旧 run 无 case_id 时 fallback case_name。
+> - `pass_at_3` / `pass_pow_3` 在 n < 3 时为 `null`。
+> - 默认按 `pass_pow_3` 升序排列（最不稳定的 case 排最前）。
+> - skipped_reason 非空的 case 不计入 n。
+
 ---
 
 ## 3. 错误规范
