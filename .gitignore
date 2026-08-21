@@ -28,3 +28,4 @@ examples/*
 docs/*
 !docs/ui-spec.md
 !docs/api-contract.md
+!docs/screenshots/
