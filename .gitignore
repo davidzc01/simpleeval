@@ -28,4 +28,5 @@ examples/*
 docs/*
 !docs/ui-spec.md
 !docs/api-contract.md
+!docs/usage-guide.md
 !docs/screenshots/

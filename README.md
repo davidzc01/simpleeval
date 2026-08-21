@@ -111,6 +111,7 @@ python3 -m pytest tests/ -q
 
 ## 文档
 
+- 使用指南：`docs/usage-guide.md`——从零到第一次评测的完整路径
 - API 契约：`docs/api-contract.md`
 - UI 设计规范：`docs/ui-spec.md`
 
