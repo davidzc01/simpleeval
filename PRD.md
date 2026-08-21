@@ -199,7 +199,7 @@ simpleeval/
 
 | # | 需求 | 优先级 | 复杂度 | 说明 |
 |---|------|--------|--------|------|
-| REQ-1 | LLM Judge 配置复用 | P2 | 低 | Judge 与 Target 同 base_url/key/model 时一键引用，免重复填写；改动同步 |
+| REQ-1 | Judge 配置独立管理（原"复用 Target"设计作废） | P1 | 中 | Judge 配置与 Target 同机制：多套 Judge 配置（不同大模型 API、评测工作流/工具 API）可保存/加载/删除，按项目选用。**废弃 use_target_config 引用机制**——Judge 与被评测对象是不同角色，不应有引用关系 |
 | REQ-2 | Target API 配置复用与管理 | P2 | 中 | base_url、output_paths、token 解析方式存为配置模板，跨项目引用 |
 | REQ-3 | 单返回多字段验证 | **P0** | 中高 | 一次响应返回多字段（如 result/leader/evidence），各字段独立验证方式（result 用 exact、evidence 用 contains 等） |
 | REQ-4 | Token 统计模式 UI 优化 | P3 | 低 | paths/fields 切换与 scope 配置的可读性、示例引导 |
