@@ -18,15 +18,13 @@ venv/
 # 运行产物
 *.log
 
-# 运行时数据（含真实 API 配置与 key，严禁入库）
+# 本地运行时数据（默认不跟踪）
 data/
 
-# 工作数据转换产物（政务验证集，不入公开仓库）
-examples/zoufang-tiqu-evalset.json
-# 含内网地址/租户信息的评测集，不入公开仓库
-examples/enterprise-extract-min-evalset.json
+# 本地工作文件（默认不跟踪，仅保留公开示例与产品文档）
+examples/*
+!examples/demo-evalset.json
 
-# 内部工作文档（协作日志，不进公开仓库；产品级文档 ui-spec/api-contract 保留）
-docs/agent-task-queue.md
-docs/frontend-review.md
-docs/response-parsing-design.md
+docs/*
+!docs/ui-spec.md
+!docs/api-contract.md
