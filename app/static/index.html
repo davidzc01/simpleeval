@@ -929,8 +929,8 @@
                 <div class="nav-item" data-page="projects" onclick="navigateTo('projects')">
                     <span>📁</span> 项目总览
                 </div>
-                <div class="nav-item" data-page="judge-configs" onclick="navigateTo('judge-configs')">
-                    <span>⚖</span> Judge 配置
+                <div class="nav-item" data-page="config-management" onclick="navigateTo('config-management')">
+                    <span>⚙</span> 配置管理
                 </div>
                 <div style="flex: 1; overflow-y: auto;">
                     <div id="projectList"></div>
@@ -1085,7 +1085,8 @@
             if (page === 'projects') return '#/projects';
             if (page === 'project-detail') return `#/project/${encodeURIComponent(params.id || '')}`;
             if (page === 'run-detail') return `#/run/${encodeURIComponent(params.projectId || '')}/${encodeURIComponent(params.id || '')}`;
-            if (page === 'judge-configs') return '#/judge-configs';
+            if (page === 'config-management') return '#/config-management';
+            if (page === 'judge-configs') return '#/config-management';
             return '#/projects';
         }
 
@@ -1096,7 +1097,8 @@
             if (parts[0] === 'projects') return { page: 'projects' };
             if (parts[0] === 'project' && parts[1]) return { page: 'project-detail', params: { id: parts[1] } };
             if (parts[0] === 'run' && parts[1] && parts[2]) return { page: 'run-detail', params: { id: parts[2], projectId: parts[1] } };
-            if (parts[0] === 'judge-configs') return { page: 'judge-configs' };
+            if (parts[0] === 'config-management') return { page: 'config-management' };
+            if (parts[0] === 'judge-configs') return { page: 'config-management' };
             return null;
         }
 
@@ -1143,10 +1145,13 @@
             // 加载侧栏项目列表（B-11: 有缓存时同步渲染，active 用 URL 判断）
             loadSidebarProjects();
 
-            document.getElementById('pageTitle').textContent = page === 'projects' ? '项目总览' : page === 'project-detail' ? (state.currentProject?.name || '项目详情') : page === 'run-detail' ? (state.currentRun?.id || 'Run 详情') : page === 'judge-configs' ? 'Judge 配置管理' : page;
+            document.getElementById('pageTitle').textContent = page === 'projects' ? '项目总览' : page === 'project-detail' ? (state.currentProject?.name || '项目详情') : page === 'run-detail' ? (state.currentRun?.id || 'Run 详情') : page === 'config-management' ? '配置管理' : page === 'judge-configs' ? '配置管理' : page;
 
             // 清除非侧栏项目的 active（保留侧栏 project-item 的 active，由 loadSidebarProjects 用 URL 同步设好）
             document.querySelectorAll('.nav-item:not(.project-item)').forEach(el => el.classList.remove('active'));
+            // U-2: 高亮当前页对应的侧栏项
+            const navItem = document.querySelector(`.nav-item[data-page="${page}"]`);
+            if (navItem) navItem.classList.add('active');
 
             const content = document.getElementById('mainContent');
             const headerActions = document.getElementById('headerActions');
@@ -1163,7 +1168,8 @@
                     renderRunDetailPage(content, headerActions, params);
                     break;
                 case 'judge-configs':
-                    renderJudgeConfigsPage(content, headerActions, params);
+                case 'config-management':
+                    renderConfigManagementPage(content, headerActions, params);
                     break;
             }
         }
@@ -1242,10 +1248,40 @@
             }
         }
 
-        // ==================== REQ-16: Judge 配置管理页 ====================
-        async function renderJudgeConfigsPage(container, headerActions, params = {}) {
-            headerActions.innerHTML = `<button class="btn btn-primary" onclick="showJudgeConfigEditorModal(null)">+ 新建 Judge 配置</button>`;
-            container.innerHTML = '<div style="padding: 20px;"><div style="color: var(--ink-4);">加载中...</div></div>';
+        // ==================== U-2: 配置管理页（Judge + Target 模板统一归口）====================
+        async function renderConfigManagementPage(container, headerActions, params = {}) {
+            const initialTab = params.tab || 'judge';
+            headerActions.innerHTML = '';
+            container.innerHTML = `
+                <div style="padding: 16px;">
+                    <div class="tabs" style="margin-bottom: 16px;">
+                        <div class="tab ${initialTab === 'judge' ? 'active' : ''}" data-cfg-tab="judge" onclick="switchConfigManagementTab('judge')">⚖ Judge 配置</div>
+                        <div class="tab ${initialTab === 'templates' ? 'active' : ''}" data-cfg-tab="templates" onclick="switchConfigManagementTab('templates')">🎯 Target 模板</div>
+                    </div>
+                    <div id="cfgMgmtContent"><div style="color: var(--ink-4);">加载中...</div></div>
+                </div>
+            `;
+            await renderConfigManagementTab(initialTab, params);
+        }
+
+        async function switchConfigManagementTab(tab) {
+            document.querySelectorAll('.tab[data-cfg-tab]').forEach(el => el.classList.remove('active'));
+            document.querySelector(`.tab[data-cfg-tab="${tab}"]`)?.classList.add('active');
+            await renderConfigManagementTab(tab, {});
+        }
+
+        async function renderConfigManagementTab(tab, params = {}) {
+            const content = document.getElementById('cfgMgmtContent');
+            if (!content) return;
+            if (tab === 'judge') {
+                await renderJudgeConfigsTab(content, params);
+            } else {
+                await renderTargetTemplatesTab(content);
+            }
+        }
+
+        async function renderJudgeConfigsTab(container, params = {}) {
+            container.innerHTML = '<div style="color: var(--ink-4);">加载中...</div>';
             try {
                 const data = await api('/judge-configs');
                 const configs = data.judge_configs || [];
@@ -1259,49 +1295,106 @@
                     `;
                 } else {
                     container.innerHTML = `
-                        <div style="padding: 16px;">
-                            <div style="margin-bottom: 12px; color: var(--ink-4); font-size: 13px;">
+                        <div style="margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center;">
+                            <div style="color: var(--ink-4); font-size: 13px;">
                                 全局 Judge 配置可被多个项目引用。各项目在配置页 Judge 卡片选择引用的配置。
                             </div>
-                            <div class="card">
-                                <table>
-                                    <thead>
-                                        <tr>
-                                            <th>名称</th>
-                                            <th>API 模式</th>
-                                            <th>base_url</th>
-                                            <th>model</th>
-                                            <th>创建时间</th>
-                                            <th>操作</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        ${configs.map(jc => {
-                                            const inner = jc.judge_config || {};
-                                            const created = jc.created_at ? new Date(jc.created_at).toLocaleString('zh-CN') : '-';
-                                            return `
-                                                <tr>
-                                                    <td>${escapeHtml(jc.name || '')}</td>
-                                                    <td>${inner.api_type === 'custom' ? '自定义 API' : 'OpenAI Compatible'}</td>
-                                                    <td class="mono" style="max-width: 200px; overflow: hidden; text-overflow: ellipsis;">${escapeHtml(inner.base_url || '')}</td>
-                                                    <td class="mono">${escapeHtml(inner.model || '-')}</td>
-                                                    <td style="font-size: 12px; color: var(--ink-4);">${created}</td>
-                                                    <td>
-                                                        <button class="btn btn-sm btn-secondary" onclick="showJudgeConfigEditorModal('${escapeHtml(jc.id)}')">编辑</button>
-                                                        <button class="btn btn-sm btn-secondary" style="color: var(--red); border-color: var(--red-bd);" onclick="showDeleteJudgeConfigModal('${escapeHtml(jc.id)}', '${escapeHtml(jc.name)}')">删除</button>
-                                                    </td>
-                                                </tr>
-                                            `;
-                                        }).join('')}
-                                    </tbody>
-                                </table>
-                            </div>
+                            <button class="btn btn-primary btn-sm" onclick="showJudgeConfigEditorModal(null)">+ 新建</button>
+                        </div>
+                        <div class="card">
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th>名称</th>
+                                        <th>API 模式</th>
+                                        <th>base_url</th>
+                                        <th>model</th>
+                                        <th>创建时间</th>
+                                        <th>操作</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    ${configs.map(jc => {
+                                        const inner = jc.judge_config || {};
+                                        const created = jc.created_at ? new Date(jc.created_at).toLocaleString('zh-CN') : '-';
+                                        return `
+                                            <tr>
+                                                <td>${escapeHtml(jc.name || '')}</td>
+                                                <td>${inner.api_type === 'custom' ? '自定义 API' : 'OpenAI Compatible'}</td>
+                                                <td class="mono" style="max-width: 200px; overflow: hidden; text-overflow: ellipsis;">${escapeHtml(inner.base_url || '')}</td>
+                                                <td class="mono">${escapeHtml(inner.model || '-')}</td>
+                                                <td style="font-size: 12px; color: var(--ink-4);">${created}</td>
+                                                <td>
+                                                    <button class="btn btn-sm btn-secondary" onclick="showJudgeConfigEditorModal('${escapeHtml(jc.id)}')">编辑</button>
+                                                    <button class="btn btn-sm btn-secondary" style="color: var(--red); border-color: var(--red-bd);" onclick="showDeleteJudgeConfigModal('${escapeHtml(jc.id)}', '${escapeHtml(jc.name)}')">删除</button>
+                                                </td>
+                                            </tr>
+                                        `;
+                                    }).join('')}
+                                </tbody>
+                            </table>
                         </div>
                     `;
                 }
-                // 如果带 editId 参数，自动打开编辑弹窗
                 if (params.editId) {
                     showJudgeConfigEditorModal(params.editId);
+                }
+            } catch (err) {
+                container.innerHTML = `<div class="empty-state"><div class="empty-state-text">加载失败: ${escapeHtml(err.message)}</div></div>`;
+            }
+        }
+
+        async function renderTargetTemplatesTab(container) {
+            container.innerHTML = '<div style="color: var(--ink-4);">加载中...</div>';
+            try {
+                const data = await api('/config-templates');
+                const templates = data.templates || [];
+                if (templates.length === 0) {
+                    container.innerHTML = `
+                        <div class="empty-state" style="padding: 60px 0;">
+                            <div class="empty-state-icon">🎯</div>
+                            <div class="empty-state-text">还没有 Target 配置模板</div>
+                            <div style="font-size: 12px; color: var(--ink-5); margin-top: 4px;">
+                                在项目配置页 Target 卡片点击「保存为模板」可创建
+                            </div>
+                        </div>
+                    `;
+                } else {
+                    container.innerHTML = `
+                        <div style="margin-bottom: 12px; color: var(--ink-4); font-size: 13px;">
+                            Target 配置模板保存项目的 API 配置（base_url/api_type/auth 等），可跨项目加载引用。
+                        </div>
+                        <div class="card">
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th>名称</th>
+                                        <th>API 模式</th>
+                                        <th>base_url</th>
+                                        <th>创建时间</th>
+                                        <th>操作</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    ${templates.map(t => {
+                                        const tc = t.target_config || {};
+                                        const created = t.created_at ? new Date(t.created_at).toLocaleString('zh-CN') : '-';
+                                        return `
+                                            <tr>
+                                                <td>${escapeHtml(t.name || '')}</td>
+                                                <td>${tc.api_type === 'custom' ? '自定义 API' : 'OpenAI Compatible'}</td>
+                                                <td class="mono" style="max-width: 200px; overflow: hidden; text-overflow: ellipsis;">${escapeHtml(tc.base_url || '')}</td>
+                                                <td style="font-size: 12px; color: var(--ink-4);">${created}</td>
+                                                <td>
+                                                    <button class="btn btn-sm btn-secondary" style="color: var(--red); border-color: var(--red-bd);" onclick="deleteTargetTemplateById('${escapeHtml(t.id)}', '${escapeHtml(t.name)}')">删除</button>
+                                                </td>
+                                            </tr>
+                                        `;
+                                    }).join('')}
+                                </tbody>
+                            </table>
+                        </div>
+                    `;
                 }
             } catch (err) {
                 container.innerHTML = `<div class="empty-state"><div class="empty-state-text">加载失败: ${escapeHtml(err.message)}</div></div>`;
@@ -1325,12 +1418,17 @@
             const isMasked = v => v && typeof v === 'object' && v.masked === true;
             const MASK_PLACEHOLDER = '••••••••';
             const maskVal = v => isMasked(v) ? MASK_PLACEHOLDER : (v || '');
-            const modal = document.getElementById('modalOverlay');
-            const modalContent = document.getElementById('modalContent');
-            modalContent.innerHTML = `
+            const modalId = 'judgeConfigModal';
+            const existing = document.getElementById(modalId);
+            if (existing) existing.remove();
+            const modal = document.createElement('div');
+            modal.className = 'modal-overlay';
+            modal.id = modalId;
+            modal.innerHTML = `
+                <div class="modal">
                 <div class="modal-header">
                     <span class="modal-title">${jcId ? '编辑 Judge 配置' : '新建 Judge 配置'}</span>
-                    <button class="modal-close" onclick="closeModal('modalOverlay')">×</button>
+                    <button class="modal-close" onclick="closeModal('${modalId}')">×</button>
                 </div>
                 <div style="padding: 16px; max-height: 70vh; overflow-y: auto;">
                     <div class="form-group">
@@ -1378,12 +1476,13 @@
                         <textarea class="form-input mono" id="jcPromptTemplate" style="min-height: 80px;">${escapeHtml(inner.prompt_template || '')}</textarea>
                     </div>
                     <div style="display: flex; gap: 8px; justify-content: flex-end;">
-                        <button class="btn btn-secondary" onclick="closeModal('modalOverlay')">取消</button>
+                        <button class="btn btn-secondary" onclick="closeModal('${modalId}')">取消</button>
                         <button class="btn btn-primary" onclick="saveJudgeConfig('${escapeHtml(jcId || '')}')">保存</button>
                     </div>
                 </div>
+                </div>
             `;
-            modal.style.display = 'flex';
+            document.body.appendChild(modal);
         }
 
         function toggleJcEditorMode() {
@@ -1435,8 +1534,8 @@
                     await fetch('/api/judge-configs', { method: 'POST', body: fd });
                     showToast('Judge 配置已创建');
                 }
-                closeModal('modalOverlay');
-                navigateTo('judge-configs');
+                closeModal('judgeConfigModal');
+                navigateTo('config-management');
             } catch (e) {
                 showToast(e.message, 'error');
             }
@@ -1447,7 +1546,7 @@
             try {
                 await api(`/judge-configs/${encodeURIComponent(jcId)}`, { method: 'DELETE' });
                 showToast('Judge 配置已删除');
-                navigateTo('judge-configs');
+                navigateTo('config-management');
             } catch (e) {
                 showToast(e.message, 'error');
             }
@@ -1736,7 +1835,6 @@
                         <div class="tab" data-tab="evalsets" onclick="switchTab('evalsets')">评测集</div>
                         <div class="tab" data-tab="config" onclick="switchTab('config')">配置</div>
                         <div class="tab" data-tab="history" onclick="switchTab('history')">历史</div>
-                        <div class="tab" data-tab="versions" onclick="switchTab('versions')">版本</div>
                     </div>
 
                     <div id="tabContent">
@@ -1791,9 +1889,6 @@
                     break;
                 case 'history':
                     renderHistoryTab(content, project.id);
-                    break;
-                case 'versions':
-                    renderVersionsTab(content, project.id);
                     break;
             }
         }
@@ -1868,11 +1963,11 @@
                             : '-'}</div>
                         <div class="metric-label">token 量(K)</div>
                     </div>
-                    <div class="metric-card">
+                    <div class="metric-card" title="${lastRun && lastRun.token_missing ? 'token 不可得，完成率无法计算' : '通过数 ÷ ((target_token + judge_token) / 10000)，含 Judge 消耗'}">
                         <div class="metric-value num">${lastRun
                             ? (lastRun.token_missing
                                 ? `<span style="font-size: 12px; color: var(--ink-4);" title="token 不可得，完成率无法计算">token 不可得</span>`
-                                : lastRun.token_per_pass.toFixed(1))
+                                : lastRun.token_per_pass.toFixed(1) + ' <span style="font-size: 12px; color: var(--ink-4);">个/万token</span>')
                             : '-'}</div>
                         <div class="metric-label">每万 token 完成率</div>
                     </div>
@@ -2159,9 +2254,18 @@
             state._currentEvalsetAllTags = allTags;
             // P-2: 应用标签过滤（OR 语义，空 = 全部）
             const tagFilter = state._evalsetTagFilter || [];
-            let filteredCases = tagFilter.length === 0
-                ? cases
-                : cases.filter(c => (c.tags || []).some(t => tagFilter.includes(t)));
+            // U-6: 关键词搜索（case_name + input 子串过滤）
+            const keyword = (state._evalsetKeyword || '').trim().toLowerCase();
+            let filteredCases = cases;
+            if (tagFilter.length > 0) {
+                filteredCases = filteredCases.filter(c => (c.tags || []).some(t => tagFilter.includes(t)));
+            }
+            if (keyword) {
+                filteredCases = filteredCases.filter(c =>
+                    (c.case_name || '').toLowerCase().includes(keyword) ||
+                    (c.input || '').toLowerCase().includes(keyword)
+                );
+            }
             // T2-1: case 级采样数据（按 case_id 优先 / case_name fallback 匹配）
             const samplingCases = state._evalsetSampling?.cases || [];
             const samplingByCaseId = new Map();
@@ -2223,15 +2327,17 @@
                         <div style="padding: 6px 16px; background: var(--amber-bg, #fffbeb); border-bottom: 1px solid var(--amber-bd, #fde68a); color: var(--amber, #b45309); font-size: 12px;">
                             评测集内容已更新，旧采样统计已清零，需积累新采样
                         </div>` : ''}
-                        ${allTags.length === 0 ? '' : `
                         <div class="evalset-tag-filter" style="padding: 8px 16px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
-                            <span style="font-size: 12px; color: var(--ink-4);">按标签筛选：</span>
+                            <input type="text" class="form-input" id="evalsetKeywordInput" placeholder="搜索 case 名或输入内容..." value="${escapeHtml(state._evalsetKeyword || '')}" oninput="onEvalsetKeywordInput(this.value)" style="width: 240px; font-size: 12px; padding: 4px 8px;">
+                            ${keyword ? `<button class="btn btn-sm btn-secondary" style="font-size: 11px; padding: 2px 8px;" onclick="clearEvalsetKeyword()">清除搜索</button>` : ''}
+                            ${allTags.length === 0 ? '' : `
+                            <span style="font-size: 12px; color: var(--ink-4); margin-left: 8px;">按标签筛选：</span>
                             <div style="display: flex; gap: 4px; flex-wrap: wrap;">
                                 ${allTags.map(t => `<button class="tag-chip filter-chip ${tagFilter.includes(t) ? 'active' : ''}" data-tag="${escapeHtml(t)}" onclick="toggleEvalsetTagFilter(this)">${escapeHtml(t)}</button>`).join('')}
                             </div>
                             ${tagFilter.length ? `<button class="btn btn-sm btn-secondary" style="font-size: 11px; padding: 2px 8px;" onclick="clearEvalsetTagFilter()">清除筛选</button>` : ''}
+                            `}
                         </div>
-                        `}
                         <div id="batchOpsBar" style="display: none; padding: 8px 16px; background: var(--gray-bg); border-bottom: 1px solid var(--border); align-items: center; gap: 8px;">
                             <span id="batchSelectedCount" style="font-size: 13px; color: var(--ink-3);">已选 0 条</span>
                             <button class="btn btn-sm btn-secondary" onclick="batchToggleCases('${evalset.id}', '${projectId}', true)">批量启用</button>
@@ -2244,9 +2350,7 @@
                                     <tr>
                                         <th style="width: 32px;"><input type="checkbox" id="batchSelectAll" onchange="toggleBatchSelectAll()"></th>
                                         <th>case 名</th>
-                                        <th>输入(截断)</th>
                                         <th>评测类型</th>
-                                        <th>期望/判据</th>
                                         <th>标签</th>
                                         <th>状态</th>
                                         <th style="cursor: pointer;" onclick="sortEvalsetBy('n')" title="点击排序">采样 n</th>
@@ -2256,7 +2360,7 @@
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    ${filteredCases.length === 0 ? `<tr><td colspan="11" style="text-align: center; color: var(--ink-4); padding: 24px;">${cases.length === 0 ? '暂无用例，点击「+ 新增用例」或「导入」添加' : '当前筛选下无匹配用例，清除筛选查看全部'}</td></tr>` : filteredCases.map(c => {
+                                    ${filteredCases.length === 0 ? `<tr><td colspan="9" style="text-align: center; color: var(--ink-4); padding: 24px;">${cases.length === 0 ? '暂无用例，点击「+ 新增用例」或「导入」添加' : '当前筛选下无匹配用例，清除筛选查看全部'}</td></tr>` : filteredCases.map(c => {
                                             const sc = getSampling(c);
                                             const n = sc ? sc.n : 0;
                                             const pr = sc && sc.n > 0 ? (sc.pass_rate * 100).toFixed(0) + '%' : '-';
@@ -2264,10 +2368,8 @@
                                             return `
                                         <tr style="${c.enabled === false ? 'opacity: 0.5' : ''}">
                                             <td><input type="checkbox" class="batch-case-cb" value="${escapeHtml(c.id)}" onchange="updateBatchOpsBar()"></td>
-                                            <td>${escapeHtml(c.case_name)}</td>
-                                            <td class="truncate mono">${escapeHtml(c.input || '-')}</td>
+                                            <td><a href="javascript:void(0)" onclick="showCaseDetail('${evalset.id}', '${projectId}', '${c.id}')" style="color: var(--accent); text-decoration: none;">${escapeHtml(c.case_name)}</a></td>
                                             <td><span class="tag tag-${c.eval_type}">${escapeHtml(c.eval_type)}</span></td>
-                                            <td class="truncate mono">${escapeHtml(previewField(c) || '-')}</td>
                                             <td>${renderTagsCell(c)}</td>
                                             <td>
                                                 <span class="status-badge ${c.enabled ? 'status-passed' : 'status-disabled'}">
@@ -2311,6 +2413,17 @@
         }
         function clearEvalsetTagFilter() {
             state._evalsetTagFilter = [];
+            _rerenderEvalsetDetail();
+        }
+        // U-6: 关键词搜索（debounce 200ms）
+        let _evalsetKeywordTimer = null;
+        function onEvalsetKeywordInput(val) {
+            state._evalsetKeyword = val;
+            clearTimeout(_evalsetKeywordTimer);
+            _evalsetKeywordTimer = setTimeout(() => _rerenderEvalsetDetail(), 200);
+        }
+        function clearEvalsetKeyword() {
+            state._evalsetKeyword = '';
             _rerenderEvalsetDetail();
         }
         function _rerenderEvalsetDetail() {
@@ -2519,6 +2632,22 @@
                                 </div>
                             </div>
                         </div>
+                        <div class="checks-section collapsed" id="ceValidationsSection">
+                            <div class="checks-toggle" onclick="document.getElementById('ceValidationsSection').classList.toggle('collapsed')">
+                                <span>验证组（validations，U-10 新结构）</span>
+                                <span style="font-size: 11px; color: var(--ink-4);">— 验证条目列表，首条为主输出验证，全部通过才算通过</span>
+                            </div>
+                            <div class="checks-body">
+                                <div style="font-size: 11px; color: var(--ink-4); margin-bottom: 6px;">
+                                    填写后保存时优先于上方 eval_type/expected_output/checks（旧字段保留兼容，但运行以 validations 为准）。空列表 = 走旧字段合成。
+                                </div>
+                                <div class="checks-list" id="ceValidationsList"></div>
+                                <button class="btn btn-sm btn-secondary" onclick="addValidationRow()">+ 添加 validation</button>
+                                <div style="font-size: 11px; color: var(--ink-4); margin-top: 6px;">
+                                    field 空 = 主输出（actual_output）；非空 = 点路径取字段；llm_judge 用 output_requirement，规则类用 expected。
+                                </div>
+                            </div>
+                        </div>
                     </div>
                     <div class="modal-footer">
                         <button class="btn btn-secondary" onclick="closeModal('caseEditorModal')">取消</button>
@@ -2533,6 +2662,8 @@
             renderTagsPreview(tagsStr, 'ceTagsPreview');
             // T1-5: 渲染 checks 列表
             initCheckRows(c.checks || []);
+            // U-10: 渲染 validations 列表（新结构）
+            initValidationRows(c.validations || []);
             toggleCaseEditorFields();
         }
 
@@ -2641,6 +2772,101 @@
             return checks.length ? checks : null;
         }
 
+        // U-10: validations 列表编辑器（input 组与验证组对称化的新结构）
+        // 与 checks 的关键差异：llm_judge 用 output_requirement（与 expected 平级），不再复用 expected
+        function validationRowHTML(v) {
+            v = v || { name: '', field: '', eval_type: 'exact', expected: '', output_requirement: '', eval_params: {} };
+            const epSubstr = v.eval_params?.substring || '';
+            const epMin = v.eval_params?.min ?? '';
+            const epMax = v.eval_params?.max ?? '';
+            const expectedVisible = v.eval_type === 'exact' || v.eval_type === 'contains' || v.eval_type === 'not_contains' || v.eval_type === 'length';
+            const containsVisible = v.eval_type === 'contains' || v.eval_type === 'not_contains';
+            const lengthVisible = v.eval_type === 'length';
+            const judgeVisible = v.eval_type === 'llm_judge';
+            return `
+                <div class="check-row val-row" data-eval-type="${escapeHtml(v.eval_type)}">
+                    <input type="text" class="form-input val-name" value="${escapeHtml(v.name || '')}" placeholder="validation 名称（可空）">
+                    <input type="text" class="form-input val-field" value="${escapeHtml(v.field || '')}" placeholder="字段（空=主输出；如 result / a.b.c）">
+                    <select class="form-input val-type" onchange="updateValidationRowVisibility(this)">
+                        ${CHECK_EVAL_TYPES.map(t => `<option value="${t.value}" ${v.eval_type === t.value ? 'selected' : ''}>${escapeHtml(t.label)}</option>`).join('')}
+                    </select>
+                    <div class="chk-params">
+                        <input type="text" class="form-input val-expected" value="${escapeHtml(v.expected || '')}" placeholder="expected（期望值）"
+                               style="${expectedVisible ? '' : 'display:none;'}">
+                        <input type="text" class="form-input val-output-requirement" value="${escapeHtml(v.output_requirement || '')}" placeholder="output_requirement（评判标准）"
+                               style="${judgeVisible ? '' : 'display:none;'}">
+                        <input type="text" class="form-input val-substr" value="${escapeHtml(epSubstr)}" placeholder="substring 子串"
+                               style="${containsVisible ? '' : 'display:none;'}">
+                        <div class="chk-length val-length" style="display: ${lengthVisible ? 'flex' : 'none'}; gap: 4px;">
+                            <input type="number" class="form-input val-len-min" value="${epMin}" placeholder="min" style="width: 50%;">
+                            <input type="number" class="form-input val-len-max" value="${epMax}" placeholder="max" style="width: 50%;">
+                        </div>
+                    </div>
+                    <button class="btn btn-sm btn-danger" onclick="this.closest('.val-row').remove()" title="删除">×</button>
+                </div>
+            `;
+        }
+        function initValidationRows(validations) {
+            const list = document.getElementById('ceValidationsList');
+            if (!list) return;
+            list.innerHTML = '';
+            if (!validations || validations.length === 0) {
+                list.innerHTML = '<div style="font-size:11px;color:var(--ink-4);">无 validation，保存时由上方旧字段合成主验证 + checks</div>';
+            } else {
+                validations.forEach(v => list.insertAdjacentHTML('beforeend', validationRowHTML(v)));
+            }
+        }
+        function addValidationRow() {
+            const list = document.getElementById('ceValidationsList');
+            if (!list) return;
+            const placeholder = list.querySelector('div[style*="无 validation"]');
+            if (placeholder) placeholder.remove();
+            list.insertAdjacentHTML('beforeend', validationRowHTML(null));
+        }
+        function updateValidationRowVisibility(sel) {
+            const row = sel.closest('.val-row');
+            if (!row) return;
+            const t = sel.value;
+            row.dataset.evalType = t;
+            const expected = row.querySelector('.val-expected');
+            const outputReq = row.querySelector('.val-output-requirement');
+            const substr = row.querySelector('.val-substr');
+            const lenWrap = row.querySelector('.val-length');
+            // exact/contains/not_contains/length 用 expected（llm_judge 不用）
+            if (expected) expected.style.display = (t === 'llm_judge') ? 'none' : '';
+            if (outputReq) outputReq.style.display = (t === 'llm_judge') ? '' : 'none';
+            if (substr) substr.style.display = (t === 'contains' || t === 'not_contains') ? '' : 'none';
+            if (lenWrap) lenWrap.style.display = (t === 'length') ? 'flex' : 'none';
+        }
+        function collectValidations() {
+            const list = document.getElementById('ceValidationsList');
+            if (!list) return null;
+            const rows = list.querySelectorAll('.val-row');
+            if (rows.length === 0) return null;
+            const validations = [];
+            rows.forEach((r, i) => {
+                const name = r.querySelector('.val-name')?.value.trim() || '';
+                const type = r.querySelector('.val-type')?.value;
+                const field = r.querySelector('.val-field')?.value.trim() || '';
+                const expected = r.querySelector('.val-expected')?.value || null;
+                const outputReq = r.querySelector('.val-output-requirement')?.value || null;
+                const evalParams = {};
+                if (type === 'contains' || type === 'not_contains') {
+                    const s = r.querySelector('.val-substr')?.value;
+                    if (s !== null && s !== '') evalParams.substring = s;
+                } else if (type === 'length') {
+                    const mn = r.querySelector('.val-len-min')?.value;
+                    const mx = r.querySelector('.val-len-max')?.value;
+                    if (mn !== '') evalParams.min = parseInt(mn, 10);
+                    if (mx !== '') evalParams.max = parseInt(mx, 10);
+                }
+                // 跳过完全空的行（无 name/field/expected/output_requirement）
+                if (!name && !field && !expected && !outputReq) return;
+                validations.push({ name, field, eval_type: type, expected, output_requirement: outputReq, eval_params: evalParams });
+            });
+            return validations.length ? validations : null;
+        }
+
         // B-13: 变量 kv 行编辑器（case 编辑器 + 导入表单共用）
         function kvRowHTML(k, v) {
             return `
@@ -2730,6 +2956,8 @@
             // T1-2: tags + T1-5: checks
             const tags = parseTagsInput(document.getElementById('ceTags').value);
             const checks = collectChecks();
+            // U-10: 收集 validations（新结构，非空时优先于旧字段）
+            const validations = collectValidations();
 
             try {
                 const evalset = await api(`/evalsets/${evalsetId}?project_id=${projectId}`);
@@ -2747,6 +2975,7 @@
                     variables: collectKvRows('ceVariablesList'),
                     tags: tags,
                     checks: checks,
+                    validations: validations,
                     enabled: idx >= 0 ? cases[idx].enabled : true
                 };
                 if (idx >= 0) {
@@ -2989,68 +3218,29 @@
                     <div class="card-header" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
                         <span class="card-title">LLM Judge 配置</span>
                         <div style="display: flex; gap: 6px; align-items: center;">
-                            <button class="btn btn-sm btn-secondary" onclick="navigateTo('judge-configs')" title="管理全局 Judge 配置">⚙ 管理</button>
+                            <button class="btn btn-sm btn-secondary" onclick="navigateTo('config-management')" title="管理全局 Judge 配置">⚙ 去配置管理</button>
                         </div>
                     </div>
                     <div class="form-group">
-                        <label class="form-label">全局 Judge 配置（可选，引用全局配置后覆盖下方内联字段）</label>
+                        <label class="form-label">全局 Judge 配置</label>
                         <div style="display: flex; gap: 6px; align-items: center;">
                             <select class="form-input" id="judgeConfigIdSelect" onchange="onJudgeConfigSelectChange()" style="flex: 1;">
-                                <option value="">— 使用下方内联配置 —</option>
+                                <option value="">— 未选择 —</option>
                             </select>
-                            <button class="btn btn-sm btn-secondary" onclick="navigateTo('judge-configs')">新建</button>
+                            <button class="btn btn-sm btn-secondary" onclick="showJudgeConfigEditorModal(null)">新建</button>
                             <button class="btn btn-sm btn-secondary" id="editJudgeConfigBtn" onclick="editSelectedJudgeConfig()" disabled>编辑</button>
                         </div>
                         <div id="judgeConfigSummary" style="font-size: 12px; color: var(--ink-4); margin-top: 4px;"></div>
                     </div>
-                    <div class="form-group">
-                        <label class="form-label">API 模式</label>
-                        <select class="form-input" id="judgeApiType" onchange="toggleJudgeApiMode()">
-                            <option value="openai_compatible" ${(jc.api_type || 'openai_compatible') === 'openai_compatible' ? 'selected' : ''}>OpenAI Compatible</option>
-                            <option value="custom" ${jc.api_type === 'custom' ? 'selected' : ''}>自定义 API</option>
-                        </select>
-                        <div id="judgeApiModeDesc" style="font-size: 12px; color: var(--ink-4); margin-top: 4px;">
-                            ${(jc.api_type || 'openai_compatible') === 'custom'
-                                ? '任意 HTTP JSON 接口。需请求模板；不注入 model/messages，请求体完全由模板决定。'
-                                : '标准模型接口（OpenAI 风格）。需 base_url + model；api_key 可留空（无认证头）。'}
-                        </div>
-                    </div>
-                    <div class="form-group" id="judgeBaseUrlGroup">
-                        <label class="form-label">base_url</label>
-                        <input type="text" class="form-input mono" value="${escapeHtml(jc.base_url)}" id="judgeBaseUrl">
-                    </div>
-                    <div class="form-group" id="judgeApiKeyGroup">
-                        <label class="form-label">api_key <span id="judgeApiKeyHint" style="color: var(--ink-5); font-weight: normal;">（留空 = 不带 Authorization 头）</span></label>
-                        ${secretInput('judgeApiKey', jc.api_key)}
-                    </div>
-                    <div class="form-group" id="judgeModelGroup">
-                        <label class="form-label">model <span id="judgeModelRequired" style="color: var(--red);">*</span></label>
-                        <input type="text" class="form-input mono" value="${escapeHtml(jc.model || '')}" id="judgeModel">
-                    </div>
-                    <div class="form-group" id="judgeRequestTemplateGroup" style="display: none;">
-                        <label class="form-label">request_template（必填，JSON 格式，不注入 model/messages）<span style="color: var(--ink-5); font-weight: normal;">— 占位符 {requirement} / {output}</span></label>
-                        <textarea class="form-input mono" id="judgeRequestTemplate" style="min-height: 100px;" placeholder='{"input": "{output}", "requirement": "{requirement}"}'>${escapeHtml(jc.request_template || '')}</textarea>
-                    </div>
-                    <div class="form-group" id="judgeAuthGroup" style="display: none;">
-                        <label class="form-label">auth 配置（JSON，与 Target auth 同结构）</label>
-                        <textarea class="form-input mono" id="judgeAuthJson" style="min-height: 80px;" placeholder='{"type": "none"}'>${escapeHtml(jc.auth ? JSON.stringify(jc.auth, null, 2) : '{"type": "none"}')}</textarea>
-                        <div style="font-size: 11px; color: var(--ink-4); margin-top: 4px;">
-                            支持类型：none / bearer / api_key / cookie / headers。格式参考 Target 卡片。
-                        </div>
-                    </div>
-                    <div class="form-group" id="judgeResponseParsingGroup" style="display: none;">
-                        <label class="form-label">response_parsing（JSON，与 Target 同结构）</label>
-                        <textarea class="form-input mono" id="judgeResponseParsingJson" style="min-height: 100px;" placeholder='{"output_paths": ["$.score"], "token_paths": ["$.usage.total_tokens"]}'>${escapeHtml(jc.response_parsing ? JSON.stringify(jc.response_parsing, null, 2) : '')}</textarea>
-                        <div style="font-size: 11px; color: var(--ink-4); margin-top: 4px;">
-                            必须能从响应中提取到分数（0-1 浮点数）；可选 token_paths 用于统计 Judge token。
-                        </div>
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">Prompt 模板（占位符 {requirement} / {output}）</label>
-                        <textarea class="form-input mono" id="judgePrompt" style="min-height: 100px;">${escapeHtml(jc.prompt_template || '')}</textarea>
-                    </div>
-                    <button class="btn btn-secondary" onclick="testJudgeConfig('${project.id}')">测试 Judge</button>
-                    <div id="judgeTestResult" class="mt-4"></div>
+                    <!-- U-3: 隐藏的内联字段（保留 DOM 兼容 collectConfigSnapshot/saveProjectConfig，但 UI 不显示不编辑） -->
+                    <input type="hidden" id="judgeApiType" value="${escapeHtml(jc.api_type || 'openai_compatible')}">
+                    <input type="hidden" id="judgeBaseUrl" value="${escapeHtml(jc.base_url || '')}">
+                    <input type="hidden" id="judgeApiKey" value="${escapeHtml(jc.api_key && typeof jc.api_key === 'object' ? '' : (jc.api_key || ''))}" data-masked="${jc.api_key && typeof jc.api_key === 'object' && jc.api_key.masked ? 'true' : 'false'}">
+                    <input type="hidden" id="judgeModel" value="${escapeHtml(jc.model || '')}">
+                    <textarea class="form-input mono" id="judgeRequestTemplate" style="display: none;">${escapeHtml(jc.request_template || '')}</textarea>
+                    <textarea class="form-input mono" id="judgeAuthJson" style="display: none;">${escapeHtml(jc.auth ? JSON.stringify(jc.auth, null, 2) : '{"type": "none"}')}</textarea>
+                    <textarea class="form-input mono" id="judgeResponseParsingJson" style="display: none;">${escapeHtml(jc.response_parsing ? JSON.stringify(jc.response_parsing, null, 2) : '')}</textarea>
+                    <textarea class="form-input mono" id="judgePrompt" style="display: none;">${escapeHtml(jc.prompt_template || '')}</textarea>
                 </div>
 
                 <div class="card mb-4">
@@ -3553,15 +3743,98 @@
 
         async function renderHistoryTab(container, projectId) {
             try {
-                const [data, alertsData] = await Promise.all([
+                const project = state.currentProject;
+                const versions = project?.versions || [];
+                // 缓存 version_id → name 映射
+                state._versionNames = {};
+                versions.forEach(v => { state._versionNames[v.id] = v.name; });
+
+                const [data, alertsData, compareData] = await Promise.all([
                     api(`/projects/${projectId}/runs`),
-                    api(`/projects/${projectId}/regression-alerts`).catch(() => ({ alerts: [] }))
+                    api(`/projects/${projectId}/regression-alerts`).catch(() => ({ alerts: [] })),
+                    versions.length > 0
+                        ? api(`/projects/${projectId}/versions/compare`).catch(() => ({ versions: [] }))
+                        : Promise.resolve({ versions: [] })
                 ]);
                 const runs = data.runs || [];
                 const regressionRunIds = new Set((alertsData.alerts || []).map(a => a.run_id));
 
+                // U-4: 版本时间线 + 跨版本对比（顶部）
+                let versionSection = '';
+                if (versions.length > 0) {
+                    const compareRows = compareData.versions || [];
+                    versionSection = `
+                        <div class="card mb-4">
+                            <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
+                                <span class="card-title">版本时间线</span>
+                                <button class="btn btn-sm btn-primary" onclick="showCreateVersionModal('${escapeHtml(projectId)}')">+ 开新版本</button>
+                            </div>
+                            <div style="padding: 12px 16px; display: flex; flex-wrap: wrap; gap: 8px;">
+                                ${versions.map((v, i) => `
+                                    <div style="display: flex; align-items: center; gap: 6px; padding: 4px 10px; background: var(--light-bg); border-radius: 6px; font-size: 12px;">
+                                        <span style="width: 18px; height: 18px; border-radius: 50%; background: var(--accent); color: #fff; display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 600;">${i + 1}</span>
+                                        <span style="font-weight: 500;">${escapeHtml(v.name)}</span>
+                                        <span style="color: var(--ink-4);">${formatRelativeTime(v.created_at)}</span>
+                                        <button class="btn btn-sm" style="padding: 0 4px; background: transparent; border: none; color: var(--red); font-size: 12px;" onclick="deleteVersion('${escapeHtml(projectId)}', '${escapeHtml(v.id)}', '${escapeHtml(v.name).replace(/'/g, "&#39;")}')">×</button>
+                                    </div>
+                                `).join('')}
+                            </div>
+                        </div>
+                        ${compareRows.length > 0 ? `
+                        <div class="card mb-4">
+                            <div class="card-header"><span class="card-title">跨版本对比</span></div>
+                            <div class="table-wrapper">
+                                <table>
+                                    <thead>
+                                        <tr>
+                                            <th>版本</th>
+                                            <th>run 数</th>
+                                            <th>pass rate</th>
+                                            <th>Δ pass rate</th>
+                                            <th>总 token</th>
+                                            <th>Δ token</th>
+                                            <th>P50 延迟</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        ${compareRows.map(r => {
+                                            const dpr = r.delta_pass_rate;
+                                            const dt = r.delta_total_token;
+                                            const dprColor = dpr > 0 ? 'var(--green)' : dpr < 0 ? 'var(--red)' : 'var(--ink-4)';
+                                            const dtColor = dt > 0 ? 'var(--red)' : dt < 0 ? 'var(--green)' : 'var(--ink-4)';
+                                            const dprSign = dpr > 0 ? '+' : '';
+                                            const dtSign = dt > 0 ? '+' : '';
+                                            return `
+                                            <tr>
+                                                <td><strong>${escapeHtml(r.version_name)}</strong></td>
+                                                <td class="num">${r.run_count}</td>
+                                                <td class="num">${(r.pass_rate * 100).toFixed(1)}%</td>
+                                                <td class="num" style="color: ${dprColor};">${r.delta_pass_rate !== undefined ? dprSign + (dpr * 100).toFixed(1) + '%' : '-'}</td>
+                                                <td class="num">${formatNumber(r.total_token)}</td>
+                                                <td class="num" style="color: ${dtColor};">${r.delta_total_token !== undefined ? dtSign + formatNumber(dt) : '-'}</td>
+                                                <td class="num">${r.latency_p50 ? (r.latency_p50 / 1000).toFixed(1) + 's' : '-'}</td>
+                                            </tr>
+                                            `;
+                                        }).join('')}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                        ` : ''}
+                    `;
+                } else if (runs.length > 0) {
+                    versionSection = `
+                        <div class="card mb-4" style="padding: 12px 16px;">
+                            <div style="display: flex; justify-content: space-between; align-items: center;">
+                                <span style="color: var(--ink-4); font-size: 13px;">未开版本。开新版本后可做跨版本对比。</span>
+                                <button class="btn btn-sm btn-secondary" onclick="showCreateVersionModal('${escapeHtml(projectId)}')">+ 开新版本</button>
+                            </div>
+                        </div>
+                    `;
+                }
+
                 if (runs.length === 0) {
-                    container.innerHTML = `
+                    container.innerHTML = versionSection + `
                         <div class="empty-state">
                             <div class="empty-state-icon">📜</div>
                             <div class="empty-state-text">还没有评测记录</div>
@@ -3570,7 +3843,7 @@
                     return;
                 }
 
-                container.innerHTML = `
+                container.innerHTML = versionSection + `
                     <div class="card">
                         <div class="table-wrapper">
                             <table>
@@ -3582,7 +3855,8 @@
                                         <th>版本</th>
                                         <th>时间</th>
                                         <th>pass rate</th>
-                                        <th>token</th>
+                                        <th>target token</th>
+                                        <th>judge token</th>
                                         <th>操作</th>
                                     </tr>
                                 </thead>
@@ -3593,6 +3867,8 @@
                                         const passRateCell = isRegression && r.summary
                                             ? `<span style="color: var(--red); font-weight: 600;" title="回归：pass_rate 相对 baseline 下降超过阈值">⚠ ${(r.summary.pass_rate * 100).toFixed(1)}%</span>`
                                             : (r.summary ? (r.summary.pass_rate * 100).toFixed(1) + '%' : '-');
+                                        const targetToken = r.summary ? formatNumber(r.summary.total_token) : '-';
+                                        const judgeToken = r.summary ? (r.summary.judge_token ? formatNumber(r.summary.judge_token) : '-') : '-';
                                         return `
                                         <tr ${rowStyle}>
                                             <td class="mono">${escapeHtml(r.id)}</td>
@@ -3601,7 +3877,8 @@
                                             <td>${r.version_id ? `<span class="tag-chip" style="font-size: 11px;">${escapeHtml(state._versionNames?.[r.version_id] || r.version_id)}</span>` : '<span class="text-muted">-</span>'}</td>
                                             <td class="text-muted">${formatRelativeTime(r.created_at)}</td>
                                             <td class="num">${passRateCell}</td>
-                                            <td class="num">${r.summary ? formatNumber(r.summary.total_token) : '-'}</td>
+                                            <td class="num">${targetToken}</td>
+                                            <td class="num">${judgeToken}</td>
                                             <td><button class="btn btn-sm btn-secondary" onclick="navigateTo('run-detail', {id: '${escapeHtml(r.id)}', projectId: '${escapeHtml(projectId)}'})">查看</button></td>
                                         </tr>
                                         `;
@@ -3960,7 +4237,7 @@
                     : formatNumber(s.total_token));
                 const tppVal = !s ? '-' : (allMissing
                     ? `<span style="font-size: 12px; color: var(--ink-4);" title="token 不可得，完成率无法计算">token 不可得</span>`
-                    : s.token_per_pass.toFixed(1));
+                    : s.token_per_pass.toFixed(1) + ' <span style="font-size: 12px; color: var(--ink-4);">个/万token</span>');
                 metrics.innerHTML = `
                     <div class="metric-card">
                         <div class="metric-value num">${s ? (s.pass_rate * 100).toFixed(1) + '%' : '-'}</div>
@@ -4013,7 +4290,7 @@
                                 ? `<span style="font-size: 11px; color: var(--ink-4);" title="响应未配置 token 统计路径，或路径未命中">token 不可得</span>`
                                 : r.token_used}</td>
                             <td>
-                                <button class="btn btn-sm btn-secondary" onclick="showCaseDetail(${i})">查看</button>
+                                <button class="btn btn-sm btn-secondary" onclick="showRunCaseDetail(${i})">查看</button>
                             </td>
                         </tr>
                     `;
@@ -4088,7 +4365,7 @@
             }
         }
 
-        function showCaseDetail(index) {
+        function showRunCaseDetail(index) {
             const run = state.currentRun;
             if (!run || !run.results || !run.results[index]) return;
             const result = run.results[index];
@@ -4148,6 +4425,145 @@
         function closeCaseDetail() {
             const modal = document.getElementById('caseModal');
             if (modal) modal.classList.add('hidden');
+        }
+
+        // U-8: 评测集 tab 点 case 名 → 详情视图（历史 + 聚合 + 趋势）
+        async function showCaseDetail(evalsetId, projectId, caseId) {
+            const overlay = document.createElement('div');
+            overlay.className = 'modal-overlay';
+            overlay.id = 'caseHistoryModal';
+            overlay.innerHTML = `
+                <div class="modal" style="max-width: 1100px;">
+                    <div class="modal-header">
+                        <span class="modal-title">Case 详情</span>
+                        <button class="modal-close" onclick="closeModal('caseHistoryModal')">×</button>
+                    </div>
+                    <div class="modal-body" id="caseHistoryContent" style="min-height: 200px;">
+                        <div style="text-align: center; padding: 24px; color: var(--ink-4);">加载中...</div>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(overlay);
+
+            let data;
+            try {
+                data = await api(`/evalsets/${evalsetId}/cases/${caseId}/history?project_id=${projectId}`);
+            } catch (err) {
+                document.getElementById('caseHistoryContent').innerHTML = `<div style="color: var(--red); padding: 16px;">加载失败：${escapeHtml(err.message || String(err))}</div>`;
+                return;
+            }
+
+            const { history = [], aggregate = {} } = data;
+            const fmtPct = (v) => (v == null || isNaN(v)) ? '-' : (v * 100).toFixed(0) + '%';
+            const fmtNum = (v, d = 2) => (v == null || isNaN(v)) ? '-' : Number(v).toFixed(d);
+            const fmtMs = (v) => (v == null || v === 0) ? '-' : (v / 1000).toFixed(2) + 's';
+            const fmtToken = (v) => (v == null || v === 0) ? '-' : Number(v).toLocaleString();
+
+            const judge = aggregate.judge_summary || null;
+            const aggRows = [
+                ['采样 n', aggregate.n ?? 0],
+                ['通过 c', aggregate.c ?? 0],
+                ['pass rate', fmtPct(aggregate.pass_rate)],
+                ['pass@3', fmtPct(aggregate.pass_at_3)],
+                ['pass^3', fmtPct(aggregate.pass_pow_3)],
+                ['延迟 P50', fmtMs(aggregate.latency_p50)],
+                ['延迟 P95', fmtMs(aggregate.latency_p95)],
+                ['总 token', fmtToken(aggregate.total_token)],
+                ['每万 token 完成率', aggregate.token_per_pass ? (aggregate.token_per_pass).toFixed(1) + ' 个/万token' : '-'],
+            ];
+
+            // 趋势小图：用 SVG 画 pass/fail 时序
+            const w = Math.max(120, history.length * 14);
+            const h = 36;
+            const dots = history.map((hh, i) => {
+                const x = 8 + (history.length === 1 ? w / 2 - 8 : i * ((w - 16) / (history.length - 1)));
+                const color = hh.skipped_reason ? 'var(--ink-4)' : (hh.passed ? 'var(--green)' : 'var(--red)');
+                return `<circle cx="${x}" cy="${h / 2}" r="4" fill="${color}" title="${escapeHtml(hh.run_id)}：${hh.skipped_reason ? '跳过' : (hh.passed ? '通过' : '失败')}"/>`;
+            }).join('');
+
+            // 历史明细表
+            const rowsHtml = history.length === 0
+                ? `<tr><td colspan="9" style="text-align: center; color: var(--ink-4); padding: 16px;">暂无历史 run 记录</td></tr>`
+                : history.map(hh => {
+                    const ts = hh.created_at ? new Date(hh.created_at).toLocaleString('zh-CN', { hour12: false }) : '-';
+                    const status = hh.skipped_reason
+                        ? `<span class="status-badge status-disabled"><span class="status-dot"></span>跳过</span>`
+                        : (hh.passed
+                            ? `<span class="status-badge status-passed"><span class="status-dot"></span>通过</span>`
+                            : `<span class="status-badge status-failed"><span class="status-dot"></span>失败</span>`);
+                    const tok = (hh.token_used || 0) + (hh.judge_token || 0);
+                    const inputShort = (hh.input || '').length > 80 ? (hh.input || '').slice(0, 80) + '…' : (hh.input || '-');
+                    const expectShort = (hh.expected_output || hh.output_requirement || '').length > 80
+                        ? (hh.expected_output || hh.output_requirement || '').slice(0, 80) + '…'
+                        : (hh.expected_output || hh.output_requirement || '-');
+                    const actualShort = (hh.actual_output || '').length > 80 ? (hh.actual_output || '').slice(0, 80) + '…' : (hh.actual_output || '-');
+                    const typeCell = hh.eval_type === 'llm_judge' && judge
+                        ? `<span class="tag tag-llm_judge" title="${escapeHtml(judge.prompt_summary)}">${escapeHtml(hh.eval_type)} · ${escapeHtml(judge.model || '?')}</span>`
+                        : `<span class="tag tag-${hh.eval_type}">${escapeHtml(hh.eval_type)}</span>`;
+                    return `
+                        <tr>
+                            <td style="font-family: monospace; font-size: 11px;" title="${escapeHtml(hh.run_id)}">${escapeHtml((hh.run_id || '').slice(0, 12))}${hh.sample_index ? '#' + hh.sample_index : ''}</td>
+                            <td>${status}</td>
+                            <td style="font-size: 11px; color: var(--ink-4);">${ts}</td>
+                            <td style="text-align: right;">${fmtMs(hh.latency_ms)}</td>
+                            <td style="text-align: right;">${fmtToken(tok)}${hh.judge_token ? `<div style="font-size: 10px; color: var(--ink-4);" title="target / judge">t=${hh.token_used} j=${hh.judge_token}</div>` : ''}</td>
+                            <td>${typeCell}</td>
+                            <td style="font-family: monospace; font-size: 11px;" title="${escapeHtml(hh.input || '')}">${escapeHtml(inputShort)}</td>
+                            <td style="font-family: monospace; font-size: 11px;" title="${escapeHtml(hh.expected_output || hh.output_requirement || '')}">${escapeHtml(expectShort)}</td>
+                            <td style="font-family: monospace; font-size: 11px;" title="${escapeHtml(hh.actual_output || '')}">${escapeHtml(actualShort)}</td>
+                        </tr>
+                    `;
+                }).join('');
+
+            document.getElementById('caseHistoryContent').innerHTML = `
+                ${history.length === 0 ? `<div style="text-align: center; padding: 24px; color: var(--ink-4);">该 case 在已完成 run 中暂无记录</div>` : ''}
+                ${aggregate.n > 0 ? `
+                <div class="metrics-grid" style="grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 16px;">
+                    ${aggRows.map(([k, v]) => `
+                        <div class="metric-card">
+                            <div class="metric-label">${escapeHtml(k)}</div>
+                            <div class="metric-value">${v}</div>
+                        </div>
+                    `).join('')}
+                </div>
+                <div style="margin-bottom: 16px;">
+                    <div style="font-size: 12px; color: var(--ink-3); margin-bottom: 4px;">单 case 趋势（最近 ${history.length} 次）</div>
+                    <svg width="${w}" height="${h}" style="display: block; overflow: visible;">
+                        ${dots}
+                    </svg>
+                    <div style="font-size: 10px; color: var(--ink-4); margin-top: 2px;">
+                        <span style="color: var(--green);">●</span> 通过
+                        <span style="color: var(--red); margin-left: 12px;">●</span> 失败
+                        <span style="color: var(--ink-4); margin-left: 12px;">●</span> 跳过
+                        ${judge ? `<span style="margin-left: 12px;">Judge 摘要：${escapeHtml(judge.model || '?')} · ${escapeHtml(judge.prompt_summary || '')}</span>` : ''}
+                    </div>
+                </div>
+                ` : ''}
+                <div style="overflow-x: auto;">
+                    <table class="table" style="font-size: 12px;">
+                        <thead>
+                            <tr>
+                                <th>run</th>
+                                <th>状态</th>
+                                <th>时间</th>
+                                <th style="text-align: right;">耗时</th>
+                                <th style="text-align: right;">token</th>
+                                <th>Type</th>
+                                <th>Input</th>
+                                <th>Expect</th>
+                                <th>Actual</th>
+                            </tr>
+                        </thead>
+                        <tbody>${rowsHtml}</tbody>
+                    </table>
+                </div>
+                ${judge && (history.some(h => h.eval_type === 'llm_judge') || history.length === 0) ? `
+                    <div style="margin-top: 12px; font-size: 11px; color: var(--ink-4);">
+                        Judge 配置摘要：${escapeHtml(judge.model || '?')} · ${escapeHtml(judge.api_type)} · 提示词预览：${escapeHtml(judge.prompt_summary || '（空）')}
+                        <span title="run 不快照 Judge 配置，历史 run 可能与当前配置不一致">⚠ 历史 run 实际 Judge 可能与当前不一致</span>
+                    </div>
+                ` : ''}
+            `;
         }
 
         // ==================== 模态框 ====================
@@ -5100,25 +5516,7 @@
 
         // T1-3: Judge API 模式切换
         function toggleJudgeApiMode() {
-            const mode = document.getElementById('judgeApiType')?.value;
-            if (!mode) return;
-            const showCustom = mode === 'custom';
-            const setDisplay = (id, show) => {
-                const el = document.getElementById(id);
-                if (el) el.style.display = show ? '' : 'none';
-            };
-            setDisplay('judgeRequestTemplateGroup', showCustom);
-            setDisplay('judgeAuthGroup', showCustom);
-            setDisplay('judgeResponseParsingGroup', showCustom);
-            const modelRequired = document.getElementById('judgeModelRequired');
-            if (modelRequired) modelRequired.style.display = showCustom ? 'none' : '';
-            // REQ-11: 统一描述文案
-            const descEl = document.getElementById('judgeApiModeDesc');
-            if (descEl) {
-                descEl.textContent = showCustom
-                    ? '任意 HTTP JSON 接口。需请求模板；不注入 model/messages，请求体完全由模板决定。'
-                    : '标准模型接口（OpenAI 风格）。需 base_url + model；api_key 可留空（无认证头）。';
-            }
+            // U-3: 内联 Judge 字段已移除，此函数保留为空壳兼容旧调用
         }
 
         // REQ-16: 全局 Judge 配置下拉选择
@@ -5150,9 +5548,9 @@
             if (summaryEl) {
                 if (selectedId) {
                     const name = sel.options[sel.selectedIndex]?.text || '';
-                    summaryEl.textContent = `已引用全局配置「${name}」，运行时使用该配置（覆盖下方内联字段）`;
+                    summaryEl.textContent = `已引用全局配置「${name}」，运行时使用该配置`;
                 } else {
-                    summaryEl.textContent = '使用下方内联配置';
+                    summaryEl.innerHTML = '⚠ 未选择 Judge 配置。请<a href="javascript:void(0)" onclick="showJudgeConfigEditorModal(null)">新建</a>或从配置管理页选择';
                 }
             }
             markConfigDirtyIfChanged();
@@ -5161,7 +5559,7 @@
         function editSelectedJudgeConfig() {
             const sel = document.getElementById('judgeConfigIdSelect');
             if (!sel?.value) return;
-            navigateTo('judge-configs', { editId: sel.value });
+            showJudgeConfigEditorModal(sel.value);
         }
 
         // T2-3/REQ-15: 加载配置模板列表到下拉菜单
@@ -5213,12 +5611,17 @@
         // REQ-17: 保存模板弹窗（名称输入 + 同名覆盖确认）
         function showSaveTemplateModal(projectId) {
             document.getElementById('tplDropdownMenu').style.display = 'none';
-            const modal = document.getElementById('modalOverlay');
-            const modalContent = document.getElementById('modalContent');
-            modalContent.innerHTML = `
+            const modalId = 'saveTemplateModal';
+            const existing = document.getElementById(modalId);
+            if (existing) existing.remove();
+            const modal = document.createElement('div');
+            modal.className = 'modal-overlay';
+            modal.id = modalId;
+            modal.innerHTML = `
+                <div class="modal">
                 <div class="modal-header">
                     <span class="modal-title">保存为配置模板</span>
-                    <button class="modal-close" onclick="closeModal('modalOverlay')">×</button>
+                    <button class="modal-close" onclick="closeModal('${modalId}')">×</button>
                 </div>
                 <div style="padding: 16px;">
                     <div class="form-group">
@@ -5231,12 +5634,13 @@
                         api_key 等敏感字段也会保存（便于跨项目引用，加载时提示手动补 key）。
                     </div>
                     <div style="display: flex; gap: 8px; justify-content: flex-end;">
-                        <button class="btn btn-secondary" onclick="closeModal('modalOverlay')">取消</button>
+                        <button class="btn btn-secondary" onclick="closeModal('${modalId}')">取消</button>
                         <button class="btn btn-primary" id="tplSaveBtn" onclick="confirmSaveTemplate('${projectId}')">保存</button>
                     </div>
                 </div>
+                </div>
             `;
-            modal.style.display = 'flex';
+            document.body.appendChild(modal);
             setTimeout(() => document.getElementById('tplNameInput')?.focus(), 50);
         }
 
@@ -5271,7 +5675,7 @@
                     throw new Error(err?.detail?.error?.message || err?.detail || `保存失败 (${res.status})`);
                 }
                 showToast('模板已保存');
-                closeModal('modalOverlay');
+                closeModal('saveTemplateModal');
                 await refreshTargetTplList();
             } catch (e) {
                 showToast(e.message, 'error');
@@ -5320,6 +5724,9 @@
                 await api(`/config-templates/${encodeURIComponent(tplId)}`, { method: 'DELETE' });
                 showToast('模板已删除');
                 await refreshTargetTplList();
+                // U-2: 若在配置管理页 templates tab，刷新表格
+                const cfgContent = document.getElementById('cfgMgmtContent');
+                if (cfgContent) await renderTargetTemplatesTab(cfgContent);
             } catch (e) {
                 showToast(e.message, 'error');
             }

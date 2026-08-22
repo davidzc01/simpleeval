@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
-from .models import Project, EvalSet, CaseResult, EvalSummary, EvalRun, CaseFilter, JudgeConfig
+from .models import Project, EvalSet, CaseResult, EvalSummary, EvalRun, CaseFilter, JudgeConfig, EvalCheck
 from .eval_types import run_rule_based
 from .judge import call_target, judge_with_llm, APIError, NetworkError, ResponseFormatError
 from .storage import async_save_run
@@ -196,6 +196,7 @@ async def _evaluate_case(
 
     T1-4: 收集 judge_token（llm_judge case 才有）
     T1-5: 运行 checks（多字段验证），case 通过 = 主验证通过 AND 所有 checks 通过
+    U-10: 统一走 case.get_validations()（旧数据自动由旧字段合成，零迁移）
     actual_output 会被修正（如 judge 不可用时标 [SKIPPED]）
     """
     passed = False
@@ -204,45 +205,84 @@ async def _evaluate_case(
     judge_token = 0
     check_results: list[dict] = []
 
-    if case.eval_type == "llm_judge":
-        if not judge_available:
-            skipped_reason = judge_error
-            actual = f"[SKIPPED] {skipped_reason}"
-            token = 0
-        else:
-            requirement = case.output_requirement or case.expected_output or ""
-            # REQ-16: 通过 _resolve_effective_judge_config 取全局或内联配置
-            jc = _resolve_effective_judge_config(project)
-            score, judge_token = await _judge_with_llm_with_hard_timeout(
-                base_url=jc.base_url,
-                api_key=jc.api_key,
-                model=jc.model or "",
-                requirement=requirement,
-                output=actual,
-                judge_prompt=jc.prompt_template,
-                api_type=jc.api_type,
-                request_template=jc.request_template,
-                auth=jc.auth,
-                response_parsing=jc.response_parsing,
-            )
-            passed = score >= JUDGE_THRESHOLD
-    else:
-        passed = run_rule_based(
-            case.eval_type, actual, case.expected_output, case.eval_params or {}
-        )
-        score = 1.0 if passed else 0.0
+    # U-10: 统一从 validations 取验证列表（旧 case 自动合成）
+    # explicit=True 表示用户新结构写入；False 表示旧数据合成（保留旧 check_results 行为）
+    # 注意：必须与 get_validations() 的 `if self.validations:` 保持一致（truthy 检查），
+    # 否则 validations=[] 时 get_validations() 走合成、此处却判 True，主验证会被错误加入 check_results
+    explicit_validations = bool(getattr(case, "validations", None))
+    validations = case.get_validations() if hasattr(case, "get_validations") else None
+    if not validations:
+        # 兜底：极旧 case 无 get_validations（理论上不存在，保留以防 model 未升级）
+        validations = [EvalCheck(
+            name="主输出验证", field="", eval_type=case.eval_type,
+            expected=case.expected_output, output_requirement=case.output_requirement,
+            eval_params=case.eval_params or {},
+        )]
+        if getattr(case, "checks", None):
+            validations.extend(case.checks)
 
-    # T1-5: 多字段验证（checks）
-    if case.checks and not skipped_reason:
-        all_checks_passed = True
-        for chk in case.checks:
-            chk_value = _extract_check_field(actual, chk.field)
+    # 主验证（第一条）决定是否 skip（旧 case.eval_type == llm_judge + judge 不可用 → skip）
+    main_v = validations[0] if validations else None
+    if main_v and main_v.eval_type == "llm_judge" and not judge_available:
+        skipped_reason = judge_error
+        actual = f"[SKIPPED] {skipped_reason}"
+        token = 0
+        # 旧逻辑：主验证跳过 → 整体跳过；旧数据不写 check_results，新结构写一条便于 UI 展示
+        if explicit_validations:
+            check_results.append({"name": main_v.name or "主输出验证", "passed": False, "score": 0.0})
+        return False, 0.0, skipped_reason, 0, check_results, actual
+
+    # 主验证
+    if main_v:
+        v_value = _extract_check_field(actual, main_v.field) if main_v.field else actual
+        if main_v.eval_type == "llm_judge":
+            if not judge_available:
+                # 主验证 llm_judge 但 judge 不可用（理论上前面已 skip，防御性保留）
+                v_passed = False
+                v_score = 0.0
+            else:
+                requirement = main_v.output_requirement or main_v.expected or ""
+                jc = _resolve_effective_judge_config(project)
+                v_score, v_judge_token = await _judge_with_llm_with_hard_timeout(
+                    base_url=jc.base_url,
+                    api_key=jc.api_key,
+                    model=jc.model or "",
+                    requirement=requirement,
+                    output=v_value,
+                    judge_prompt=jc.prompt_template,
+                    api_type=jc.api_type,
+                    request_template=jc.request_template,
+                    auth=jc.auth,
+                    response_parsing=jc.response_parsing,
+                )
+                judge_token += v_judge_token
+                v_passed = v_score >= JUDGE_THRESHOLD
+        else:
+            v_passed = run_rule_based(
+                main_v.eval_type, v_value, main_v.expected, main_v.eval_params or {}
+            )
+            v_score = 1.0 if v_passed else 0.0
+        # 旧数据：主验证不入 check_results（保留原行为，零迁移）
+        # 新结构：主验证入 check_results
+        if explicit_validations:
+            check_results.append({
+                "name": main_v.name or "主输出验证",
+                "passed": v_passed, "score": v_score,
+            })
+        passed = v_passed
+        score = v_score
+
+    # T1-5/U-10: 多字段验证（首条之后）
+    if len(validations) > 1 and not skipped_reason:
+        all_sub_passed = True
+        for i, chk in enumerate(validations[1:], start=1):
+            chk_value = _extract_check_field(actual, chk.field) if chk.field else actual
             if chk.eval_type == "llm_judge":
                 if not judge_available:
                     chk_passed = False
                     chk_score = 0.0
                 else:
-                    chk_requirement = chk.expected or ""
+                    chk_requirement = chk.output_requirement or chk.expected or ""
                     jc = _resolve_effective_judge_config(project)
                     chk_score, chk_judge_token = await _judge_with_llm_with_hard_timeout(
                         base_url=jc.base_url,
@@ -263,10 +303,13 @@ async def _evaluate_case(
                     chk.eval_type, chk_value, chk.expected, chk.eval_params or {}
                 )
                 chk_score = 1.0 if chk_passed else 0.0
-            check_results.append({"name": chk.name, "passed": chk_passed, "score": chk_score})
+            check_results.append({
+                "name": chk.name or chk.field or f"验证-{i}",
+                "passed": chk_passed, "score": chk_score,
+            })
             if not chk_passed:
-                all_checks_passed = False
-        passed = passed and all_checks_passed
+                all_sub_passed = False
+        passed = passed and all_sub_passed
 
     return passed, score, skipped_reason, judge_token, check_results, actual
 

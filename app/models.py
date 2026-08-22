@@ -166,17 +166,20 @@ class Project(BaseModel):
 
 
 class EvalCheck(BaseModel):
-    """单条 case 的多字段验证项（T1-5: REQ-3 单返回多字段验证）
+    """单条 case 的多字段验证项（T1-5: REQ-3 单返回多字段验证；U-10: 对称化）
 
     - field: 点路径（如 evidence 或 a.b），作用于解包后的对象；空 = 用 actual_output 原文
     - eval_type: 与 EvalCase.eval_type 同类型集合
-    - expected: exact/contains/length 用；llm_judge 用 output_requirement 语义
+    - expected: exact/contains/length 用
+    - output_requirement: llm_judge 用的评判标准（U-10 新增，与 expected 平级）
     - eval_params: 如 contains 的 substring、length 的 min/max
+    - name: 可选，未命名时按 field 或序号兜底（U-10 放宽）
     """
-    name: str
+    name: str = ""
     field: str = ""
     eval_type: Literal["exact", "contains", "not_contains", "length", "llm_judge"]
     expected: Optional[str] = None
+    output_requirement: Optional[str] = None
     eval_params: Optional[dict] = Field(default_factory=dict)
 
 
@@ -187,7 +190,9 @@ class EvalCase(BaseModel):
     input: str
     expected_output: Optional[str] = None       # exact / contains 用
     output_requirement: Optional[str] = None    # llm_judge 用的评判标准
-    eval_type: Literal["exact", "contains", "not_contains", "length", "llm_judge"]
+    # U-10: 当 validations 显式提供时，eval_type/expected_output/output_requirement 仅作旧字段兼容
+    # 默认 "exact" 使 validations-only case 可直接构造（不强制填旧字段）
+    eval_type: Literal["exact", "contains", "not_contains", "length", "llm_judge"] = "exact"
     eval_params: Optional[dict] = Field(default_factory=dict)  # 如 contains 的 substring、length 的 min/max
     task_shape: Optional[str] = None            # 覆盖项目默认值
     enabled: bool = True
@@ -198,6 +203,33 @@ class EvalCase(BaseModel):
     tags: list[str] = Field(default_factory=list)
     # T1-5: 多字段验证项，case 通过 = 主验证通过 AND 所有 checks 通过
     checks: Optional[list[EvalCheck]] = None
+    # U-10: 验证组（input + variables → 输入组；validations → 验证组）
+    # validations 非空时统一走新结构；为空时由旧字段（主验证 + checks）合成，零迁移
+    # 每项 EvalCheck：field 空/="output" 表示主输出验证；首条视为主验证
+    validations: Optional[list[EvalCheck]] = None
+
+    def get_validations(self) -> list[EvalCheck]:
+        """U-10: 统一获取验证列表。
+
+        - validations 非空：直接返回（新结构）
+        - validations 为空（旧数据）：由旧字段合成 [主验证] + checks
+          主验证 = EvalCheck(field="", eval_type=case.eval_type,
+                              expected=expected_output, output_requirement=output_requirement,
+                              eval_params=eval_params)
+        """
+        if self.validations:
+            return list(self.validations)
+        synthesized = [EvalCheck(
+            name="主输出验证",
+            field="",
+            eval_type=self.eval_type,
+            expected=self.expected_output,
+            output_requirement=self.output_requirement,
+            eval_params=self.eval_params or {},
+        )]
+        if self.checks:
+            synthesized.extend(self.checks)
+        return synthesized
 
 
 class EvalSet(BaseModel):

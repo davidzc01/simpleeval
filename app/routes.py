@@ -10,7 +10,7 @@ from typing import Optional
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Form
 
 from .models import (
-    Project, EvalSet, EvalRun, EvalCase, JudgeConfig,
+    Project, EvalSet, EvalRun, EvalCase, JudgeConfig, EvalCheck,
     CreateProjectRequest, CreateEvalSetRequest, RunEvalRequest,
     TestTargetRequest, TestMappingRequest, TestParsingRequest, TestJudgeRequest,
     CaseResult, ErrorResponse, CreateVersionRequest, ProjectVersion,
@@ -533,6 +533,22 @@ async def import_evalset(
                 kwargs["task_shape"] = task_shape
             if variables is not None:
                 kwargs["variables"] = variables
+            # U-10: validations 可选（JSON 字符串数组）；为空时由旧字段自动合成
+            vld_raw = row.get("validations")
+            if vld_raw is not None and vld_raw != "":
+                if isinstance(vld_raw, str):
+                    try:
+                        vld_list = json.loads(vld_raw)
+                    except json.JSONDecodeError:
+                        errors.append({"row": i + 1, "error": f"validations 不是合法 JSON: {vld_raw[:50]}"})
+                        continue
+                else:
+                    vld_list = vld_raw
+                try:
+                    kwargs["validations"] = [EvalCheck(**v) if isinstance(v, dict) else v for v in vld_list]
+                except Exception as ve:
+                    errors.append({"row": i + 1, "error": f"validations 解析失败: {ve}"})
+                    continue
             new_cases.append(EvalCase(**kwargs))
         except Exception as e:
             errors.append({"row": i + 1, "error": str(e)})
@@ -587,7 +603,7 @@ async def export_evalset(evalset_id: str, project_id: str):
     # 生成 CSV
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(["id", "case_name", "input", "expected_output", "output_requirement", "eval_type", "eval_params", "enabled", "tags"])
+    writer.writerow(["id", "case_name", "input", "expected_output", "output_requirement", "eval_type", "eval_params", "enabled", "tags", "validations"])
 
     for case in evalset.cases:
         writer.writerow([
@@ -600,6 +616,7 @@ async def export_evalset(evalset_id: str, project_id: str):
             json.dumps(case.eval_params) if case.eval_params else "{}",
             "true" if case.enabled else "false",
             json.dumps(case.tags, ensure_ascii=False) if case.tags else "[]",
+            json.dumps([v.model_dump() for v in case.validations], ensure_ascii=False) if case.validations is not None else "",
         ])
 
     # 添加 UTF-8 BOM 以支持 Excel
@@ -738,6 +755,114 @@ async def get_evalset_sampling(evalset_id: str, project_id: str):
         evalset_not_found(evalset_id)
     from .sampling import compute_evalset_sampling
     return compute_evalset_sampling(project_id, evalset_id)
+
+
+@router.get("/evalsets/{evalset_id}/cases/{case_id}/history")
+async def get_case_history(evalset_id: str, case_id: str, project_id: str):
+    """U-8: 单 case 历史记录 + 聚合指标
+
+    返回该 case 在全部 completed run 中的记录及聚合统计。
+    llm_judge case 的 judge 模型 + 提示词摘要来自当前项目 Judge 配置（run 不快照，
+    历史 run 可能与当前不一致，UI 已加注脚）。
+    """
+    evalset = get_evalset(evalset_id, project_id)
+    if not evalset:
+        evalset_not_found(evalset_id)
+    # 找到 case 定义
+    case = None
+    for c in evalset.cases:
+        if c.id == case_id or c.case_name == case_id:
+            case = c
+            break
+    if not case:
+        raise HTTPException(status_code=404, detail={
+            "error": {"code": "case_not_found", "message": f"case {case_id} 不存在"}
+        })
+    # 解析当前项目 Judge 配置摘要（llm_judge 时附在每行）
+    project = get_project(project_id)
+    judge_summary = None
+    if project:
+        jc = None
+        if project.judge_config_id:
+            # get_judge_config 返回 dict（masked），其 judge_config 子字段是真实配置
+            jc_item = get_judge_config(project.judge_config_id)
+            if jc_item:
+                try:
+                    jc = JudgeConfig(**jc_item.get("judge_config", jc_item))
+                except Exception:
+                    jc = None
+        if not jc:
+            jc = project.judge_config
+        if jc:
+            prompt = (jc.prompt_template or "").strip()
+            judge_summary = {
+                "model": jc.model or "",
+                "api_type": jc.api_type,
+                "prompt_summary": (prompt[:80] + ("…" if len(prompt) > 80 else "")) or "",
+            }
+    # 查全部 completed run
+    all_runs = list_runs(project_id)
+    completed_runs = [r for r in all_runs if r.status == "completed" and r.evalset_id == evalset_id]
+    completed_runs.sort(key=lambda r: r.created_at or "")
+
+    # 构建历史记录
+    history = []
+    for run in completed_runs:
+        result = None
+        for r in run.results:
+            if (r.case_id and r.case_id == case.id) or r.case_name == case.case_name:
+                result = r
+                break
+        if not result:
+            continue
+        history.append({
+            "run_id": run.id,
+            "passed": result.passed,
+            "skipped_reason": result.skipped_reason,
+            "latency_ms": result.latency_ms,
+            "token_used": result.token_used,
+            "judge_token": result.judge_token,
+            "eval_type": case.eval_type,
+            "input": case.input,
+            "expected_output": case.expected_output,
+            "output_requirement": case.output_requirement,
+            "actual_output": result.actual_output,
+            "created_at": run.created_at,
+            "sample_index": result.sample_index,
+            "version_id": run.version_id,
+            "check_results": result.check_results or [],
+        })
+
+    # 聚合
+    non_skipped = [h for h in history if not h["skipped_reason"]]
+    n = len(non_skipped)
+    c = sum(1 for h in non_skipped if h["passed"])
+    pass_rate = c / n if n > 0 else 0.0
+    # pass@3: 最近 3 次全过
+    recent = [h["passed"] for h in non_skipped[-3:]]
+    pass_at_3 = 1.0 if (len(recent) >= 3 and all(recent)) else 0.0
+    # pass^3 = pass_rate^3（概率估算）
+    pass_pow_3 = pass_rate ** 3 if n > 0 else 0.0
+    # 延迟
+    latencies = sorted([h["latency_ms"] for h in non_skipped if h["latency_ms"] > 0])
+    latency_p50 = latencies[len(latencies) // 2] if latencies else 0.0
+    latency_p95 = latencies[int(len(latencies) * 0.95)] if latencies else 0.0
+    total_token = sum(h["token_used"] + h["judge_token"] for h in non_skipped)
+    token_per_pass = (c / (total_token / 10000)) if total_token > 0 and c > 0 else 0.0
+
+    aggregate = {
+        "n": n,
+        "c": c,
+        "pass_rate": pass_rate,
+        "pass_at_3": pass_at_3,
+        "pass_pow_3": pass_pow_3,
+        "latency_p50": latency_p50,
+        "latency_p95": latency_p95,
+        "total_token": total_token,
+        "token_per_pass": token_per_pass,
+        "judge_summary": judge_summary,
+    }
+    return {"history": history, "aggregate": aggregate}
 
 
 @router.get("/runs/{run_id}/export")
