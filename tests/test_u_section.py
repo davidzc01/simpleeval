@@ -117,10 +117,10 @@ class TestCaseHistoryEndpoint:
         assert agg["n"] == 3
         assert agg["c"] == 2
         assert abs(agg["pass_rate"] - 2 / 3) < 1e-6
-        # pass@3：最近 3 次非全过 → 0
-        assert agg["pass_at_3"] == 0.0
-        # pass^3 = (2/3)^3
-        assert abs(agg["pass_pow_3"] - (2 / 3) ** 3) < 1e-6
+        # pass@3 = 1 - C(n-c,3)/C(n,3)（无放回，至少一次通过）；n=3,c=2 → 1.0
+        assert agg["pass_at_3"] == 1.0
+        # pass^3 = C(c,3)/C(n,3)（无放回，全部通过）；n=3,c=2 → 0.0
+        assert agg["pass_pow_3"] == 0.0
         # 延迟 P50/P95：[100,200,300] P50=200 P95=300
         assert agg["latency_p50"] == 200
         assert agg["latency_p95"] == 300
@@ -130,7 +130,7 @@ class TestCaseHistoryEndpoint:
         assert abs(agg["token_per_pass"] - 2 / (30 / 10000)) < 1e-6
 
     def test_history_pass_at_3_all_pass(self, client, monkeypatch):
-        """最近 3 次全过 → pass@3 = 1.0"""
+        """n=3,c=3 → pass@3 = 1.0 且 pass^3 = 1.0"""
         pid, eid = _setup_project_evalset(client, case_id="c1", case_name="A")
         runs = [
             _mk_run(pid, eid, [CaseResult(case_name="A", case_id="c1", actual_output="ok", passed=True)], created_at="2026-01-01T00:00:00Z"),

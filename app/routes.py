@@ -14,6 +14,7 @@ from .models import (
     CreateProjectRequest, CreateEvalSetRequest, RunEvalRequest,
     TestTargetRequest, TestMappingRequest, TestParsingRequest, TestJudgeRequest,
     CaseResult, ErrorResponse, CreateVersionRequest, ProjectVersion,
+    CreateTagRequest, RenameTagRequest,
 )
 from .storage import (
     list_projects, get_project, save_project, delete_project,
@@ -23,6 +24,7 @@ from .storage import (
     list_config_templates, get_config_template, save_config_template, delete_config_template,
     list_judge_configs, get_judge_config, get_judge_config_with_secrets, save_judge_config,
     update_judge_config, delete_judge_config, find_judge_config_by_name,
+    list_tags, save_tag, rename_tag, delete_tag,
 )
 from .runner import execute_run, _utc_now, _generate_run_id, _apply_case_filter
 from .judge import call_target, judge_with_llm, NetworkError, APIError, ResponseFormatError
@@ -681,6 +683,8 @@ async def create_run(req: RunEvalRequest, background_tasks: BackgroundTasks):
         status="queued",
         created_at=run_created_at,
         version_id=version_id,
+        # V-3: 带入标签筛选信息供历史列表展示
+        filter_tags=req.case_filter.tags if req.case_filter and req.case_filter.tags else [],
     )
     save_run(run)
 
@@ -720,6 +724,9 @@ async def list_project_runs(project_id: str):
             "status": r.status,
             "created_at": r.created_at,
             "version_id": r.version_id,
+            # V-3: 标签筛选 + case 数
+            "filter_tags": getattr(r, "filter_tags", None) or [],
+            "case_count": len(r.results) if r.results else 0,
             "summary": r.summary.model_dump() if r.summary else None,
         })
 
@@ -838,11 +845,12 @@ async def get_case_history(evalset_id: str, case_id: str, project_id: str):
     n = len(non_skipped)
     c = sum(1 for h in non_skipped if h["passed"])
     pass_rate = c / n if n > 0 else 0.0
-    # pass@3: 最近 3 次全过
-    recent = [h["passed"] for h in non_skipped[-3:]]
-    pass_at_3 = 1.0 if (len(recent) >= 3 and all(recent)) else 0.0
-    # pass^3 = pass_rate^3（概率估算）
-    pass_pow_3 = pass_rate ** 3 if n > 0 else 0.0
+    # pass@3 / pass^3：与 sampling.py 同一套无放回公式，保证全站口径一致
+    from .sampling import pass_at_k_case, pass_pow_k_case
+    _at3 = pass_at_k_case(n, c, 3)
+    _pow3 = pass_pow_k_case(n, c, 3)
+    pass_at_3 = _at3 if _at3 is not None else 0.0
+    pass_pow_3 = _pow3 if _pow3 is not None else 0.0
     # 延迟
     latencies = sorted([h["latency_ms"] for h in non_skipped if h["latency_ms"] > 0])
     latency_p50 = latencies[len(latencies) // 2] if latencies else 0.0
@@ -1224,3 +1232,62 @@ def _validate_judge_config(jc: JudgeConfig) -> None:
                 "error": {"code": "invalid_config",
                           "message": "custom 模式下 judge response_parsing 必填"}
             })
+
+
+# ============== V-1: 全局标签管理 ==============
+
+@router.get("/tags")
+async def get_tags():
+    """列出全部标签（含引用统计：case 数 / project 数 / project 列表）"""
+    return {"tags": list_tags()}
+
+
+@router.post("/tags", status_code=201)
+async def create_tag(request: CreateTagRequest):
+    """新建标签（重名 409）"""
+    name = request.name.strip()
+    if not name:
+        raise HTTPException(status_code=422, detail={
+            "error": {"code": "invalid_tag", "message": "标签名不能为空"}
+        })
+    # 重名检查
+    existing = {t["name"] for t in list_tags()}
+    if name in existing:
+        raise HTTPException(status_code=409, detail={
+            "error": {"code": "tag_already_exists", "message": f"标签 '{name}' 已存在"}
+        })
+    tag = save_tag(name)
+    return tag
+
+
+@router.put("/tags/{tag_name}")
+async def rename_tag_route(tag_name: str, request: RenameTagRequest):
+    """改名：同步更新所有 evalset case 的标签字符串"""
+    new_name = request.new_name.strip()
+    if not new_name:
+        raise HTTPException(status_code=422, detail={
+            "error": {"code": "invalid_tag", "message": "新标签名不能为空"}
+        })
+    # 重名检查（新名与已有其他标签同名）
+    existing = {t["name"] for t in list_tags()}
+    if new_name in existing and new_name != tag_name:
+        raise HTTPException(status_code=409, detail={
+            "error": {"code": "tag_already_exists", "message": f"标签 '{new_name}' 已存在"}
+        })
+    result = rename_tag(tag_name, new_name)
+    if not result:
+        raise HTTPException(status_code=404, detail={
+            "error": {"code": "tag_not_found", "message": f"标签 '{tag_name}' 不存在"}
+        })
+    return result
+
+
+@router.delete("/tags/{tag_name}")
+async def delete_tag_route(tag_name: str):
+    """删除：从所有 evalset case 移除该标签；返回受影响的 project 列表"""
+    result = delete_tag(tag_name)
+    if not result:
+        raise HTTPException(status_code=404, detail={
+            "error": {"code": "tag_not_found", "message": f"标签 '{tag_name}' 不存在"}
+        })
+    return result
