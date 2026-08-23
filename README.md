@@ -40,7 +40,7 @@ python3 -m uvicorn app.main:app --port 8000
 
 ## 它长什么样
 
-评测集管理：五类评测类型、标签筛选、逐条采样数据。
+评测集：复合筛选（关键字/类型/标签/状态）、五类评测类型、逐条采样数据。
 
 ![评测集管理](docs/screenshots/evalset-tab.png)
 
@@ -48,11 +48,9 @@ python3 -m uvicorn app.main:app --port 8000
 
 ![评测结果](docs/screenshots/run-detail.png)
 
-项目总览：趋势与采样稳定性——pass@k 与 pass^k 的夹缝宽度，就是这个项目的"不确定性"。
+项目总览：变化优先——同版本 delta、版本分段趋势、稳定性短板直达。
 
 ![项目总览](docs/screenshots/overview.png)
-
-![采样稳定性](docs/screenshots/sampling-card.png)
 
 ---
 
