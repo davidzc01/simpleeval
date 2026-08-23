@@ -313,7 +313,7 @@ class TestJudgeDualMode:
             mock_resp.raise_for_status = MagicMock()
             mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_resp)
 
-            score, token = await judge_with_llm(
+            score, token, _raw = await judge_with_llm(
                 base_url="https://api.example.com/v1",
                 api_key="key", model="gpt-4o-mini",
                 requirement="测试", output="输出",
@@ -335,7 +335,7 @@ class TestJudgeDualMode:
             mock_resp.raise_for_status = MagicMock()
             mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_resp)
 
-            score, token = await judge_with_llm(
+            score, token, _raw = await judge_with_llm(
                 base_url="https://api.example.com/api",
                 api_key="key", model="",
                 requirement="测试", output="输出",
@@ -412,7 +412,7 @@ class TestTestJudgeDualMode:
     def test_test_judge_custom_mode(self, client):
         """test/judge 支持 custom 模式"""
         with patch("app.routes.judge_with_llm", new_callable=AsyncMock) as mock_judge:
-            mock_judge.return_value = (0.7, 12)
+            mock_judge.return_value = (0.7, 12, "raw judge output")
             resp = client.post("/api/test/judge", json={
                 "base_url": "https://api.example.com/api",
                 "api_key": "key",
@@ -590,7 +590,7 @@ class TestChecksEvaluation:
         )
         passed, score, skipped, jt, checks, _ = result
         assert passed is True
-        assert len(checks) == 2
+        assert len(checks) == 3  # 主验证 + 2 checks
         assert all(c["passed"] for c in checks)
 
     def test_case_fails_when_check_fails(self):
@@ -618,8 +618,10 @@ class TestChecksEvaluation:
         )
         passed, score, skipped, jt, checks, _ = result
         assert passed is False
-        assert checks[0]["passed"] is True
-        assert checks[1]["passed"] is False
+        assert len(checks) == 3  # 主验证 + 2 checks
+        assert checks[0]["passed"] is True  # 主验证通过
+        assert checks[1]["passed"] is True  # check1 通过
+        assert checks[2]["passed"] is False  # check2 失败
 
     def test_case_without_checks_behaves_normal(self):
         """无 checks → 行为不变"""
@@ -640,7 +642,7 @@ class TestChecksEvaluation:
         )
         passed, score, skipped, jt, checks, _ = result
         assert passed is True
-        assert checks == []
+        assert len(checks) == 1  # 仅主验证
 
     def test_check_results_in_case_result(self):
         """CaseResult 含 check_results"""
@@ -678,13 +680,13 @@ class TestChecksEvaluation:
                 EvalCheck(name="j3", field="summary", eval_type="llm_judge"),
             ]
         )
-        actual = json.dumps({"result": "ok", "evidence": "ok", "summary": "ok"})
+        actual = json.dumps({"result": "ok", "evidence": "ok", "summary": "ok", "msg": "x marks the spot"})
 
         # mock judge_with_llm：3 次调用分别返回不同的 token（11, 22, 33），合计应 66
         call_count = [0]
         async def fake_judge(**kwargs):
             call_count[0] += 1
-            return (0.9, [11, 22, 33][call_count[0] - 1])
+            return (0.9, [11, 22, 33][call_count[0] - 1], "judge raw response")
 
         import asyncio
         with patch("app.runner.judge_with_llm", new=fake_judge):

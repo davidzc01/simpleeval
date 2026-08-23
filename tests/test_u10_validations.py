@@ -121,20 +121,21 @@ class TestEvaluateCaseValidations:
         return asyncio.new_event_loop().run_until_complete(_do())
 
     def test_legacy_case_zero_migration_no_checks(self):
-        """旧 case（无 validations、无 checks）→ check_results 仍为空（零迁移）"""
+        """旧 case（无 validations、无 checks）→ check_results 含主验证（U-10 统一展示）"""
         project = _mk_project()
         case = EvalCase(id="c1", case_name="A", input="x", eval_type="exact", expected_output="ok")
         passed, score, skipped, jt, checks, _ = self._run(project, case, "ok")
         assert passed is True
         assert score == 1.0
-        assert checks == []  # 旧行为：无 check_results
+        assert len(checks) == 1  # 主验证始终入 check_results
+        assert checks[0]["name"] == "主输出验证"
 
     def test_legacy_case_zero_migration_empty_list_treated_as_legacy(self):
-        """validations=[]（空列表）应与 None 一致：走零迁移，主验证不入 check_results
+        """validations=[]（空列表）应与 None 一致：走合成路径，主验证入 check_results
 
         回归 explicit_validations 与 get_validations() 的判定一致性：
         get_validations() 用 `if self.validations:`（空列表为假 → 合成），
-        若 explicit_validations 用 `is not None`（空列表为真），会错误把主验证加入 check_results。
+        主验证始终入 check_results。
         """
         project = _mk_project()
         case = EvalCase(
@@ -144,11 +145,12 @@ class TestEvaluateCaseValidations:
         )
         passed, score, skipped, jt, checks, _ = self._run(project, case, "ok")
         assert passed is True
-        # 空列表应等价于 None：零迁移，check_results 不含主验证
-        assert checks == []
+        # 空列表应等价于 None：走合成路径，主验证入 check_results
+        assert len(checks) == 1
+        assert checks[0]["name"] == "主输出验证"
 
     def test_legacy_case_zero_migration_with_checks(self):
-        """旧 case 带 checks → check_results 只含 checks 的项（不增加主验证条目）"""
+        """旧 case 带 checks → check_results 含主验证 + checks"""
         project = _mk_project()
         case = EvalCase(
             id="c1", case_name="A", input="x",
@@ -161,9 +163,10 @@ class TestEvaluateCaseValidations:
         actual = json.dumps({"result": True, "msg": "支持退款"}, ensure_ascii=False)
         passed, score, skipped, jt, checks, _ = self._run(project, case, actual)
         assert passed is True
-        # 旧行为：只 check_results，主验证不入
-        assert len(checks) == 1
-        assert checks[0]["name"] == "chk1"
+        # 主验证始终入 check_results + checks
+        assert len(checks) == 2
+        assert checks[0]["name"] == "主输出验证"
+        assert checks[1]["name"] == "chk1"
 
     def test_new_validations_all_pass(self):
         """新结构 validations：所有项通过 → passed=True，check_results 含全部项"""
@@ -280,7 +283,7 @@ class TestEvaluateCaseValidations:
         call_count = [0]
         async def fake_judge(**kwargs):
             call_count[0] += 1
-            return (0.9, [11, 22][call_count[0] - 1])
+            return (0.9, [11, 22][call_count[0] - 1], "judge raw response")
         with patch("app.runner.judge_with_llm", new=fake_judge):
             passed, score, skipped, jt, checks, _ = self._run(project, case, actual)
         assert jt == 33
@@ -288,7 +291,7 @@ class TestEvaluateCaseValidations:
         assert all(c["passed"] for c in checks)
 
     def test_legacy_case_with_checks_behavior_unchanged(self):
-        """重要回归：旧 case + checks 行为与原 _evaluate_case 完全一致"""
+        """旧 case + checks 行为：check_results 含主验证 + checks"""
         project = _mk_project()
         case = EvalCase(
             id="c1", case_name="A", input="x",
@@ -302,12 +305,14 @@ class TestEvaluateCaseValidations:
         passed, score, skipped, jt, checks, _ = self._run(project, case, actual)
         # 主验证通过 + chk1 通过 + chk2 失败 → passed=False
         assert passed is False
-        # check_results 只含 checks（不含主验证）
-        assert len(checks) == 2
-        assert checks[0]["name"] == "chk1"
+        # check_results 含主验证 + 2 checks
+        assert len(checks) == 3
+        assert checks[0]["name"] == "主输出验证"
         assert checks[0]["passed"] is True
-        assert checks[1]["name"] == "chk2"
-        assert checks[1]["passed"] is False
+        assert checks[1]["name"] == "chk1"
+        assert checks[1]["passed"] is True
+        assert checks[2]["name"] == "chk2"
+        assert checks[2]["passed"] is False
 
 
 # ============== CSV round-trip ==============

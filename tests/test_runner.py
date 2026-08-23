@@ -146,7 +146,7 @@ class TestCheckJudgeAvailable:
         project = Project(**sample_project)
 
         with patch("app.runner.judge_with_llm", new_callable=AsyncMock) as mock_judge:
-            mock_judge.return_value = (0.5, 10)
+            mock_judge.return_value = (0.5, 10, "test")
             available, error = await check_judge_available(project)
 
             assert available is True
@@ -360,7 +360,7 @@ class TestExecuteRun:
              patch("app.runner.async_save_run", new_callable=AsyncMock) as mock_save:
 
             mock_call.return_value = ("礼貌的回复", 50, False)
-            mock_judge.return_value = (0.8, 20)
+            mock_judge.return_value = (0.8, 20, "judge raw response")
             mock_check.return_value = (True, "")
 
             result = await execute_run(run, project, evalset)

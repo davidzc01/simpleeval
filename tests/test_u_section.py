@@ -232,6 +232,43 @@ class TestCaseHistoryEndpoint:
         assert row["created_at"] == "2026-01-01T00:00:00Z"
         assert row["sample_index"] == 2
         assert row["version_id"] == "v1"
+        # 新增字段：variables / eval_params / validations 应有默认值
+        assert row.get("variables") == {}
+        assert row.get("eval_params") == {}
+        assert row.get("validations") == []
+
+    def test_history_includes_version_name(self, client, monkeypatch):
+        """O-3: case history 每行含 version_name（version_id → 版本名映射）"""
+        pid, eid = _setup_project_evalset(client, case_id="c1", case_name="A")
+        # 拿项目初始版本 id 与 name（W-7: create_project 自动创建初始版本）
+        proj = client.get(f"/api/projects/{pid}").json()
+        vers = proj.get("versions") or []
+        assert len(vers) >= 1
+        vid = vers[0]["id"]
+        vname = vers[0]["name"]
+        # 创建带 version_id 的 run
+        runs = [
+            _mk_run(pid, eid, [CaseResult(case_name="A", case_id="c1", actual_output="ok", passed=True)], created_at="2026-01-01T00:00:00Z", version_id=vid),
+        ]
+        from app import routes
+        monkeypatch.setattr(routes, "list_runs", lambda p: runs if p == pid else [])
+        r = client.get(f"/api/evalsets/{eid}/cases/c1/history?project_id={pid}")
+        row = r.json()["history"][0]
+        assert row["version_id"] == vid
+        assert row["version_name"] == vname
+
+    def test_history_version_name_none_when_no_version(self, client, monkeypatch):
+        """O-3: run 无 version_id → version_name 为 None"""
+        pid, eid = _setup_project_evalset(client, case_id="c1", case_name="A")
+        runs = [
+            _mk_run(pid, eid, [CaseResult(case_name="A", case_id="c1", actual_output="ok", passed=True)], created_at="2026-01-01T00:00:00Z", version_id=None),
+        ]
+        from app import routes
+        monkeypatch.setattr(routes, "list_runs", lambda p: runs if p == pid else [])
+        r = client.get(f"/api/evalsets/{eid}/cases/c1/history?project_id={pid}")
+        row = r.json()["history"][0]
+        assert row["version_id"] is None
+        assert row["version_name"] is None
 
     def test_history_judge_summary_for_llm_judge(self, client, monkeypatch):
         """llm_judge case → aggregate.judge_summary 包含 model/prompt_summary"""

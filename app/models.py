@@ -294,6 +294,10 @@ class EvalRun(BaseModel):
     summary: Optional[EvalSummary] = None
     # T3-3: 归属版本 id（显式指定或按 created_at 落入最近版本）；旧 run 无此字段为 None
     version_id: Optional[str] = None
+    # V-3: 发起 run 时的标签筛选（从 case_filter.tags 带入，历史列表展示）
+    filter_tags: list[str] = Field(default_factory=list)
+    # W-3: 触发来源（手动 / 定时调度器）
+    trigger: Literal["manual", "scheduled"] = "manual"
 
 
 # ============== API 请求/响应模型 ==============
@@ -339,6 +343,25 @@ class RunEvalRequest(BaseModel):
 class CreateVersionRequest(BaseModel):
     """T3-3: 开新版本请求"""
     name: str
+
+
+class CreateTagRequest(BaseModel):
+    """V-1: 新建标签请求"""
+    name: str
+
+
+class RenameTagRequest(BaseModel):
+    """V-1: 改名标签请求"""
+    new_name: str
+
+
+class UpdateScheduleRequest(BaseModel):
+    """W-3: 更新定时配置请求"""
+    enabled: bool = False
+    cron: str = "* * * * *"
+    tags: list[str] = Field(default_factory=list)
+    version_id: Optional[str] = None
+    regression_threshold: float = 0.1
 
 
 class TestTargetRequest(BaseModel):

@@ -14,7 +14,7 @@ from .models import (
     CreateProjectRequest, CreateEvalSetRequest, RunEvalRequest,
     TestTargetRequest, TestMappingRequest, TestParsingRequest, TestJudgeRequest,
     CaseResult, ErrorResponse, CreateVersionRequest, ProjectVersion,
-    CreateTagRequest, RenameTagRequest,
+    CreateTagRequest, RenameTagRequest, ScheduleConfig, UpdateScheduleRequest,
 )
 from .storage import (
     list_projects, get_project, save_project, delete_project,
@@ -24,10 +24,11 @@ from .storage import (
     list_config_templates, get_config_template, save_config_template, delete_config_template,
     list_judge_configs, get_judge_config, get_judge_config_with_secrets, save_judge_config,
     update_judge_config, delete_judge_config, find_judge_config_by_name,
-    list_tags, save_tag, rename_tag, delete_tag,
+    list_tags, save_tag, rename_tag, delete_tag, _migrate_legacy_tags,
 )
 from .runner import execute_run, _utc_now, _generate_run_id, _apply_case_filter
 from .judge import call_target, judge_with_llm, NetworkError, APIError, ResponseFormatError
+from .sampling import pass_at_k_case, pass_pow_k_case, compute_project_sampling, compute_evalset_sampling
 from .errors import (
     project_not_found, evalset_not_found, run_not_found,
     no_enabled_cases, import_format_error, mapping_invalid,
@@ -170,12 +171,15 @@ async def create_project(req: CreateProjectRequest):
     UI 删除「新建评测集」入口；旧项目首次进入评测集 tab 时由前端按需补建。
     """
     project_id = _generate_id("proj")
+    now = _utc_now()
     project = Project(
         id=project_id,
         name=req.name,
         task_shape=req.task_shape,
         judge_config={"base_url": "", "api_key": "", "model": ""},
         target_config={"base_url": "", "api_key": "", "model": None},
+        # W-7: 新建项目自动创建初始版本
+        versions=[ProjectVersion(id=_generate_id("ver"), name="初始版本", created_at=now)],
     )
     save_project(project)
 
@@ -322,6 +326,26 @@ async def create_version(project_id: str, req: CreateVersionRequest):
     return version.model_dump()
 
 
+@router.put("/projects/{project_id}/versions/{version_id}")
+async def rename_version(project_id: str, version_id: str, req: CreateVersionRequest):
+    """W-7: 版本改名（PUT 接口，复用 CreateVersionRequest）"""
+    project = get_project(project_id)
+    if not project:
+        project_not_found(project_id)
+    if not req.name or not req.name.strip():
+        raise HTTPException(status_code=422, detail={
+            "error": {"code": "invalid_config", "message": "版本名称必填"}
+        })
+    for v in (project.versions or []):
+        if v.id == version_id:
+            v.name = req.name.strip()
+            save_project(project)
+            return v.model_dump()
+    raise HTTPException(status_code=404, detail={
+        "error": {"code": "version_not_found", "message": f"版本 {version_id} 不存在"}
+    })
+
+
 @router.delete("/projects/{project_id}/versions/{version_id}")
 async def delete_version(project_id: str, version_id: str):
     """删除版本（不连带删 run；run.version_id 变为孤儿引用，对比时归入「未分版本」桶）"""
@@ -390,6 +414,95 @@ async def compare_versions(project_id: str):
         version_list[0]["delta_total_token"] = 0
 
     return {"project_id": project_id, "versions": version_list}
+
+
+# ============== W-3: 定时任务管理 ==============
+
+@router.get("/schedules")
+async def list_schedules():
+    """列出全部项目的定时规则 + 状态（上次执行时间/结果）"""
+    result = []
+    for p in list_projects():
+        if not p.schedule:
+            continue
+        # 找该项目最近的 scheduled run
+        all_runs = list_runs(p.id)
+        scheduled_runs = [r for r in all_runs if getattr(r, "trigger", "manual") == "scheduled"]
+        scheduled_runs.sort(key=lambda r: r.created_at or "", reverse=True)
+        last = scheduled_runs[0] if scheduled_runs else None
+        result.append({
+            "project_id": p.id,
+            "project_name": p.name,
+            "enabled": p.schedule.enabled,
+            "cron": p.schedule.cron,
+            "tags": p.schedule.tags or [],
+            "version_id": p.schedule.version_id,
+            "regression_threshold": p.schedule.regression_threshold,
+            "last_run": {
+                "run_id": last.id,
+                "created_at": last.created_at,
+                "status": last.status,
+                "pass_rate": last.summary.pass_rate if last.summary else None,
+            } if last else None,
+        })
+    return {"schedules": result}
+
+
+@router.get("/schedules/logs")
+async def list_schedule_logs(limit: int = 20):
+    """最近 N 次定时触发记录"""
+    all_logs = []
+    project_map = {p.id: p.name for p in list_projects()}
+    for pid, pname in project_map.items():
+        runs = list_runs(pid)
+        for r in runs:
+            if getattr(r, "trigger", "manual") != "scheduled":
+                continue
+            all_logs.append({
+                "project_id": pid,
+                "project_name": pname,
+                "run_id": r.id,
+                "created_at": r.created_at,
+                "status": r.status,
+                "pass_rate": r.summary.pass_rate if r.summary else None,
+            })
+    all_logs.sort(key=lambda x: x["created_at"] or "", reverse=True)
+    return {"logs": all_logs[:limit]}
+
+
+@router.put("/projects/{project_id}/schedule")
+async def update_schedule(project_id: str, req: UpdateScheduleRequest):
+    """创建/更新项目定时配置"""
+    project = get_project(project_id)
+    if not project:
+        project_not_found(project_id)
+    # cron 格式校验（5 字段）
+    cron = req.cron.strip()
+    parts = cron.split()
+    if len(parts) != 5:
+        raise HTTPException(status_code=422, detail={
+            "error": {"code": "invalid_cron", "message": "cron 表达式必须为 5 字段（分 时 日 月 周）"}
+        })
+    project.schedule = ScheduleConfig(
+        enabled=req.enabled,
+        cron=cron,
+        tags=req.tags or [],
+        version_id=req.version_id,
+        regression_threshold=req.regression_threshold,
+    )
+    save_project(project)
+    return project.schedule.model_dump()
+
+
+@router.delete("/projects/{project_id}/schedule")
+async def delete_schedule(project_id: str):
+    """删除项目定时配置"""
+    project = get_project(project_id)
+    if not project:
+        project_not_found(project_id)
+    project.schedule = None
+    save_project(project)
+    return {"deleted": project_id}
 
 
 # ============== EvalSets ==============
@@ -727,6 +840,8 @@ async def list_project_runs(project_id: str):
             # V-3: 标签筛选 + case 数
             "filter_tags": getattr(r, "filter_tags", None) or [],
             "case_count": len(r.results) if r.results else 0,
+            # W-3: 触发来源
+            "trigger": getattr(r, "trigger", "manual"),
             "summary": r.summary.model_dump() if r.summary else None,
         })
 
@@ -739,8 +854,6 @@ async def get_project_sampling(project_id: str):
     project = get_project(project_id)
     if not project:
         project_not_found(project_id)
-    # 延迟导入避免循环依赖（sampling 依赖 storage，storage 不依赖 routes）
-    from .sampling import compute_project_sampling
     return compute_project_sampling(project_id)
 
 
@@ -760,7 +873,6 @@ async def get_evalset_sampling(evalset_id: str, project_id: str):
     evalset = get_evalset(evalset_id, project_id)
     if not evalset:
         evalset_not_found(evalset_id)
-    from .sampling import compute_evalset_sampling
     return compute_evalset_sampling(project_id, evalset_id)
 
 
@@ -812,6 +924,12 @@ async def get_case_history(evalset_id: str, case_id: str, project_id: str):
     completed_runs = [r for r in all_runs if r.status == "completed" and r.evalset_id == evalset_id]
     completed_runs.sort(key=lambda r: r.created_at or "")
 
+    # O-3: version_id → 版本名映射（用于历史表版本列）
+    version_map = {}
+    if project and project.versions:
+        for v in project.versions:
+            version_map[v.id] = v.name
+
     # 构建历史记录
     history = []
     for run in completed_runs:
@@ -831,12 +949,16 @@ async def get_case_history(evalset_id: str, case_id: str, project_id: str):
             "judge_token": result.judge_token,
             "eval_type": case.eval_type,
             "input": case.input,
+            "variables": case.variables or {},
+            "eval_params": case.eval_params or {},
+            "validations": case.validations or [],
             "expected_output": case.expected_output,
             "output_requirement": case.output_requirement,
             "actual_output": result.actual_output,
             "created_at": run.created_at,
             "sample_index": result.sample_index,
             "version_id": run.version_id,
+            "version_name": version_map.get(run.version_id) if run.version_id else None,
             "check_results": result.check_results or [],
         })
 
@@ -846,7 +968,6 @@ async def get_case_history(evalset_id: str, case_id: str, project_id: str):
     c = sum(1 for h in non_skipped if h["passed"])
     pass_rate = c / n if n > 0 else 0.0
     # pass@3 / pass^3：与 sampling.py 同一套无放回公式，保证全站口径一致
-    from .sampling import pass_at_k_case, pass_pow_k_case
     _at3 = pass_at_k_case(n, c, 3)
     _pow3 = pass_pow_k_case(n, c, 3)
     pass_at_3 = _at3 if _at3 is not None else 0.0
@@ -997,7 +1118,7 @@ async def test_judge(req: TestJudgeRequest, project_id: Optional[str] = None):
             saved = get_project(project_id)
             if saved:
                 api_key = saved.judge_config.api_key
-        score, token_used = await judge_with_llm(
+        score, token_used, _judge_raw = await judge_with_llm(
             base_url=req.base_url,
             api_key=api_key,
             model=req.model or "",
@@ -1291,3 +1412,13 @@ async def delete_tag_route(tag_name: str):
             "error": {"code": "tag_not_found", "message": f"标签 '{tag_name}' 不存在"}
         })
     return result
+
+
+@router.post("/tags/migrate")
+async def migrate_tags_route():
+    """一键迁移：将历史项目中未注册到全局标签库的标签自动补录。
+
+    返回本次新注册的标签数量。幂等，重复调用安全。
+    """
+    count = _migrate_legacy_tags()
+    return {"migrated_count": count}

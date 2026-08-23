@@ -3,6 +3,7 @@
 import json
 import os
 import uuid
+from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -30,6 +31,9 @@ CONFIG_TEMPLATES_FILE = DATA_DIR / "config-templates.json"
 
 # REQ-16: Judge 配置独立管理存储文件
 JUDGE_CONFIGS_FILE = DATA_DIR / "judge-configs.json"
+
+# V-1: 全局标签库存储文件
+TAGS_FILE = DATA_DIR / "tags.json"
 
 
 def _read_json(path: Path) -> dict:
@@ -440,3 +444,128 @@ def find_judge_config_by_name(name: str) -> Optional[dict]:
         if x.get("name") == name:
             return x
     return None
+
+
+# ============== V-1: 全局标签库存储 ==============
+
+def _read_tags() -> list[dict]:
+    """读取标签库原始数据"""
+    if not TAGS_FILE.exists():
+        return []
+    data = _read_json(TAGS_FILE)
+    return data.get("tags", [])
+
+
+def _write_tags(tags: list[dict]) -> None:
+    """写入标签库"""
+    _write_json(TAGS_FILE, {"tags": tags})
+
+
+def _migrate_legacy_tags() -> int:
+    """扫描所有 evalset 的 case.tags，将未注册到全局标签库的标签自动补录。
+
+    返回本次新注册的标签数量。幂等：重复调用无副作用。
+    """
+    existing = {t["name"] for t in _read_tags()}
+    all_evalsets = list_evalsets()
+    discovered = set()
+    for es in all_evalsets:
+        for c in es.cases:
+            for name in (c.tags or []):
+                if name:
+                    discovered.add(name)
+    missing = discovered - existing
+    if not missing:
+        return 0
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    tags = _read_tags()
+    for name in sorted(missing):
+        tags.append({"name": name, "created_at": now})
+    _write_tags(tags)
+    return len(missing)
+
+
+def list_tags() -> list[dict]:
+    """列出全部标签（含引用统计：case 数 / project 数）
+
+    单次遍历全部 evalset case 统计每个标签的引用，O(total_case_count)。
+    """
+    # O-6: 自动迁移历史项目中未注册到全局标签库的标签
+    _migrate_legacy_tags()
+    tags = _read_tags()
+    all_evalsets = list_evalsets()
+    case_count = defaultdict(int)
+    project_ids = defaultdict(set)
+    for es in all_evalsets:
+        for c in es.cases:
+            for name in (c.tags or []):
+                case_count[name] += 1
+                project_ids[name].add(es.project_id)
+    for t in tags:
+        name = t["name"]
+        t["case_count"] = case_count.get(name, 0)
+        t["project_count"] = len(project_ids.get(name, set()))
+        t["projects"] = sorted(project_ids.get(name, set()))
+    return tags
+
+
+def save_tag(name: str) -> dict:
+    """新建标签（重名报错由调用方处理）"""
+    tags = _read_tags()
+    new_tag = {
+        "name": name,
+        "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    }
+    tags.append(new_tag)
+    _write_tags(tags)
+    return new_tag
+
+
+def rename_tag(old_name: str, new_name: str) -> dict:
+    """改名：同步更新所有 evalset case 的标签字符串"""
+    tags = _read_tags()
+    # 更新标签库
+    found = False
+    for t in tags:
+        if t["name"] == old_name:
+            t["name"] = new_name
+            found = True
+            break
+    if not found:
+        return None
+    _write_tags(tags)
+    # 同步更新所有 evalset 中的 case tags
+    all_evalsets = list_evalsets()
+    affected_projects = set()
+    for es in all_evalsets:
+        changed = False
+        for c in es.cases:
+            if old_name in (c.tags or []):
+                c.tags = [new_name if t == old_name else t for t in c.tags]
+                changed = True
+                affected_projects.add(es.project_id)
+        if changed:
+            save_evalset(es)
+    return {"old_name": old_name, "new_name": new_name, "affected_projects": sorted(affected_projects)}
+
+
+def delete_tag(name: str) -> dict:
+    """删除：从所有 evalset case 移除该标签"""
+    tags = _read_tags()
+    new_list = [t for t in tags if t["name"] != name]
+    if len(new_list) == len(tags):
+        return None
+    _write_tags(new_list)
+    # 从所有 evalset 的 case tags 中移除
+    all_evalsets = list_evalsets()
+    affected_projects = set()
+    for es in all_evalsets:
+        changed = False
+        for c in es.cases:
+            if name in (c.tags or []):
+                c.tags = [t for t in c.tags if t != name]
+                changed = True
+                affected_projects.add(es.project_id)
+        if changed:
+            save_evalset(es)
+    return {"name": name, "affected_projects": sorted(affected_projects)}

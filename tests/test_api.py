@@ -1073,7 +1073,7 @@ class TestTestEndpoints:
     def test_test_judge_success(self, client):
         """测试 Judge - 成功"""
         with patch("app.routes.judge_with_llm", new_callable=AsyncMock) as mock_judge:
-            mock_judge.return_value = (0.8, 30)
+            mock_judge.return_value = (0.8, 30, "judge raw response")
 
             response = client.post(
                 "/api/test/judge",

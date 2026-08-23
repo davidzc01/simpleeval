@@ -197,7 +197,7 @@ font-family: "Inter", "PingFang SC", "Microsoft YaHei", sans-serif;
 
 - 列：名称 / 最近评测（相对时间 + run id，可点）/ pass rate（含环比 delta）/ 总 token / **迷你趋势 sparkline（近 8 次 run 的 pass rate）** / 操作。
 - 空态：「还没有 Project，点击右上角新建——配置一个 Judge + 一个被评测 API 就能跑第一次评测」。
-- 新建弹窗：name + task_shape 下拉，其余配置进详情页填。
+- 新建弹窗：name 必填，其余配置进详情页填。
 
 ### 4.2 Project 概览（`/p/:pid` 概览 tab）
 
@@ -288,7 +288,7 @@ base_url      [https://fastgpt.example.com/api    ]  (mono) 必填
             Cookie → [kv 行编辑器，可多条]
             自定义 Headers → [kv 行编辑器，可多条]
 请求模板      [JSON 编辑区，必填，保存时阻断校验]
-              {input} / {case_name} / {task_shape} 为可替换变量
+              {input} / {case_name} / 自定义变量（key）为可替换变量
 响应解析      [指向 4.4.2 卡片，建议必配；留空 = 完整原文兑底]
 
 [测试连接]  ← 发一个最小请求，返回：✓ 200 · 1.2s · 12 tokens（或 ✗ 错误详情）

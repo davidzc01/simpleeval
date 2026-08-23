@@ -401,4 +401,5 @@ async def judge_with_llm(
         # 兜底：尝试从字符串里抠第一个数字
         m = re.search(r"[-+]?\d*\.?\d+", raw)
         score = float(m.group()) if m else 0.0
-    return max(0.0, min(1.0, score)), token_used
+    # W-5 3c: 附带 judge 原始响应字符串（用于 UI 下钻展示）
+    return max(0.0, min(1.0, score)), token_used, raw

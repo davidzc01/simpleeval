@@ -208,6 +208,8 @@ async def check_and_trigger_scheduled_runs() -> list[str]:
             status="queued",
             created_at=run_created_at,
             version_id=version_id,
+            filter_tags=project.schedule.tags if project.schedule.tags else [],
+            trigger="scheduled",
         )
         save_run(run)
         # 后台执行（不阻塞调度循环；用项目默认的 samples=1 / concurrency=None）

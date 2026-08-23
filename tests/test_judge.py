@@ -244,7 +244,7 @@ class TestJudgeWithLLM:
             mock_response.raise_for_status = MagicMock()
             mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
 
-            score, token = await judge_with_llm(
+            score, token, _raw = await judge_with_llm(
                 base_url="https://api.example.com/v1",
                 api_key="test-key",
                 model="gpt-4o-mini",
@@ -265,7 +265,7 @@ class TestJudgeWithLLM:
             mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
 
             custom_prompt = "要求：{requirement}\n输出：{output}\n评分："
-            score, token = await judge_with_llm(
+            score, token, _raw = await judge_with_llm(
                 base_url="https://api.example.com/v1",
                 api_key="test-key",
                 model="gpt-4o-mini",
@@ -287,7 +287,7 @@ class TestJudgeWithLLM:
             mock_response.raise_for_status = MagicMock()
             mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
 
-            score, token = await judge_with_llm(
+            score, token, _raw = await judge_with_llm(
                 base_url="https://api.example.com/v1",
                 api_key="test-key",
                 model="gpt-4o-mini",
@@ -311,7 +311,7 @@ class TestJudgeWithLLM:
             mock_response_obj.raise_for_status = MagicMock()
             mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response_obj)
 
-            score, token = await judge_with_llm(
+            score, token, _raw = await judge_with_llm(
                 base_url="https://api.example.com/v1",
                 api_key="test-key",
                 model="gpt-4o-mini",
@@ -331,7 +331,7 @@ class TestJudgeWithLLM:
             mock_response.raise_for_status = MagicMock()
             mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
 
-            score, token = await judge_with_llm(
+            score, token, _raw = await judge_with_llm(
                 base_url="https://api.example.com/v1",
                 api_key="test-key",
                 model="gpt-4o-mini",
@@ -351,7 +351,7 @@ class TestJudgeWithLLM:
             mock_response.raise_for_status = MagicMock()
             mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
 
-            score, token = await judge_with_llm(
+            score, token, _raw = await judge_with_llm(
                 base_url="https://api.example.com/v1",
                 api_key="test-key",
                 model="gpt-4o-mini",
