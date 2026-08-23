@@ -2649,7 +2649,233 @@
             }
         }
 
+        // P-3: 概览页重构（依据 docs/overview-redesign.md v2 定稿）
+        // 4 区块：①delta ②趋势按版本分段 ③稳定性组合 ④失败 case 导航
         function renderProjectOverview(project) {
+            // 骨架屏，异步加载 overview 数据后填充
+            loadProjectOverview(project.id);
+            return `
+                <div id="overviewContent">
+                    <div class="skeleton skeleton-line w-40" style="height: 20px; margin-bottom: 12px;"></div>
+                    <div class="skeleton" style="height: 80px; margin-bottom: 16px;"></div>
+                    <div class="skeleton" style="height: 160px; margin-bottom: 16px;"></div>
+                    <div class="skeleton" style="height: 120px; margin-bottom: 16px;"></div>
+                    <div class="skeleton" style="height: 80px;"></div>
+                </div>
+            `;
+        }
+
+        async function loadProjectOverview(projectId) {
+            try {
+                const res = await fetch(`/api/projects/${projectId}/overview`);
+                if (!res.ok) throw new Error('overview fetch failed: ' + res.status);
+                const data = await res.json();
+                const container = document.getElementById('overviewContent');
+                if (!container) return;
+                container.innerHTML = renderOverviewV2(data, projectId);
+            } catch (e) {
+                const container = document.getElementById('overviewContent');
+                if (container) container.innerHTML = `<div style="padding: 24px; color: var(--red);">概览加载失败：${escapeHtml(e.message)}</div>`;
+            }
+        }
+
+        function renderOverviewV2(data, projectId) {
+            const delta = data.delta;
+            const trend = data.trend || [];
+            const stability = data.stability || {};
+            const failed = data.failed_cases || [];
+            const versions = data.versions || [];
+            const contentUpdatedAt = data.content_updated_at;
+
+            // ① delta 区
+            const fmtPct = v => v != null ? (v * 100).toFixed(1) + '%' : '—';
+            const fmtTok = v => v != null ? formatNumber(v) : '—';
+            const fmtDeltaPct = d => d != null ? (d > 0 ? `▲ +${(d * 100).toFixed(1)}pp` : `▼ ${Math.abs(d * 100).toFixed(1)}pp`) : '';
+            const fmtDeltaTok = d => d != null ? (d > 0 ? `▲ +${formatNumber(d)}` : `▼ -${formatNumber(Math.abs(d))}`) : '';
+            const colorForPass = d => d == null ? 'var(--ink-4)' : (d > 0 ? 'var(--green)' : (d < 0 ? 'var(--red)' : 'var(--ink-4)'));
+            const colorForCost = d => d == null ? 'var(--ink-4)' : (d > 0 ? 'var(--amber, #b45309)' : (d < 0 ? 'var(--green)' : 'var(--ink-4)'));
+
+            const deltaRow = (label, cur, prev, dStr, color, isCost) => `
+                <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--border);">
+                    <span style="font-size: 12px; color: var(--ink-3);">${label}</span>
+                    <div style="display: flex; align-items: center; gap: 12px;">
+                        <span style="font-size: 11px; color: var(--ink-4);">${prev != null ? prev : '—'}</span>
+                        <span style="color: var(--ink-5);">→</span>
+                        <span style="font-weight: 600; font-size: 13px;">${cur}</span>
+                        ${dStr ? `<span style="color: ${color}; font-size: 11px; font-weight: 600;">${dStr}</span>` : (delta && delta.is_first_in_version ? `<span style="color: var(--ink-5); font-size: 10px;">首轮</span>` : '')}
+                    </div>
+                </div>
+            `;
+
+            const deltaBlock = delta ? `
+                <div class="card" style="margin-bottom: 16px;">
+                    <div class="card-header" style="padding: 12px 16px; border-bottom: 1px solid var(--border);">
+                        <span class="card-title">① 最近评测 vs 同版本上次 run</span>
+                    </div>
+                    <div style="padding: 4px 16px 12px;">
+                        ${deltaRow('pass rate', fmtPct(delta.pass_rate.current), delta.pass_rate.previous != null ? fmtPct(delta.pass_rate.previous) : null, fmtDeltaPct(delta.pass_rate.diff), colorForPass(delta.pass_rate.diff), false)}
+                        ${deltaRow('运行 token', fmtTok(delta.total_token.current), delta.total_token.previous != null ? fmtTok(delta.total_token.previous) : null, fmtDeltaTok(delta.total_token.diff), colorForCost(delta.total_token.diff), true)}
+                        ${deltaRow('评测 token', fmtTok(delta.judge_token.current), delta.judge_token.previous != null ? fmtTok(delta.judge_token.previous) : null, fmtDeltaTok(delta.judge_token.diff), colorForCost(delta.judge_token.diff), true)}
+                    </div>
+                </div>
+            ` : `<div class="card" style="margin-bottom: 16px; padding: 24px; text-align: center; color: var(--ink-4);">暂无 run 数据</div>`;
+
+            // ② 趋势区（按版本分段背景色 + 评测集变更标记 ◆）
+            const trendBlock = trend.length > 0 ? `
+                <div class="card" style="margin-bottom: 16px;">
+                    <div class="card-header" style="padding: 12px 16px; border-bottom: 1px solid var(--border);">
+                        <span class="card-title">② 质量趋势（按版本分段）</span>
+                    </div>
+                    <div style="padding: 16px;">
+                        ${renderTrendChartV2(trend, versions, contentUpdatedAt)}
+                    </div>
+                </div>
+            ` : '';
+
+            // ③ 稳定性组合
+            const minP3 = stability.min_pass_pow_3;
+            const stabilityBlock = `
+                <div class="card" style="margin-bottom: 16px;">
+                    <div class="card-header" style="padding: 12px 16px; border-bottom: 1px solid var(--border);">
+                        <span class="card-title">③ 稳定性（组合表达）</span>
+                    </div>
+                    <div style="padding: 12px 16px;">
+                        <div style="display: flex; gap: 24px; margin-bottom: 12px; font-size: 12px;">
+                            <div>
+                                <div style="color: var(--ink-4); font-size: 11px;">短板 pass^3</div>
+                                <div style="font-size: 18px; font-weight: 700; color: ${minP3 != null ? (minP3 < 0.5 ? 'var(--red)' : minP3 < 0.8 ? 'var(--amber, #b45309)' : 'var(--green)') : 'var(--ink-4)'}">${minP3 != null ? (minP3 * 100).toFixed(0) + '%' : '—'}</div>
+                            </div>
+                            <div>
+                                <div style="color: var(--ink-4); font-size: 11px;">低于 50%</div>
+                                <div style="font-size: 18px; font-weight: 700; color: ${stability.below_50_count > 0 ? 'var(--red)' : 'var(--green)'}">${stability.below_50_count}</div>
+                            </div>
+                            <div>
+                                <div style="color: var(--ink-4); font-size: 11px;">50-80% 区间</div>
+                                <div style="font-size: 18px; font-weight: 700; color: ${stability.below_80_count > 0 ? 'var(--amber, #b45309)' : 'var(--green)'}">${stability.below_80_count}</div>
+                            </div>
+                        </div>
+                        ${(stability.unstable_top3 || []).length > 0 ? `
+                            <div style="border-top: 1px solid var(--border); padding-top: 8px;">
+                                <div style="font-size: 11px; color: var(--ink-4); margin-bottom: 6px;">最不稳 case（pass^3 升序）</div>
+                                ${(stability.unstable_top3 || []).map(c => `
+                                    <div style="display: flex; justify-content: space-between; align-items: center; padding: 4px 0; border-bottom: 1px solid var(--border);">
+                                        <span style="font-family: monospace; font-size: 12px;">${escapeHtml(c.case_name || c.case_id || '')}</span>
+                                        <div style="display: flex; align-items: center; gap: 8px;">
+                                            <span style="color: ${c.pass_pow_3 < 0.5 ? 'var(--red)' : 'var(--amber, #b45309)'}; font-weight: 600; font-size: 12px;">pass^3 ${(c.pass_pow_3 * 100).toFixed(0)}%</span>
+                                            <button class="btn btn-sm btn-secondary" style="font-size: 10px; padding: 1px 6px;" onclick="navToRunCaseFromOverview('${projectId}', '${data.latest_run_id || ''}', '${escapeHtml(c.case_name || '')}')">详情</button>
+                                        </div>
+                                    </div>
+                                `).join('')}
+                            </div>
+                        ` : '<div style="font-size: 11px; color: var(--ink-4);">暂无 case 级采样数据</div>'}
+                    </div>
+                </div>
+            `;
+
+            // ④ 上次 run 失败 case 导航
+            const failedBlock = failed.length > 0 ? `
+                <div class="card">
+                    <div class="card-header" style="padding: 12px 16px; border-bottom: 1px solid var(--border);">
+                        <span class="card-title">④ 上次 run 失败 case（导航到问题）</span>
+                    </div>
+                    <div style="padding: 12px 16px;">
+                        <div style="display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px;">
+                            ${failed.slice(0, 10).map(f => `<span class="tag-chip" style="cursor: pointer; border-color: var(--red-bd, #fecaca); color: var(--red);" onclick="navToRunCaseFromOverview('${projectId}', '${data.latest_run_id || ''}', '${escapeHtml(f.case_name || '')}')">${escapeHtml(f.case_name || f.case_id || '')}</span>`).join('')}
+                        </div>
+                        <button class="btn btn-sm btn-secondary" onclick="navToRunDetailFromOverview('${projectId}', '${data.latest_run_id || ''}')">查看对比 →</button>
+                    </div>
+                </div>
+            ` : '';
+
+            return deltaBlock + trendBlock + stabilityBlock + failedBlock;
+        }
+
+        // P-3: 趋势图 v2——按版本分段着色 + 评测集变更标记 ◆
+        function renderTrendChartV2(trend, versions, contentUpdatedAt) {
+            if (!trend.length) return '<div style="color: var(--ink-4); font-size: 12px;">无趋势数据</div>';
+            const w = 600, h = 120, pad = 30;
+            const maxRate = 1.0;
+            const stepX = trend.length > 1 ? (w - pad * 2) / (trend.length - 1) : 0;
+            const xOf = i => pad + i * stepX;
+            const yOf = v => h - pad - (v / maxRate) * (h - pad * 2);
+
+            // 版本分段背景色（按 version.created_at 划分）
+            const versionColors = ['rgba(59,130,246,0.06)', 'rgba(16,185,129,0.06)', 'rgba(245,158,11,0.06)', 'rgba(139,92,246,0.06)', 'rgba(236,72,153,0.06)'];
+            const sortedVersions = [...versions].sort((a, b) => (a.created_at || '').localeCompare(b.created_at || ''));
+            const versionBgBlocks = sortedVersions.map((v, vi) => {
+                const vStart = v.created_at;
+                const vEnd = vi < sortedVersions.length - 1 ? sortedVersions[vi + 1].created_at : null;
+                const trendStart = trend[0].created_at;
+                const trendEnd = trend[trend.length - 1].created_at;
+                if (vEnd && vStart < trendStart && vEnd < trendStart) return '';
+                const xStart = xOf(0);
+                const xEnd = xOf(trend.length - 1);
+                return `<rect x="${xStart}" y="${pad}" width="${xEnd - xStart}" height="${h - pad * 2}" fill="${versionColors[vi % versionColors.length]}" />`;
+            }).join('');
+
+            // 评测集变更标记 ◆（content_updated_at 落在 x 轴）
+            let changeMarker = '';
+            if (contentUpdatedAt) {
+                const idx = trend.findIndex(t => t.created_at >= contentUpdatedAt);
+                if (idx >= 0) {
+                    const cx = xOf(idx);
+                    changeMarker = `<text x="${cx}" y="${h - pad + 14}" font-size="12" fill="var(--amber, #b45309)" text-anchor="middle">◆</text>
+                    <text x="${cx}" y="${h - pad + 24}" font-size="9" fill="var(--ink-4)" text-anchor="middle">变更</text>`;
+                }
+            }
+
+            // pass_rate 折线
+            const pts = trend.map((t, i) => `${xOf(i)},${yOf(t.pass_rate)}`).join(' ');
+            const dots = trend.map((t, i) => {
+                const color = t.status === 'completed' ? (t.pass_rate >= 0.8 ? 'var(--green)' : t.pass_rate >= 0.5 ? 'var(--amber, #b45309)' : 'var(--red)') : 'var(--ink-4)';
+                return `<circle cx="${xOf(i)}" cy="${yOf(t.pass_rate)}" r="3" fill="${color}"><title>${escapeHtml(t.run_id)}: ${(t.pass_rate * 100).toFixed(1)}%</title></circle>`;
+            }).join('');
+
+            // 版本标签
+            const versionLabels = sortedVersions.map((v, vi) => {
+                const idx = trend.findIndex(t => t.version_id === v.id);
+                if (idx < 0) return '';
+                return `<text x="${xOf(idx)}" y="12" font-size="9" fill="var(--ink-4)" text-anchor="middle">${escapeHtml(v.name)}</text>`;
+            }).join('');
+
+            return `
+                <svg width="${w}" height="${h + 30}" style="display: block; overflow: visible; max-width: 100%;">
+                    ${versionBgBlocks}
+                    <line x1="${pad}" y1="${h - pad}" x2="${w - pad}" y2="${h - pad}" stroke="var(--border)" />
+                    <line x1="${pad}" y1="${pad}" x2="${pad}" y2="${h - pad}" stroke="var(--border)" />
+                    <text x="${pad - 4}" y="${pad + 4}" font-size="9" fill="var(--ink-4)" text-anchor="end">100%</text>
+                    <text x="${pad - 4}" y="${h - pad}" font-size="9" fill="var(--ink-4)" text-anchor="end">0%</text>
+                    <polyline points="${pts}" fill="none" stroke="var(--accent)" stroke-width="1.5" />
+                    ${dots}
+                    ${changeMarker}
+                    ${versionLabels}
+                </svg>
+                <div style="font-size: 10px; color: var(--ink-4); margin-top: 4px;">
+                    <span style="color: var(--green);">●</span> ≥80%
+                    <span style="color: var(--amber, #b45309); margin-left: 8px;">●</span> 50-80%
+                    <span style="color: var(--red); margin-left: 8px;">●</span> &lt;50%
+                    ${contentUpdatedAt ? '<span style="color: var(--amber, #b45309); margin-left: 12px;">◆</span> 评测集变更' : ''}
+                </div>
+            `;
+        }
+
+        // P-3: 从概览失败 case / 最不稳 case 导航到 run 详情页 case 对比
+        function navToRunCaseFromOverview(projectId, runId, caseName) {
+            if (!runId) return;
+            navigateTo('run-detail', { id: runId, projectId });
+            setTimeout(() => {
+                if (state.currentRun && state.currentRun.results) {
+                    const idx = state.currentRun.results.findIndex(r => r.case_name === caseName);
+                    if (idx >= 0) showRunCaseDetail(idx);
+                }
+            }, 500);
+        }
+        function navToRunDetailFromOverview(projectId, runId) {
+            if (!runId) return;
+            navigateTo('run-detail', { id: runId, projectId });
+        }
+
+        function _renderProjectOverviewLegacy(project) {
             const lastRun = project.last_run;
             const trend = project.trend || [];
 
@@ -2707,16 +2933,6 @@
                     </div>
                 </div>
                 ` : ''}
-
-                <div class="card" id="samplingCard">
-                    <div class="card-header">
-                        <span class="card-title">采样稳定性</span>
-                    </div>
-                    <div id="samplingContent" style="padding: 20px;">
-                        <div class="skeleton skeleton-line w-40" style="height: 16px; margin-bottom: 8px;"></div>
-                        <div class="skeleton" style="height: 140px;"></div>
-                    </div>
-                </div>
             `;
         }
 
@@ -2966,11 +3182,23 @@
             state._currentEvalsetAllTags = allTags;
             // P-2: 应用标签过滤（OR 语义，空 = 全部）
             const tagFilter = state._evalsetTagFilter || [];
+            // P-2: 类型筛选（多选 chips，空 = 全部）
+            const typeFilter = state._evalsetTypeFilter || [];
+            // P-2: 状态筛选（下拉：全部/启用/禁用）
+            const statusFilter = state._evalsetStatusFilter || 'all';
             // U-6: 关键词搜索（case_name + input 子串过滤）
             const keyword = (state._evalsetKeyword || '').trim().toLowerCase();
             let filteredCases = cases;
             if (tagFilter.length > 0) {
                 filteredCases = filteredCases.filter(c => (c.tags || []).some(t => tagFilter.includes(t)));
+            }
+            if (typeFilter.length > 0) {
+                filteredCases = filteredCases.filter(c => typeFilter.includes(c.eval_type || 'exact'));
+            }
+            if (statusFilter === 'enabled') {
+                filteredCases = filteredCases.filter(c => c.enabled);
+            } else if (statusFilter === 'disabled') {
+                filteredCases = filteredCases.filter(c => !c.enabled);
             }
             if (keyword) {
                 filteredCases = filteredCases.filter(c =>
@@ -3032,23 +3260,32 @@
                                 <button class="btn btn-sm btn-primary" onclick="showCaseEditorModal('${evalset.id}', '${projectId}', null)">+ 新增用例</button>
                             </div>
                         </div>
-                        <div style="padding: 8px 16px; color: var(--ink-4); font-size: 12px;">
-                            共 ${cases.length} 条 · 启用 ${enabledCount} 条${allTags.length ? ' · 标签 ' + allTags.length + ' 个' : ''}${tagFilter.length ? ' · 已筛选 ' + filteredCases.length + ' 条' : ''}
+                        <div style="padding: 8px 16px; color: var(--ink-4); font-size: 12px; ${(tagFilter.length || typeFilter.length || statusFilter !== 'all' || keyword) ? 'background: var(--amber-bg, #fffbeb); color: var(--amber, #b45309);' : ''}">
+                            共 ${cases.length} 条 · 启用 ${enabledCount} 条${allTags.length ? ' · 标签 ' + allTags.length + ' 个' : ''}${(tagFilter.length || typeFilter.length || statusFilter !== 'all' || keyword) ? ' · 已筛选 ' + filteredCases.length + ' / 共 ' + cases.length + ' 条' : ''}
                         </div>
                         ${evalset.content_updated_at && state._evalsetSampling && state._evalsetSampling.total_runs === 0 ? `
                         <div style="padding: 6px 16px; background: var(--amber-bg, #fffbeb); border-bottom: 1px solid var(--amber-bd, #fde68a); color: var(--amber, #b45309); font-size: 12px;">
                             评测集内容已更新，旧采样统计已清零，需积累新采样
                         </div>` : ''}
-                        <div class="evalset-tag-filter" style="padding: 8px 16px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
-                            <input type="text" class="form-input" id="evalsetKeywordInput" placeholder="搜索 case 名或输入内容..." value="${escapeHtml(state._evalsetKeyword || '')}" oninput="onEvalsetKeywordInput(this.value)" style="width: 240px; font-size: 12px; padding: 4px 8px;">
-                            ${keyword ? `<button class="btn btn-sm btn-secondary" style="font-size: 11px; padding: 2px 8px;" onclick="clearEvalsetKeyword()">清除搜索</button>` : ''}
+                        <div class="evalset-tag-filter" style="padding: 8px 16px; border-bottom: 1px solid var(--border); ${tagFilter.length || typeFilter.length || statusFilter !== 'all' || keyword ? 'background: var(--amber-bg, #fffbeb);' : ''} display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+                            <input type="text" class="form-input" id="evalsetKeywordInput" placeholder="搜索 case 名或输入内容..." value="${escapeHtml(state._evalsetKeyword || '')}" oninput="onEvalsetKeywordInput(this.value)" style="width: 220px; font-size: 12px; padding: 4px 8px;">
+                            <span style="font-size: 12px; color: var(--ink-4);">类型：</span>
+                            <div style="display: flex; gap: 4px; flex-wrap: wrap;">
+                                ${['exact', 'contains', 'not_contains', 'length', 'llm_judge'].map(t => `<button class="tag-chip filter-chip ${typeFilter.includes(t) ? 'active' : ''}" data-type="${t}" onclick="toggleEvalsetTypeFilter(this)">${escapeHtml(t)}</button>`).join('')}
+                            </div>
+                            <span style="font-size: 12px; color: var(--ink-4); margin-left: 8px;">状态：</span>
+                            <select class="form-input" style="width: 90px; font-size: 12px; padding: 4px 8px;" onchange="setEvalsetStatusFilter(this.value)">
+                                <option value="all" ${statusFilter === 'all' ? 'selected' : ''}>全部</option>
+                                <option value="enabled" ${statusFilter === 'enabled' ? 'selected' : ''}>启用</option>
+                                <option value="disabled" ${statusFilter === 'disabled' ? 'selected' : ''}>禁用</option>
+                            </select>
                             ${allTags.length === 0 ? '' : `
-                            <span style="font-size: 12px; color: var(--ink-4); margin-left: 8px;">按标签筛选：</span>
+                            <span style="font-size: 12px; color: var(--ink-4); margin-left: 8px;">标签：</span>
                             <div style="display: flex; gap: 4px; flex-wrap: wrap;">
                                 ${allTags.map(t => `<button class="tag-chip filter-chip ${tagFilter.includes(t) ? 'active' : ''}" data-tag="${escapeHtml(t)}" onclick="toggleEvalsetTagFilter(this)">${escapeHtml(t)}</button>`).join('')}
                             </div>
-                            ${tagFilter.length ? `<button class="btn btn-sm btn-secondary" style="font-size: 11px; padding: 2px 8px;" onclick="clearEvalsetTagFilter()">清除筛选</button>` : ''}
                             `}
+                            ${(tagFilter.length || typeFilter.length || statusFilter !== 'all' || keyword) ? `<button class="btn btn-sm btn-secondary" style="font-size: 11px; padding: 2px 8px; margin-left: auto;" onclick="resetAllEvalsetFilters()">重置筛选</button>` : ''}
                         </div>
                         <div id="batchOpsBar" style="display: none; padding: 8px 16px; background: var(--gray-bg); border-bottom: 1px solid var(--border); align-items: center; gap: 8px;">
                             <span id="batchSelectedCount" style="font-size: 13px; color: var(--ink-3);">已选 0 条</span>
@@ -3125,6 +3362,28 @@
         }
         function clearEvalsetTagFilter() {
             state._evalsetTagFilter = [];
+            _rerenderEvalsetDetail();
+        }
+        // P-2: 类型筛选（多选 chips）
+        function toggleEvalsetTypeFilter(el) {
+            const t = el.dataset.type;
+            const filter = state._evalsetTypeFilter || [];
+            const idx = filter.indexOf(t);
+            if (idx >= 0) filter.splice(idx, 1);
+            else filter.push(t);
+            _rerenderEvalsetDetail();
+        }
+        // P-2: 状态筛选（下拉）
+        function setEvalsetStatusFilter(val) {
+            state._evalsetStatusFilter = val || 'all';
+            _rerenderEvalsetDetail();
+        }
+        // P-2: 一键重置全部筛选（搜索词 + 类型 + 标签 + 状态）
+        function resetAllEvalsetFilters() {
+            state._evalsetKeyword = '';
+            state._evalsetTagFilter = [];
+            state._evalsetTypeFilter = [];
+            state._evalsetStatusFilter = 'all';
             _rerenderEvalsetDetail();
         }
         // U-6: 关键词搜索（debounce 200ms）
@@ -5366,6 +5625,157 @@
             }
         }
 
+        // P-1: 统一规格——Case 对比视图（run 详情「查看」）与统计弹窗「详情」共用渲染函数
+        // 规格基准：三栏对比（INPUT/EXPECTED/ACTUAL，超长截断+展开）+ 判定行 + 多验证列表 + Judge 信息
+        function renderCaseRunDetailBody(hh, judge) {
+            // 兼容字段：run.results[i] 与 history 项字段差异统一
+            const actualOutput = hh.actual_output || hh.actual || '';
+            const vars = hh.variables || {};
+            const checks = hh.check_results || [];
+            const inputText = hh.input || hh.case_name || '';
+            const expectedRaw = hh.expected_output || hh.output_requirement || '';
+
+            // Input 行（主 input + variables）
+            const inputRows = [];
+            inputRows.push({ name: 'input', value: inputText, isMain: true });
+            for (const [k, v] of Object.entries(vars)) {
+                inputRows.push({ name: k, value: typeof v === 'string' ? v : JSON.stringify(v), isMain: false });
+            }
+
+            // Validation 合成：check_results 为空时从主验证字段回退
+            let displayChecks = checks;
+            if (displayChecks.length === 0 && hh.eval_type) {
+                const mainType = hh.eval_type;
+                let fallbackExpected;
+                if (mainType === 'llm_judge') {
+                    fallbackExpected = hh.output_requirement || hh.expected_output || '';
+                } else if (mainType === 'contains' || mainType === 'not_contains') {
+                    fallbackExpected = (hh.eval_params || {}).substring || '';
+                } else if (mainType === 'length') {
+                    const ep = hh.eval_params || {};
+                    const parts = [];
+                    if (ep.min != null) parts.push('min=' + ep.min);
+                    if (ep.max != null) parts.push('max=' + ep.max);
+                    fallbackExpected = parts.join(', ');
+                } else {
+                    fallbackExpected = hh.expected_output || '';
+                }
+                displayChecks = [{
+                    field: 'output', eval_type: mainType, expected: fallbackExpected,
+                    passed: !!hh.passed, score: hh.passed ? 1.0 : 0.0,
+                    judge_raw_response: null, synthesized: true,
+                }];
+            }
+            const hasLlmChecks = displayChecks.some(c => c.eval_type === 'llm_judge');
+            const hasJudge = judge && (judge.model || judge.api_type);
+
+            // 三栏对比（超长截断 + 展开）
+            const truncate = (s, n) => (s && s.length > n) ? s.slice(0, n) + '…' : (s || '');
+            const renderColumn = (header, content, opts = {}) => {
+                const max = opts.max || 200;
+                const expanded = opts.expanded || false;
+                const id = opts.id || ('col_' + header + '_' + Math.random().toString(36).slice(2, 8));
+                const text = content || '';
+                const tooLong = text.length > max;
+                return `
+                    <div class="comparison-column">
+                        <div class="comparison-header">${header}</div>
+                        <div class="comparison-content" id="${id}" style="${expanded ? '' : (tooLong ? 'max-height: 120px; overflow: hidden;' : '')}">
+                            <pre style="margin:0; white-space: pre-wrap; word-break: break-all; font-family: monospace; font-size: 11px;">${escapeHtml(text)}</pre>
+                        </div>
+                        ${tooLong ? `<div style="margin-top: 4px;"><span style="color: var(--blue); cursor: pointer; font-size: 11px; text-decoration: underline;" onclick="var el=document.getElementById('${id}'); el.style.maxHeight = el.style.maxHeight === 'none' ? '120px' : 'none'; this.textContent = el.style.maxHeight === 'none' ? '收起' : '展开全部'">${expanded ? '收起' : '展开全部'}</span></div>` : ''}
+                    </div>
+                `;
+            };
+
+            const inputCol = renderColumn('INPUT', inputRows.map(r => `[${r.isMain ? '主' : r.name}] ${r.value}`).join('\n'), { max: 300 });
+            const expectedCol = renderColumn('EXPECTED', expectedRaw || (displayChecks[0] && displayChecks[0].expected) || '-', { max: 300 });
+            const actualCol = renderColumn('ACTUAL OUTPUT', actualOutput, { max: 300 });
+
+            // 判定行
+            const statusBadge = hh.passed
+                ? '<span class="status-badge status-passed"><span class="status-dot"></span>通过</span>'
+                : (hh.skipped_reason ? '<span class="status-badge status-disabled"><span class="status-dot"></span>跳过: ' + escapeHtml(hh.skipped_reason) + '</span>' : '<span class="status-badge status-failed"><span class="status-dot"></span>失败</span>');
+            const judgeTokenLine = hh.judge_token ? `<span style="margin-left: 16px; color: var(--ink-4);" title="LLM Judge 自身消耗">Judge token: ${hh.judge_token}</span>` : '';
+
+            // Validation 表格
+            const validationRows = displayChecks.map(c => {
+                const fld = c.field || 'output';
+                const typeLabel = c.eval_type || 'exact';
+                let expectedDisplay = c.expected || '—';
+                let resultDisplay;
+                if (c.judge_raw_response) {
+                    resultDisplay = c.judge_raw_response.length > 80 ? c.judge_raw_response.slice(0, 80) + '…' : c.judge_raw_response;
+                } else {
+                    resultDisplay = c.passed ? '✓ 通过' : '✗ 失败';
+                }
+                const synthTag = c.synthesized ? `<span style="color: var(--ink-5); font-size: 10px;">（历史回退）</span>` : '';
+                return `
+                    <tr>
+                        <td style="padding: 4px 6px; font-family: monospace; font-size: 11px;">${escapeHtml(fld)}${synthTag}</td>
+                        <td style="padding: 4px 6px;"><span class="tag tag-${escapeHtml(c.eval_type || 'exact')}">${escapeHtml(typeLabel)}</span></td>
+                        <td style="padding: 4px 6px; font-family: monospace; font-size: 11px;" title="${escapeHtml(expectedDisplay)}">${escapeHtml(expectedDisplay.length > 40 ? expectedDisplay.slice(0, 40) + '…' : expectedDisplay)}</td>
+                        <td style="padding: 4px 6px; font-family: monospace; font-size: 11px; ${c.passed ? 'color: var(--green);' : 'color: var(--red);'}" title="${escapeHtml(resultDisplay)}">${escapeHtml(resultDisplay)}</td>
+                        <td style="padding: 4px 6px; font-size: 11px; text-align: right;">${c.score != null ? Number(c.score).toFixed(2) : '—'}</td>
+                    </tr>
+                `;
+            }).join('');
+
+            // llm_judge 原始响应下钻
+            const llmDrillBlocks = displayChecks.filter(c => c.eval_type === 'llm_judge' && c.judge_raw_response).map((c, i) => {
+                const rawId = `llmRaw_${hh.run_id || 'x'}_${i}`;
+                return `
+                    <div style="margin-top: 6px;">
+                        <span style="color: var(--blue); cursor: pointer; text-decoration: underline; font-size: 11px;" onclick="var d=document.getElementById('${rawId}'); d.style.display = d.style.display === 'none' ? 'block' : 'none'">▾ Judge 原始响应（${escapeHtml(c.field || 'output')}）</span>
+                        <div id="${rawId}" style="display: none; margin-top: 4px; padding: 6px 8px; background: var(--bg-2); border-radius: 4px; font-family: monospace; font-size: 11px; white-space: pre-wrap; max-height: 240px; overflow: auto;">${escapeHtml(c.judge_raw_response)}</div>
+                    </div>
+                `;
+            }).join('');
+
+            // Judge 信息块
+            const judgeBlock = hasLlmChecks && hasJudge ? `
+                <div style="margin-top: 12px; padding: 8px 12px; background: var(--light-bg); border-radius: 6px;">
+                    <div style="font-size: 11px; color: var(--ink-3); margin-bottom: 4px; font-weight: 600;">Judge 模型</div>
+                    <div style="font-size: 11px; color: var(--ink-2);">
+                        模型：<code>${escapeHtml(judge.model || '—')}</code> · API 类型：${escapeHtml(judge.api_type || '—')}
+                    </div>
+                    ${judge.prompt_summary ? `<div style="font-size: 10px; color: var(--ink-4); margin-top: 4px;">提示词摘要：${escapeHtml(judge.prompt_summary)}</div>` : ''}
+                </div>
+            ` : '';
+
+            // 头部判定行（状态/得分/延迟/token）
+            const headerLine = `
+                <div style="display: flex; gap: 16px; margin-bottom: 12px; font-size: 11px; align-items: center; flex-wrap: wrap;">
+                    ${statusBadge}
+                    <span style="color: var(--ink-4);">得分: ${hh.score != null ? Number(hh.score).toFixed(2) : '-'}</span>
+                    <span style="color: var(--ink-4);">延迟: ${((hh.latency_ms || 0) / 1000).toFixed(2)}s</span>
+                    <span style="color: var(--ink-4);" title="${hh.token_missing ? '响应未配置 token 统计路径，或路径未命中' : ''}">token: ${hh.token_missing ? '不可得' : (hh.token_used || 0)}</span>
+                    ${judgeTokenLine}
+                    ${hh.version_name ? `<span style="color: var(--ink-4);">${escapeHtml(hh.version_name)}</span>` : ''}
+                </div>
+            `;
+
+            return `
+                ${headerLine}
+                <div class="comparison-view">${inputCol}${expectedCol}${actualCol}</div>
+                <div class="form-group" style="margin-top: 16px;">
+                    <label class="form-label">全部 Validation（${displayChecks.length} 项，${displayChecks.filter(c => c.passed).length}/${displayChecks.length} 通过）</label>
+                    <table style="font-size: 12px; border-collapse: collapse; width: 100%;">
+                        <thead><tr style="text-align: left; color: var(--ink-5); border-bottom: 1px solid var(--border);">
+                            <th style="padding: 3px 6px;">字段</th>
+                            <th style="padding: 3px 6px;">类型</th>
+                            <th style="padding: 3px 6px;">期望 / 判据</th>
+                            <th style="padding: 3px 6px;">结果</th>
+                            <th style="padding: 3px 6px; text-align: right;">得分</th>
+                        </tr></thead>
+                        <tbody>${validationRows || `<tr><td colspan="5" style="padding: 6px; color: var(--ink-4); text-align: center;">无验证记录</td></tr>`}</tbody>
+                    </table>
+                    ${llmDrillBlocks}
+                </div>
+                ${judgeBlock}
+            `;
+        }
+
         function showRunCaseDetail(index) {
             const run = state.currentRun;
             if (!run || !run.results || !run.results[index]) return;
@@ -5376,50 +5786,19 @@
                 (state.currentRunEvalset.cases || []).forEach(c => { evalsetMap[c.case_name] = c; });
             }
             const cs = evalsetMap[result.case_name] || {};
+            // 统一字段：合并 result + cs 供 renderCaseRunDetailBody 使用
+            const hh = Object.assign({}, result, {
+                input: cs.input || result.case_name,
+                expected_output: cs.expected_output || result.expected_output,
+                output_requirement: cs.output_requirement || result.output_requirement,
+                variables: cs.variables || result.variables || {},
+                eval_type: result.eval_type || cs.eval_type,
+                eval_params: result.eval_params || cs.eval_params,
+                version_name: run.version_name || '',
+            });
+            const judge = state.currentProject?.judge_config || null;
 
-            document.getElementById('caseDetailContent').innerHTML = `
-                <div class="comparison-view">
-                    <div class="comparison-column">
-                        <div class="comparison-header">INPUT</div>
-                        <div class="comparison-content">${escapeHtml(cs.input || result.case_name)}</div>
-                    </div>
-                    <div class="comparison-column">
-                        <div class="comparison-header">EXPECTED</div>
-                        <div class="comparison-content">${escapeHtml(cs.expected_output || cs.output_requirement || '-')}</div>
-                    </div>
-                    <div class="comparison-column">
-                        <div class="comparison-header">ACTUAL OUTPUT</div>
-                        <div class="comparison-content">${escapeHtml(result.actual_output)}</div>
-                    </div>
-                </div>
-                <div style="margin-top: 16px;">
-                    <span class="status-badge ${result.passed ? 'status-passed' : result.skipped_reason ? 'status-disabled' : 'status-failed'}">
-                        <span class="status-dot"></span>
-                        ${result.passed ? '通过' : result.skipped_reason ? '跳过: ' + escapeHtml(result.skipped_reason) : '失败'}
-                    </span>
-                    <span style="margin-left: 16px; color: var(--ink-4);">得分: ${result.score}</span>
-                    <span style="margin-left: 16px; color: var(--ink-4);">延迟: ${((result.latency_ms || 0) / 1000).toFixed(2)}s</span>
-                    <span style="margin-left: 16px; color: var(--ink-4);" title="${result.token_missing ? '响应未配置 token 统计路径，或路径未命中' : ''}">token: ${result.token_missing ? '不可得' : result.token_used}</span>
-                    ${result.judge_token ? `<span style="margin-left: 16px; color: var(--ink-4);" title="LLM Judge 自身消耗">Judge token: ${result.judge_token}</span>` : ''}
-                </div>
-                ${result.check_results && result.check_results.length ? `
-                    <div class="check-result-list">
-                        <div style="font-size: 12px; color: var(--ink-3); margin-bottom: 6px;">多字段验证 checks</div>
-                        ${result.check_results.map(c => `
-                            <div class="check-result-row">
-                                <span class="chk-status ${c.passed ? 'pass' : 'fail'}"></span>
-                                <span style="flex: 1;"><strong>${escapeHtml(c.name || '')}</strong></span>
-                                <span style="color: var(--ink-4);">得分 ${c.score != null ? Number(c.score).toFixed(2) : '-'} · ${c.passed ? '通过' : '失败'}</span>
-                            </div>
-                        `).join('')}
-                    </div>
-                ` : ''}
-                ${cs.checks && cs.checks.length ? `
-                    <div style="margin-top: 12px; font-size: 11px; color: var(--ink-4);">
-                        配置的 checks：${cs.checks.map(c => escapeHtml(c.name + '(' + c.field + '·' + c.eval_type + ')')).join('，')}
-                    </div>
-                ` : ''}
-            `;
+            document.getElementById('caseDetailContent').innerHTML = renderCaseRunDetailBody(hh, judge);
             document.getElementById('caseModal').classList.remove('hidden');
         }
 
@@ -5572,157 +5951,25 @@
             `;
         }
 
-        // O-3/W-5: Case 历史 run 详情下钻弹窗
+        // O-3/W-5/P-1: Case 历史 run 详情下钻弹窗（复用 renderCaseRunDetailBody，规格与 run 详情「查看」一致）
         function showCaseRunDetailModal(hh, judge) {
-            const vars = hh.variables || {};
-            const checks = hh.check_results || [];
-
-            // Input 渲染：主 input 行 + variables 行
-            const inputRows = [];
-            inputRows.push({ name: 'input', value: hh.input || '', isMain: true });
-            for (const [k, v] of Object.entries(vars)) {
-                inputRows.push({ name: k, value: typeof v === 'string' ? v : JSON.stringify(v), isMain: false });
-            }
-
-            // Validation 表格渲染：优先用 check_results，否则从主验证字段回退合成
-            let displayChecks = checks;
-            if (displayChecks.length === 0 && hh.eval_type) {
-                // 回退：从主验证字段（hh.eval_type / expected_output / output_requirement / eval_params / passed）合成一条
-                const mainType = hh.eval_type;
-                let fallbackExpected;
-                if (mainType === 'llm_judge') {
-                    fallbackExpected = hh.output_requirement || hh.expected_output || '';
-                } else if (mainType === 'contains' || mainType === 'not_contains') {
-                    const ep = hh.eval_params || {};
-                    fallbackExpected = ep.substring || '';
-                } else if (mainType === 'length') {
-                    const ep = hh.eval_params || {};
-                    const parts = [];
-                    if (ep.min != null) parts.push('min=' + ep.min);
-                    if (ep.max != null) parts.push('max=' + ep.max);
-                    fallbackExpected = parts.join(', ');
-                } else {
-                    fallbackExpected = hh.expected_output || '';
-                }
-                displayChecks = [{
-                    field: 'output',
-                    eval_type: mainType,
-                    expected: fallbackExpected,
-                    passed: !!hh.passed,
-                    score: hh.passed ? 1.0 : 0.0,
-                    judge_raw_response: null,
-                    synthesized: true,
-                }];
-            }
-            const hasLlmChecks = displayChecks.some(c => c.eval_type === 'llm_judge');
-            const hasJudge = judge && (judge.model || judge.api_type);
-
-            // Judge 信息块
-            const judgeBlock = hasLlmChecks && hasJudge ? `
-                <div style="margin-top: 12px; padding: 8px 12px; background: var(--light-bg); border-radius: 6px;">
-                    <div style="font-size: 11px; color: var(--ink-3); margin-bottom: 4px; font-weight: 600;">Judge 模型</div>
-                    <div style="font-size: 11px; color: var(--ink-2);">
-                        模型：<code>${escapeHtml(judge.model || '—')}</code> · API 类型：${escapeHtml(judge.api_type || '—')}
-                    </div>
-                    ${judge.prompt_summary ? `<div style="font-size: 10px; color: var(--ink-4); margin-top: 4px;">提示词摘要：${escapeHtml(judge.prompt_summary)}</div>` : ''}
-                </div>
-            ` : '';
-
-            // llm_judge 原始响应可下钻
-            const llmDrillBlocks = displayChecks.filter(c => c.eval_type === 'llm_judge' && c.judge_raw_response).map((c, i) => {
-                const rawId = `llmRaw_${hh.run_id}_${i}`;
-                return `
-                    <div style="margin-top: 6px;">
-                        <span style="color: var(--blue); cursor: pointer; text-decoration: underline; font-size: 11px;" onclick="var d=document.getElementById('${rawId}'); d.style.display = d.style.display === 'none' ? 'block' : 'none'">▾ Judge 原始响应（${escapeHtml(c.field || 'output')}）</span>
-                        <div id="${rawId}" style="display: none; margin-top: 4px; padding: 6px 8px; background: var(--bg-2); border-radius: 4px; font-family: monospace; font-size: 11px; white-space: pre-wrap; max-height: 240px; overflow: auto;">${escapeHtml(c.judge_raw_response)}</div>
-                    </div>
-                `;
-            }).join('');
-
-            // Validation 表格行渲染
-            const validationRows = displayChecks.map(c => {
-                const fld = c.field || 'output';
-                const typeLabel = c.eval_type || 'exact';
-                let expectedDisplay = c.expected || '—';
-                let resultDisplay;
-                if (c.judge_raw_response) {
-                    resultDisplay = c.judge_raw_response.length > 80 ? c.judge_raw_response.slice(0, 80) + '…' : c.judge_raw_response;
-                } else {
-                    resultDisplay = c.passed ? '✓ 通过' : '✗ 失败';
-                }
-                const synthTag = c.synthesized ? `<span style="color: var(--ink-5); font-size: 10px;">（历史回退）</span>` : '';
-                return `
-                    <tr>
-                        <td style="padding: 4px 6px; font-family: monospace; font-size: 11px;">${escapeHtml(fld)}${synthTag}</td>
-                        <td style="padding: 4px 6px;">
-                            <span class="tag tag-${escapeHtml(c.eval_type || 'exact')}">${escapeHtml(typeLabel)}</span>
-                        </td>
-                        <td style="padding: 4px 6px; font-family: monospace; font-size: 11px;" title="${escapeHtml(expectedDisplay)}">${escapeHtml(expectedDisplay.length > 40 ? expectedDisplay.slice(0, 40) + '…' : expectedDisplay)}</td>
-                        <td style="padding: 4px 6px; font-family: monospace; font-size: 11px; ${c.passed ? 'color: var(--green);' : 'color: var(--red);'}" title="${escapeHtml(resultDisplay)}">${escapeHtml(resultDisplay)}</td>
-                        <td style="padding: 4px 6px; font-size: 11px; text-align: right;">${c.score != null ? Number(c.score).toFixed(2) : '—'}</td>
-                    </tr>
-                `;
-            }).join('');
-
             const modal = document.createElement('div');
             modal.className = 'modal-overlay';
             modal.id = 'caseRunDetailModal';
             modal.innerHTML = `
-                <div class="modal" style="max-width: 720px; max-height: 80vh; overflow: auto;">
+                <div class="modal" style="max-width: 760px; max-height: 85vh; overflow: auto;">
                     <div class="modal-header">
                         <span class="modal-title">Run 详情 · ${escapeHtml(hh.run_id || '')}</span>
                         <button class="modal-close" onclick="closeModal('caseRunDetailModal')">×</button>
                     </div>
                     <div class="modal-body">
-                        <div style="display: flex; gap: 16px; margin-bottom: 12px; font-size: 11px; color: var(--ink-4);">
+                        <div style="display: flex; gap: 16px; margin-bottom: 8px; font-size: 11px; color: var(--ink-4);">
                             <span>${escapeHtml(hh.created_at ? new Date(hh.created_at).toLocaleString('zh-CN', { hour12: false }) : '')}</span>
                             <span>耗时 ${((hh.latency_ms || 0) / 1000).toFixed(2)}s</span>
                             <span>token ${hh.token_used || 0}${hh.judge_token ? ` · judge ${hh.judge_token}` : ''}</span>
-                            <span>${escapeHtml(hh.version_name || '')}</span>
+                            ${hh.version_name ? `<span>${escapeHtml(hh.version_name)}</span>` : ''}
                         </div>
-
-                        <div class="form-group">
-                            <label class="form-label">输入 Input</label>
-                            <div style="font-size: 11px; color: var(--ink-4); margin-bottom: 4px;">
-                                <code>input</code> 为保留字主输入；以下为全部输入变量
-                            </div>
-                            <table style="font-size: 12px; border-collapse: collapse; width: 100%;">
-                                <thead><tr style="text-align: left; color: var(--ink-5); border-bottom: 1px solid var(--border);">
-                                    <th style="padding: 3px 6px; width: 30%;">变量</th>
-                                    <th style="padding: 3px 6px;">值</th>
-                                </tr></thead>
-                                <tbody>
-                                    ${inputRows.map(r => `
-                                        <tr style="border-bottom: 1px solid var(--border);">
-                                            <td style="padding: 4px 6px; font-family: monospace; font-weight: ${r.isMain ? '600' : '400'}; ${r.isMain ? 'color: var(--accent);' : ''}">${escapeHtml(r.name)}</td>
-                                            <td style="padding: 4px 6px; font-family: monospace; white-space: pre-wrap; word-break: break-all;">${escapeHtml(r.value)}</td>
-                                        </tr>
-                                    `).join('')}
-                                </tbody>
-                            </table>
-                        </div>
-
-                        <div class="form-group">
-                            <label class="form-label">实际输出 Actual</label>
-                            <div style="padding: 8px 12px; background: var(--light-bg); border-radius: 4px; font-family: monospace; font-size: 12px; white-space: pre-wrap; word-break: break-all; max-height: 180px; overflow: auto;">${escapeHtml(hh.actual_output || '')}</div>
-                        </div>
-
-                        <div class="form-group">
-                            <label class="form-label">全部 Validation（${displayChecks.length} 项，${displayChecks.filter(c => c.passed).length}/${displayChecks.length} 通过）</label>
-                            <table style="font-size: 12px; border-collapse: collapse; width: 100%;">
-                                <thead><tr style="text-align: left; color: var(--ink-5); border-bottom: 1px solid var(--border);">
-                                    <th style="padding: 3px 6px;">字段</th>
-                                    <th style="padding: 3px 6px;">类型</th>
-                                    <th style="padding: 3px 6px;">期望 / 判据</th>
-                                    <th style="padding: 3px 6px;">结果</th>
-                                    <th style="padding: 3px 6px; text-align: right;">得分</th>
-                                </tr></thead>
-                                <tbody>${validationRows || `<tr><td colspan="5" style="padding: 6px; color: var(--ink-4); text-align: center;">无验证记录</td></tr>`}</tbody>
-                            </table>
-                            ${llmDrillBlocks}
-                        </div>
-
-                        ${judgeBlock}
+                        ${renderCaseRunDetailBody(hh, judge)}
                     </div>
                     <div class="modal-footer">
                         <button class="btn btn-secondary" onclick="closeModal('caseRunDetailModal')">关闭</button>

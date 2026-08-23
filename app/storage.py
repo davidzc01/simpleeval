@@ -230,6 +230,10 @@ def get_project_trend(project_id: str, limit: int = 8) -> list[dict]:
         "run_id": r.id,
         "pass_rate": r.summary.pass_rate if r.summary else 0,
         "total_token": r.summary.total_token if r.summary else 0,
+        "judge_token": r.summary.judge_token if r.summary else 0,
+        "created_at": r.created_at,
+        "version_id": r.version_id,
+        "status": r.status,
     } for r in runs]
 
 

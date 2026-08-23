@@ -812,11 +812,45 @@ async def create_run(req: RunEvalRequest, background_tasks: BackgroundTasks):
 
 @router.get("/runs/{run_id}")
 async def get_run_detail(run_id: str, project_id: str):
-    """获取 run 详情"""
+    """获取 run 详情
+
+    P-1: results 各项合并 case 级字段（eval_type / input / variables / expected_output /
+    output_requirement / eval_params / validations / version_name），使 run 详情「查看」
+    与统计弹窗「详情」返回同一字段规格，前端 renderCaseRunDetailBody 可从同一份数据渲染。
+    """
     run = get_run(run_id, project_id)
     if not run:
         run_not_found(run_id)
-    return run.model_dump()
+    data = run.model_dump()
+
+    # join 评测集 case 定义（按 case_id 或 case_name 匹配）
+    evalset = get_evalset(run.evalset_id, project_id) if run.evalset_id else None
+    case_map = {}
+    if evalset:
+        for c in evalset.cases:
+            key = c.id or c.case_name
+            if key:
+                case_map[key] = c
+            case_map[c.case_name] = c
+
+    # version_id → version_name
+    project = get_project(project_id)
+    version_name = None
+    if project and project.versions and run.version_id:
+        version_name = next((v.name for v in project.versions if v.id == run.version_id), None)
+
+    for item in data.get("results", []):
+        cs = case_map.get(item.get("case_id")) or case_map.get(item.get("case_name"))
+        if cs:
+            item.setdefault("eval_type", cs.eval_type)
+            item.setdefault("input", cs.input)
+            item.setdefault("variables", cs.variables or {})
+            item.setdefault("expected_output", cs.expected_output)
+            item.setdefault("output_requirement", cs.output_requirement)
+            item.setdefault("eval_params", cs.eval_params or {})
+            item.setdefault("validations", cs.validations or [])
+        item.setdefault("version_name", version_name)
+    return data
 
 
 @router.get("/projects/{project_id}/runs")
@@ -855,6 +889,120 @@ async def get_project_sampling(project_id: str):
     if not project:
         project_not_found(project_id)
     return compute_project_sampling(project_id)
+
+
+@router.get("/projects/{project_id}/overview")
+async def get_project_overview(project_id: str):
+    """P-3: 概览页数据（依据 docs/overview-redesign.md v2）
+
+    返回 4 区块数据：
+    ① delta：最近 completed run 与同版本内上次 completed run 的 pass_rate / 运行 token / 评测 token
+    ② 趋势：含 version_id/created_at/status 的 run 序列（旧→新，最多 20）
+    ③ 稳定性：min(pass^3) + 阈值计数 + 最不稳 3 case 列表（来自 sampling API）
+    ④ 上次 run 失败 case 列表（导航到问题）
+    另附 versions 与 content_updated_at（用于趋势分段与变更标记）
+    """
+    project = get_project(project_id)
+    if not project:
+        project_not_found(project_id)
+
+    runs = list_runs(project_id)
+    completed = [r for r in runs if r.status == "completed"]
+
+    # ① delta 基准：同版本内上次 completed run
+    latest = completed[0] if completed else None
+    baseline = None
+    is_first_in_version = True
+    if latest and latest.version_id:
+        same_version = [r for r in completed if r.version_id == latest.version_id]
+        if len(same_version) > 1:
+            baseline = same_version[1]  # 新→旧排序，[0]=最新，[1]=上次
+            is_first_in_version = False
+    elif latest and not latest.version_id:
+        # 旧 run 无 version_id：取上次 completed 作为 baseline
+        if len(completed) > 1:
+            baseline = completed[1]
+            is_first_in_version = False
+
+    def _delta(cur, base, key):
+        if not cur or not base:
+            return None
+        cv = (cur.summary.pass_rate if key == "pass_rate" and cur.summary else
+              cur.summary.total_token if key == "total_token" and cur.summary else
+              cur.summary.judge_token if cur.summary else 0)
+        bv = (base.summary.pass_rate if key == "pass_rate" and base.summary else
+              base.summary.total_token if key == "total_token" and base.summary else
+              base.summary.judge_token if base.summary else 0)
+        return cv - bv
+
+    delta = None
+    if latest:
+        delta = {
+            "pass_rate": {"current": latest.summary.pass_rate if latest.summary else 0,
+                          "previous": baseline.summary.pass_rate if baseline and baseline.summary else None,
+                          "diff": _delta(latest, baseline, "pass_rate")},
+            "total_token": {"current": latest.summary.total_token if latest.summary else 0,
+                            "previous": baseline.summary.total_token if baseline and baseline.summary else None,
+                            "diff": _delta(latest, baseline, "total_token")},
+            "judge_token": {"current": latest.summary.judge_token if latest.summary else 0,
+                            "previous": baseline.summary.judge_token if baseline and baseline.summary else None,
+                            "diff": _delta(latest, baseline, "judge_token")},
+            "is_first_in_version": is_first_in_version,
+        }
+
+    # ② 趋势（旧→新，最多 20）
+    trend = list(reversed(runs[:20]))
+    trend_data = [{
+        "run_id": r.id, "pass_rate": r.summary.pass_rate if r.summary else 0,
+        "total_token": r.summary.total_token if r.summary else 0,
+        "judge_token": r.summary.judge_token if r.summary else 0,
+        "created_at": r.created_at, "version_id": r.version_id,
+        "status": r.status,
+    } for r in trend]
+
+    # ③ 稳定性：来自 sampling
+    sampling = compute_project_sampling(project_id)
+    evalsets = list_evalsets(project_id)
+    content_updated_at = evalsets[0].content_updated_at if evalsets else None
+    # min(pass^3) + 阈值计数：取 evalset sampling 的 case 级数据
+    case_stability = []
+    if evalsets:
+        es_sampling = compute_evalset_sampling(project_id, evalsets[0].id)
+        case_stability = es_sampling.get("cases", [])
+    # 阈值计数
+    below_50 = [c for c in case_stability if c.get("pass_pow_3") is not None and c["pass_pow_3"] < 0.5]
+    below_80 = [c for c in case_stability if c.get("pass_pow_3") is not None and 0.5 <= c["pass_pow_3"] < 0.8]
+    min_pow3 = min((c["pass_pow_3"] for c in case_stability if c.get("pass_pow_3") is not None), default=None)
+    # 最不稳 3 case（pass^3 < 0.8 才算不稳，升序，排除 None）
+    unstable = sorted([c for c in case_stability if c.get("pass_pow_3") is not None and c["pass_pow_3"] < 0.8],
+                      key=lambda c: c["pass_pow_3"])[:3]
+
+    # ④ 上次 run 失败 case 列表
+    failed_cases = []
+    if latest:
+        failed_cases = [{"case_name": r.case_name, "case_id": r.case_id}
+                        for r in (latest.results or [])
+                        if not r.passed and not r.skipped_reason]
+
+    # 版本信息（用于趋势分段）
+    versions = [{"id": v.id, "name": v.name, "created_at": v.created_at}
+                for v in (project.versions or [])]
+
+    return {
+        "project_id": project_id,
+        "delta": delta,
+        "trend": trend_data,
+        "stability": {
+            "min_pass_pow_3": min_pow3,
+            "below_50_count": len(below_50),
+            "below_80_count": len(below_80),
+            "unstable_top3": unstable,
+        },
+        "failed_cases": failed_cases,
+        "versions": versions,
+        "content_updated_at": content_updated_at,
+        "latest_run_id": latest.id if latest else None,
+    }
 
 
 @router.get("/projects/{project_id}/regression-alerts")
@@ -943,6 +1091,7 @@ async def get_case_history(evalset_id: str, case_id: str, project_id: str):
         history.append({
             "run_id": run.id,
             "passed": result.passed,
+            "score": result.score,
             "skipped_reason": result.skipped_reason,
             "latency_ms": result.latency_ms,
             "token_used": result.token_used,
