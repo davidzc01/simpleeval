@@ -64,7 +64,7 @@ async def reclaim_orphan_runs():
     try:
         all_runs = list_runs()
     except Exception:
-        all_runs = []
+        return  # 存储未初始化时跳过后续步骤（含 T3-4 调度器）
     for run in all_runs:
         if run.status in ("running", "queued"):
             run.status = "failed"
