@@ -228,7 +228,15 @@ async def _evaluate_case(
         actual = f"[SKIPPED] {skipped_reason}"
         token = 0
         # 跳过时主验证也入 check_results，便于 UI 展示
-        check_results.append({"name": main_v.name or "主输出验证", "passed": False, "score": 0.0})
+        check_results.append({
+            "name": main_v.name or "主输出验证",
+            "field": main_v.field or "",
+            "eval_type": main_v.eval_type,
+            "expected": main_v.expected if main_v.eval_type != "llm_judge" else (main_v.output_requirement or ""),
+            "passed": False,
+            "score": 0.0,
+            "judge_raw_response": None,
+        })
         return False, 0.0, skipped_reason, 0, check_results, actual
 
     # 主验证

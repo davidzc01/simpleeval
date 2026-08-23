@@ -405,3 +405,162 @@ class TestW5CheckResultsEnrichment:
             )
         finally:
             loop.close()
+
+
+# ============== W-7 追补：旧项目启动时补初始版本 ==============
+
+class TestW7MigrateMissingVersions:
+    """W-7 追补：versions 为空的旧项目启动时自动补「初始版本」"""
+
+    def test_migrate_legacy_project_no_versions(self, isolated_storage):
+        """旧项目 versions=[] → 迁移后补 1 条初始版本"""
+        from app.storage import save_project, migrate_missing_initial_versions, list_projects
+        from app.models import Project, JudgeConfig, TargetConfig
+
+        # 模拟旧项目：直接创建一个无 versions 字段的项目（旧版本数据）
+        pid = "proj-old-w7"
+        project = Project(
+            id=pid, name="旧项目-无版本", task_shape="general",
+            judge_config=JudgeConfig(base_url="", api_key="", model=""),
+            target_config=TargetConfig(base_url="", api_key="", model=None),
+        )
+        # 手动移除 versions（模拟旧数据零迁移情况）
+        data = project.model_dump()
+        del data["versions"]
+        import json as _json
+        (isolated_storage.PROJECTS_DIR / f"{pid}.json").write_text(
+            _json.dumps(data, ensure_ascii=False), encoding="utf-8"
+        )
+
+        count = migrate_missing_initial_versions()
+        assert count == 1
+
+        # 验证结果
+        projects = list_projects()
+        p = [x for x in projects if x.id == pid][0]
+        assert len(p.versions) == 1
+        assert p.versions[0].name == "初始版本"
+        assert p.versions[0].id.startswith("ver-")
+        assert p.versions[0].created_at  # 非空
+
+    def test_migrate_no_op_when_versions_exist(self, isolated_storage):
+        """已有 versions 的项目 → 迁移为 no-op，count=0 且内容不变"""
+        from app.storage import save_project, migrate_missing_initial_versions, list_projects
+        from app.models import Project, ProjectVersion, JudgeConfig, TargetConfig
+
+        pid = "proj-existing-w7"
+        v0 = ProjectVersion(id="ver-aaa", name="v0", created_at="2024-01-01T00:00:00Z")
+        project = Project(
+            id=pid, name="已有版本项目", task_shape="general",
+            judge_config=JudgeConfig(base_url="", api_key="", model=""),
+            target_config=TargetConfig(base_url="", api_key="", model=None),
+            versions=[v0],
+        )
+        save_project(project)
+
+        count = migrate_missing_initial_versions()
+        assert count == 0
+
+        projects = list_projects()
+        p = [x for x in projects if x.id == pid][0]
+        assert len(p.versions) == 1
+        assert p.versions[0].id == "ver-aaa"
+        assert p.versions[0].name == "v0"
+
+    def test_migrate_mixed_projects(self, isolated_storage):
+        """混合场景：部分有版本、部分无 → 只迁移无版本的"""
+        from app.storage import save_project, migrate_missing_initial_versions, list_projects
+        from app.models import Project, ProjectVersion, JudgeConfig, TargetConfig
+        import json as _json
+
+        # A：有版本（不迁移）
+        a = Project(
+            id="pa", name="A", task_shape="general",
+            judge_config=JudgeConfig(base_url="", api_key="", model=""),
+            target_config=TargetConfig(base_url="", api_key="", model=None),
+            versions=[ProjectVersion(id="vA", name="vA", created_at="2024-01-01T00:00:00Z")],
+        )
+        save_project(a)
+
+        # B：无 versions（迁移）
+        b = Project(
+            id="pb", name="B", task_shape="general",
+            judge_config=JudgeConfig(base_url="", api_key="", model=""),
+            target_config=TargetConfig(base_url="", api_key="", model=None),
+        )
+        b_data = b.model_dump()
+        del b_data["versions"]
+        (isolated_storage.PROJECTS_DIR / "pb.json").write_text(
+            _json.dumps(b_data, ensure_ascii=False), encoding="utf-8"
+        )
+
+        # C：无 versions（迁移）
+        c = Project(
+            id="pc", name="C", task_shape="general",
+            judge_config=JudgeConfig(base_url="", api_key="", model=""),
+            target_config=TargetConfig(base_url="", api_key="", model=None),
+        )
+        c_data = c.model_dump()
+        del c_data["versions"]
+        (isolated_storage.PROJECTS_DIR / "pc.json").write_text(
+            _json.dumps(c_data, ensure_ascii=False), encoding="utf-8"
+        )
+
+        count = migrate_missing_initial_versions()
+        assert count == 2
+
+        projects = {p.id: p for p in list_projects()}
+        assert len(projects["pa"].versions) == 1  # 不变
+        assert projects["pa"].versions[0].id == "vA"
+        assert len(projects["pb"].versions) == 1
+        assert projects["pb"].versions[0].name == "初始版本"
+        assert len(projects["pc"].versions) == 1
+        assert projects["pc"].versions[0].name == "初始版本"
+
+    def test_migrate_empty_versions_list(self, isolated_storage):
+        """旧项目 versions=[]（空列表但非 None）→ 也应触发迁移"""
+        from app.storage import migrate_missing_initial_versions, list_projects
+        from app.models import Project, JudgeConfig, TargetConfig
+        import json as _json
+
+        pid = "proj-empty-versions"
+        data = {
+            "id": pid, "name": "空列表项目", "task_shape": "general",
+            "judge_config": {"base_url": "", "api_key": "", "model": ""},
+            "target_config": {"base_url": "", "api_key": "", "model": None},
+            "versions": [],  # 空列表
+        }
+        (isolated_storage.PROJECTS_DIR / f"{pid}.json").write_text(
+            _json.dumps(data, ensure_ascii=False), encoding="utf-8"
+        )
+
+        count = migrate_missing_initial_versions()
+        assert count == 1
+
+        p = [x for x in list_projects() if x.id == pid][0]
+        assert len(p.versions) == 1
+        assert p.versions[0].name == "初始版本"
+
+    def test_migrate_idempotent(self, isolated_storage):
+        """迁移是幂等的：运行两次不重复补版本"""
+        from app.storage import migrate_missing_initial_versions, list_projects
+        from app.models import Project, JudgeConfig, TargetConfig
+        import json as _json
+
+        pid = "proj-idempotent"
+        data = {
+            "id": pid, "name": "幂等项目", "task_shape": "general",
+            "judge_config": {"base_url": "", "api_key": "", "model": ""},
+            "target_config": {"base_url": "", "api_key": "", "model": None},
+        }
+        (isolated_storage.PROJECTS_DIR / f"{pid}.json").write_text(
+            _json.dumps(data, ensure_ascii=False), encoding="utf-8"
+        )
+
+        count1 = migrate_missing_initial_versions()
+        assert count1 == 1
+        count2 = migrate_missing_initial_versions()
+        assert count2 == 0  # 第二次 no-op
+
+        p = [x for x in list_projects() if x.id == pid][0]
+        assert len(p.versions) == 1  # 只有一条，不重复

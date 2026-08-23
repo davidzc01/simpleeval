@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse
 from pathlib import Path
 
 from .routes import router
-from .storage import list_runs, save_run
+from .storage import list_runs, save_run, migrate_missing_initial_versions
 from .runner import _utc_now
 
 app = FastAPI(
@@ -46,16 +46,25 @@ async def _scheduled_regression_loop():
 
 @app.on_event("startup")
 async def reclaim_orphan_runs():
-    """B-19: 启动时回收僵尸 run。
+    """B-19 + W-7: 启动时执行多项迁移与回收。
 
-    BackgroundTasks 跑在 uvicorn 进程内，服务重启/崩溃会让 running/queued
-    状态的 run 永久停滞。启动时扫描全部 run，把 running/queued 的置为 failed，
-    error = "服务重启导致任务中断"。
+    1. B-19: 回收僵尸 run（running/queued 置为 failed）。
+    2. W-7 追补：为 versions 为空的旧项目补「初始版本」。
+    3. T3-4: 启动定时回归调度循环。
     """
+    # W-7 追补：旧项目补初始版本（在 storage 未初始化时跳过，异常安全）
+    try:
+        migrated = migrate_missing_initial_versions()
+        if migrated > 0:
+            logger.info("W-7 迁移完成：为 %d 个旧项目补了初始版本", migrated)
+    except Exception as e:
+        logger.warning("W-7 旧项目版本迁移跳过: %s", e)
+
+    # B-19: 回收僵尸 run
     try:
         all_runs = list_runs()
     except Exception:
-        return  # 存储 未初始化时跳过
+        all_runs = []
     for run in all_runs:
         if run.status in ("running", "queued"):
             run.status = "failed"

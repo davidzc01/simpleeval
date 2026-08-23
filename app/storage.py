@@ -10,7 +10,7 @@ from typing import Optional
 
 import anyio
 
-from .models import Project, EvalSet, EvalRun, TargetConfig, JudgeConfig
+from .models import Project, EvalSet, EvalRun, TargetConfig, JudgeConfig, ProjectVersion
 
 
 # 数据目录
@@ -569,3 +569,46 @@ def delete_tag(name: str) -> dict:
         if changed:
             save_evalset(es)
     return {"name": name, "affected_projects": sorted(affected_projects)}
+
+
+def _utc_now() -> str:
+    """获取当前 UTC 时间（ISO 8601 格式）"""
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _project_file_mtime(project_id: str) -> str:
+    """获取项目文件的修改时间作为旧项目的初始版本时间（fallback 到当前时间）"""
+    path = PROJECTS_DIR / f"{project_id}.json"
+    if path.exists():
+        mtime = path.stat().st_mtime
+        return datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+    return _utc_now()
+
+
+def migrate_missing_initial_versions() -> int:
+    """W-7 追补：启动时扫描所有项目，为 versions 为空的项目补「初始版本」。
+
+    创建时间优先用项目文件的 mtime（近似项目真实创建时间），否则用当前时间。
+    返回被迁移的项目数量（仅日志用）。
+    """
+    count = 0
+    for path in PROJECTS_DIR.glob("*.json"):
+        try:
+            data = _read_json(path)
+        except Exception:
+            continue
+        versions = data.get("versions") or []
+        if len(versions) > 0:
+            continue  # 已有版本，跳过
+        # 补初始版本
+        project_id = path.stem
+        created_at = _project_file_mtime(project_id)
+        version_id = f"ver-{uuid.uuid4().hex[:8]}"
+        data["versions"] = [{
+            "id": version_id,
+            "name": "初始版本",
+            "created_at": created_at,
+        }]
+        _write_json(path, data)
+        count += 1
+    return count
