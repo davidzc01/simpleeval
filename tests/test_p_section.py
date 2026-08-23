@@ -394,3 +394,19 @@ class TestP3OverviewRedesign:
         assert data["trend"] == []
         assert data["failed_cases"] == []
         assert data["latest_run_id"] is None
+
+    def test_overview_recent_runs_list(self, client, isolated_storage):
+        """P-5: 概览返回最近 run 列表（最多 10 条）"""
+        proj_id, _ = self._setup_project_with_runs(isolated_storage)
+        r = client.get(f"/api/projects/{proj_id}/overview")
+        recent = r.json()["recent_runs"]
+        assert len(recent) == 2
+        assert recent[0]["id"] == "run-p3-02"  # 最新在前
+        assert recent[1]["id"] == "run-p3-01"
+        for rr in recent:
+            assert "pass_rate" in rr
+            assert "total_token" in rr
+            assert "judge_token" in rr
+            assert "status" in rr
+            assert "version_name" in rr
+            assert "case_count" in rr

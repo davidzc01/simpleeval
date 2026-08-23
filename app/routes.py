@@ -984,6 +984,22 @@ async def get_project_overview(project_id: str):
                         for r in (latest.results or [])
                         if not r.passed and not r.skipped_reason]
 
+    # P-5: 最近 run 列表（最多 10 条，含摘要信息）
+    version_map = {v.id: v.name for v in (project.versions or [])}
+    recent_runs = [{
+        "id": r.id,
+        "status": r.status,
+        "created_at": r.created_at,
+        "version_id": r.version_id,
+        "version_name": version_map.get(r.version_id) if r.version_id else None,
+        "pass_rate": r.summary.pass_rate if r.summary else 0,
+        "total_token": r.summary.total_token if r.summary else 0,
+        "judge_token": r.summary.judge_token if r.summary else 0,
+        "case_count": len(r.results) if r.results else 0,
+        "filter_tags": getattr(r, "filter_tags", None) or [],
+        "trigger": getattr(r, "trigger", "manual"),
+    } for r in runs[:10]]
+
     # 版本信息（用于趋势分段）
     versions = [{"id": v.id, "name": v.name, "created_at": v.created_at}
                 for v in (project.versions or [])]
@@ -1002,6 +1018,7 @@ async def get_project_overview(project_id: str):
         "versions": versions,
         "content_updated_at": content_updated_at,
         "latest_run_id": latest.id if latest else None,
+        "recent_runs": recent_runs,
     }
 
 
@@ -1066,6 +1083,7 @@ async def get_case_history(evalset_id: str, case_id: str, project_id: str):
                 "model": jc.model or "",
                 "api_type": jc.api_type,
                 "prompt_summary": (prompt[:80] + ("…" if len(prompt) > 80 else "")) or "",
+                "prompt_full": prompt,
             }
     # 查全部 completed run
     all_runs = list_runs(project_id)

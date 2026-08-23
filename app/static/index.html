@@ -2546,7 +2546,6 @@
                         <div class="tab active" data-tab="overview" onclick="switchTab('overview')">概览</div>
                         <div class="tab" data-tab="evalsets" onclick="switchTab('evalsets')">评测集</div>
                         <div class="tab" data-tab="config" onclick="switchTab('config')">配置</div>
-                        <div class="tab" data-tab="history" onclick="switchTab('history')">历史</div>
                     </div>
 
                     <div id="tabContent">
@@ -2598,9 +2597,6 @@
                     break;
                 case 'config':
                     renderConfigTab(content, project);
-                    break;
-                case 'history':
-                    renderHistoryTab(content, project.id);
                     break;
             }
         }
@@ -2687,44 +2683,65 @@
             const versions = data.versions || [];
             const contentUpdatedAt = data.content_updated_at;
 
-            // ① delta 区
+            // P-4: 顶部版本信息条（直接取 versions 最新，不依赖 run）
+            const sortedVersions = [...versions].sort((a, b) => (a.created_at || '').localeCompare(b.created_at || ''));
+            const currentVersion = sortedVersions.length ? sortedVersions[sortedVersions.length - 1] : null;
+            const latestTrend = trend.length > 0 ? trend[trend.length - 1] : null;
+            const runVersion = latestTrend && latestTrend.version_id
+                ? versions.find(v => v.id === latestTrend.version_id) : null;
+            const runVersionHint = currentVersion && runVersion && runVersion.id !== currentVersion.id
+                ? `<span style="color: var(--amber, #b45309); margin-left: 6px;">（最近评测仍在 ${escapeHtml(runVersion.name)}）</span>`
+                : '';
+            const versionBar = currentVersion ? `
+                <div style="display: flex; justify-content: flex-end; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 12px; color: var(--ink-4);">
+                    <span>当前版本：<strong style="color: var(--ink-2);">${escapeHtml(currentVersion.name)}</strong>${runVersionHint}</span>
+                    <button class="btn btn-sm btn-primary" style="font-size: 11px; padding: 1px 8px;" onclick="showCreateVersionModal('${escapeHtml(projectId)}')">+ 开新版本</button>
+                    <button class="btn btn-sm btn-secondary" style="font-size: 11px; padding: 1px 8px;" onclick="showVersionCompareModal('${projectId}')">版本历史 →</button>
+                </div>
+            ` : `
+                <div style="display: flex; justify-content: flex-end; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 12px; color: var(--ink-4);">
+                    <span>当前版本：<em style="color: var(--ink-4);">还没有版本</em></span>
+                    <button class="btn btn-sm btn-primary" style="font-size: 11px; padding: 1px 8px;" onclick="showCreateVersionModal('${escapeHtml(projectId)}')">+ 开新版本</button>
+                </div>
+            `;
+
+            // delta 区
             const fmtPct = v => v != null ? (v * 100).toFixed(1) + '%' : '—';
             const fmtTok = v => v != null ? formatNumber(v) : '—';
-            const fmtDeltaPct = d => d != null ? (d > 0 ? `▲ +${(d * 100).toFixed(1)}pp` : `▼ ${Math.abs(d * 100).toFixed(1)}pp`) : '';
-            const fmtDeltaTok = d => d != null ? (d > 0 ? `▲ +${formatNumber(d)}` : `▼ -${formatNumber(Math.abs(d))}`) : '';
+            const fmtDeltaPct = d => d != null ? (d > 0 ? `▲+${(d * 100).toFixed(1)}pp` : `▼${Math.abs(d * 100).toFixed(1)}pp`) : '';
+            const fmtDeltaTok = d => d != null ? (d > 0 ? `▲+${formatNumber(d)}` : `▼-${formatNumber(Math.abs(d))}`) : '';
             const colorForPass = d => d == null ? 'var(--ink-4)' : (d > 0 ? 'var(--green)' : (d < 0 ? 'var(--red)' : 'var(--ink-4)'));
             const colorForCost = d => d == null ? 'var(--ink-4)' : (d > 0 ? 'var(--amber, #b45309)' : (d < 0 ? 'var(--green)' : 'var(--ink-4)'));
 
-            const deltaRow = (label, cur, prev, dStr, color, isCost) => `
-                <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--border);">
-                    <span style="font-size: 12px; color: var(--ink-3);">${label}</span>
-                    <div style="display: flex; align-items: center; gap: 12px;">
-                        <span style="font-size: 11px; color: var(--ink-4);">${prev != null ? prev : '—'}</span>
-                        <span style="color: var(--ink-5);">→</span>
-                        <span style="font-weight: 600; font-size: 13px;">${cur}</span>
-                        ${dStr ? `<span style="color: ${color}; font-size: 11px; font-weight: 600;">${dStr}</span>` : (delta && delta.is_first_in_version ? `<span style="color: var(--ink-5); font-size: 10px;">首轮</span>` : '')}
-                    </div>
+            // P-4: 布局收紧——固定宽 label 列 + 数据右对齐紧邻
+            const deltaRow = (label, cur, prev, dStr, color) => `
+                <div style="display: flex; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--border);">
+                    <span style="font-size: 12px; color: var(--ink-3); width: 110px; flex-shrink: 0;">${label}</span>
+                    <span style="font-size: 11px; color: var(--ink-4); width: 60px; text-align: right;">${prev != null ? prev : '—'}</span>
+                    <span style="color: var(--ink-5); margin: 0 6px;">→</span>
+                    <span style="font-weight: 600; font-size: 13px; min-width: 70px;">${cur}</span>
+                    ${dStr ? `<span style="color: ${color}; font-size: 11px; font-weight: 600;">${dStr}</span>` : (delta && delta.is_first_in_version ? `<span style="color: var(--ink-5); font-size: 10px;">首轮</span>` : '')}
                 </div>
             `;
 
             const deltaBlock = delta ? `
                 <div class="card" style="margin-bottom: 16px;">
-                    <div class="card-header" style="padding: 12px 16px; border-bottom: 1px solid var(--border);">
-                        <span class="card-title">① 最近评测 vs 同版本上次 run</span>
+                    <div class="card-header" style="padding: 10px 16px; border-bottom: 1px solid var(--border);">
+                        <span class="card-title">最近一次统计</span>
                     </div>
-                    <div style="padding: 4px 16px 12px;">
-                        ${deltaRow('pass rate', fmtPct(delta.pass_rate.current), delta.pass_rate.previous != null ? fmtPct(delta.pass_rate.previous) : null, fmtDeltaPct(delta.pass_rate.diff), colorForPass(delta.pass_rate.diff), false)}
-                        ${deltaRow('运行 token', fmtTok(delta.total_token.current), delta.total_token.previous != null ? fmtTok(delta.total_token.previous) : null, fmtDeltaTok(delta.total_token.diff), colorForCost(delta.total_token.diff), true)}
-                        ${deltaRow('评测 token', fmtTok(delta.judge_token.current), delta.judge_token.previous != null ? fmtTok(delta.judge_token.previous) : null, fmtDeltaTok(delta.judge_token.diff), colorForCost(delta.judge_token.diff), true)}
+                    <div style="padding: 4px 16px 8px;">
+                        ${deltaRow('pass rate', fmtPct(delta.pass_rate.current), delta.pass_rate.previous != null ? fmtPct(delta.pass_rate.previous) : null, fmtDeltaPct(delta.pass_rate.diff), colorForPass(delta.pass_rate.diff))}
+                        ${deltaRow('运行 token', fmtTok(delta.total_token.current), delta.total_token.previous != null ? fmtTok(delta.total_token.previous) : null, fmtDeltaTok(delta.total_token.diff), colorForCost(delta.total_token.diff))}
+                        ${deltaRow('评测 token', fmtTok(delta.judge_token.current), delta.judge_token.previous != null ? fmtTok(delta.judge_token.previous) : null, fmtDeltaTok(delta.judge_token.diff), colorForCost(delta.judge_token.diff))}
                     </div>
                 </div>
             ` : `<div class="card" style="margin-bottom: 16px; padding: 24px; text-align: center; color: var(--ink-4);">暂无 run 数据</div>`;
 
-            // ② 趋势区（按版本分段背景色 + 评测集变更标记 ◆）
+            // 趋势区（三系列：pass rate 折线 + 运行 token 柱 + 评测 token 柱）
             const trendBlock = trend.length > 0 ? `
                 <div class="card" style="margin-bottom: 16px;">
-                    <div class="card-header" style="padding: 12px 16px; border-bottom: 1px solid var(--border);">
-                        <span class="card-title">② 质量趋势（按版本分段）</span>
+                    <div class="card-header" style="padding: 10px 16px; border-bottom: 1px solid var(--border);">
+                        <span class="card-title">质量与成本趋势</span>
                     </div>
                     <div style="padding: 16px;">
                         ${renderTrendChartV2(trend, versions, contentUpdatedAt)}
@@ -2732,12 +2749,17 @@
                 </div>
             ` : '';
 
-            // ③ 稳定性组合
+            // 稳定性组合
             const minP3 = stability.min_pass_pow_3;
+            // 总 hover hint：标题旁一个总的 ?，解释三个指标
+            const stabilityTip = '短板 pass^3：所有 case 中 pass^3 最低值，是项目稳定性的底线指标\n低于 50%：pass^3 < 50% 的 case 数量，属于严重不稳的用例\n50-80% 区间：50% ≤ pass^3 < 80% 的 case 数量，存在明显波动风险';
             const stabilityBlock = `
                 <div class="card" style="margin-bottom: 16px;">
-                    <div class="card-header" style="padding: 12px 16px; border-bottom: 1px solid var(--border);">
-                        <span class="card-title">③ 稳定性（组合表达）</span>
+                    <div class="card-header" style="padding: 10px 16px; border-bottom: 1px solid var(--border);">
+                        <div style="display: flex; align-items: center; gap: 4px;">
+                            <span class="card-title">稳定性短板</span>
+                            <span title="${escapeHtml(stabilityTip)}" style="display: inline-flex; align-items: center; justify-content: center; width: 14px; height: 14px; border: 1px dashed var(--ink-4); border-radius: 50%; font-size: 10px; color: var(--ink-4); cursor: help;">?</span>
+                        </div>
                     </div>
                     <div style="padding: 12px 16px;">
                         <div style="display: flex; gap: 24px; margin-bottom: 12px; font-size: 12px;">
@@ -2767,16 +2789,16 @@
                                     </div>
                                 `).join('')}
                             </div>
-                        ` : '<div style="font-size: 11px; color: var(--ink-4);">暂无 case 级采样数据</div>'}
+                        ` : '<div style="font-size: 11px; color: var(--ink-4);">暂无采样数据</div>'}
                     </div>
                 </div>
             `;
 
-            // ④ 上次 run 失败 case 导航
+            // 最近失败
             const failedBlock = failed.length > 0 ? `
-                <div class="card">
-                    <div class="card-header" style="padding: 12px 16px; border-bottom: 1px solid var(--border);">
-                        <span class="card-title">④ 上次 run 失败 case（导航到问题）</span>
+                <div class="card" style="margin-bottom: 16px;">
+                    <div class="card-header" style="padding: 10px 16px; border-bottom: 1px solid var(--border);">
+                        <span class="card-title">最近失败</span>
                     </div>
                     <div style="padding: 12px 16px;">
                         <div style="display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px;">
@@ -2787,33 +2809,138 @@
                 </div>
             ` : '';
 
-            return deltaBlock + trendBlock + stabilityBlock + failedBlock;
+            // P-5: 最近 run 列表（合并历史 tab，始终显示）
+            let recentRuns = data.recent_runs || [];
+            // 兜底：若后端版本过旧无 recent_runs，但有 latest_run_id（即 failed_cases 有数据），合成占位行让列表非空
+            if (recentRuns.length === 0 && data.latest_run_id) {
+                recentRuns = [{
+                    id: data.latest_run_id,
+                    status: 'completed',
+                    created_at: (data.trend || []).length ? data.trend[data.trend.length - 1].created_at : null,
+                    version_id: null,
+                    version_name: null,
+                    pass_rate: (data.trend || []).length ? data.trend[data.trend.length - 1].pass_rate : null,
+                    total_token: (data.trend || []).length ? data.trend[data.trend.length - 1].total_token : 0,
+                    judge_token: (data.trend || []).length ? data.trend[data.trend.length - 1].judge_token : 0,
+                    case_count: (failed.length || 0),
+                    filter_tags: [],
+                    trigger: 'manual',
+                }];
+            }
+            const runListBlock = `
+                <div class="card" style="margin-bottom: 16px;">
+                    <div class="card-header" style="padding: 10px 16px; border-bottom: 1px solid var(--border);">
+                        <span class="card-title">最近评测</span>
+                        <span style="font-size: 11px; color: var(--ink-4); margin-left: 8px;">${recentRuns.length} 条</span>
+                    </div>
+                    ${recentRuns.length > 0 ? `
+                    <div class="table-wrapper" style="overflow-x: auto;">
+                        <table class="table" style="font-size: 12px;">
+                            <thead>
+                                <tr>
+                                    <th>状态</th>
+                                    <th>时间</th>
+                                    <th style="text-align: right;">pass rate</th>
+                                    <th style="text-align: right;">运行 token</th>
+                                    <th style="text-align: right;">评测 token</th>
+                                    <th style="text-align: right;">case 数</th>
+                                    <th>版本</th>
+                                    <th>操作</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${recentRuns.map(r => {
+                                    const ts = r.created_at ? new Date(r.created_at).toLocaleString('zh-CN', { hour12: false }) : '-';
+                                    const triggerBadge = r.trigger === 'scheduled' ? '<span class="tag-chip" style="font-size: 10px;">⏰</span>' : '';
+                                    return `
+                                        <tr>
+                                            <td>${triggerBadge} ${runStatusBadge(r.status)}</td>
+                                            <td style="font-size: 11px; color: var(--ink-4);">${ts}</td>
+                                            <td style="text-align: right; font-weight: 600;">${r.pass_rate != null ? (r.pass_rate * 100).toFixed(1) + '%' : '-'}</td>
+                                            <td style="text-align: right;">${formatNumber(r.total_token)}</td>
+                                            <td style="text-align: right;">${r.judge_token ? formatNumber(r.judge_token) : '-'}</td>
+                                            <td style="text-align: right;">${r.case_count}</td>
+                                            <td>${r.version_name ? `<span class="tag-chip" style="font-size: 11px;">${escapeHtml(r.version_name)}</span>` : '<span style="color: var(--ink-4);">-</span>'}</td>
+                                            <td><button class="btn btn-sm btn-secondary" onclick="navigateTo('run-detail', {id: '${escapeHtml(r.id)}', projectId: '${escapeHtml(projectId)}'})">查看</button></td>
+                                        </tr>
+                                    `;
+                                }).join('')}
+                            </tbody>
+                        </table>
+                    </div>
+                    ` : '<div style="padding: 24px; text-align: center; color: var(--ink-4); font-size: 12px;">暂无评测记录</div>'}
+                </div>
+            `;
+
+            // P-5 补充: 当前配置摘要
+            const proj = state.currentProject;
+            const configBlock = proj ? (() => {
+                const tc = proj.target_config || {};
+                const jc = proj.judge_config || {};
+                const tb = proj.token_budget;
+                const sched = proj.schedule;
+                // 提取 base_url 主机名 + 业务路径（排除通用段）
+                let urlSummary = tc.base_url || '';
+                try {
+                    const u = new URL(tc.base_url);
+                    const segs = u.pathname.split('/').filter(s => s && !['v1','v2','chat','completions','api'].includes(s.toLowerCase()));
+                    urlSummary = u.hostname + (segs.length ? '/' + segs.join('/') : '');
+                } catch (e) { /* 非 URL 格式，保持原值 */ }
+                const tcMode = tc.api_type === 'custom' ? '自定义' : 'OpenAI 兼容';
+                const rp = tc.response_parsing;
+                const rpSummary = rp && (rp.output_paths?.length || rp.token_paths?.length || rp.token_fields?.length || rp.output_field) ? '已配置' : '未配置';
+                const jcSummary = proj.judge_config_id ? `引用配置 · ${jc.model || '未设模型'}` : (jc.model ? `内联 · ${jc.model}` : '未设置');
+                const tbSummary = tb ? `${formatNumber(tb.limit)} · ${tb.warn_only ? '仅提醒' : '硬中断'}` : '未设置';
+                const schedSummary = sched && sched.enabled ? `${sched.cron}${sched.tags?.length ? ' · 标签 ' + sched.tags.join(',') : ''}` : '未设置';
+                const configRow = (label, val, tab) => `
+                    <div style="display: flex; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--border);">
+                        <span style="font-size: 12px; color: var(--ink-3); width: 110px; flex-shrink: 0;">${label}</span>
+                        <span style="font-size: 12px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${escapeHtml(String(val))}">${escapeHtml(String(val))}</span>
+                        <button class="btn btn-sm btn-secondary" style="font-size: 10px; padding: 1px 6px; margin-left: 8px;" onclick="switchTab('${tab}')">编辑 →</button>
+                    </div>
+                `;
+                return `
+                    <div class="card">
+                        <div class="card-header" style="padding: 10px 16px; border-bottom: 1px solid var(--border);">
+                            <span class="card-title">当前配置</span>
+                        </div>
+                        <div style="padding: 4px 16px 8px;">
+                            ${configRow('Target API', `${tcMode} · ${urlSummary} · ${tc.model || '无模型'} · 解析${rpSummary}`, 'config')}
+                            ${configRow('LLM Judge', jcSummary, 'config')}
+                            ${configRow('Token 预算', tbSummary, 'config')}
+                            ${configRow('并发', `最大 ${proj.max_concurrency || 1}`, 'config')}
+                            ${configRow('定时任务', schedSummary, 'config')}
+                        </div>
+                    </div>
+                `;
+            })() : '';
+
+            return versionBar + deltaBlock + trendBlock + stabilityBlock + failedBlock + runListBlock + configBlock;
         }
 
-        // P-3: 趋势图 v2——按版本分段着色 + 评测集变更标记 ◆
+        // P-4: 趋势图 v2——三系列（pass rate 折线左轴 + 运行 token 柱 + 评测 token 柱右轴）
         function renderTrendChartV2(trend, versions, contentUpdatedAt) {
             if (!trend.length) return '<div style="color: var(--ink-4); font-size: 12px;">无趋势数据</div>';
-            const w = 600, h = 120, pad = 30;
-            const maxRate = 1.0;
+            const w = 600, h = 140, pad = 32;
             const stepX = trend.length > 1 ? (w - pad * 2) / (trend.length - 1) : 0;
             const xOf = i => pad + i * stepX;
-            const yOf = v => h - pad - (v / maxRate) * (h - pad * 2);
+            // 左轴：pass rate 0-1
+            const yOfRate = v => h - pad - v * (h - pad * 2);
+            // 右轴：token
+            const maxTok = Math.max(1, ...trend.map(t => (t.total_token || 0) + (t.judge_token || 0)));
+            const yOfTok = v => h - pad - (v / maxTok) * (h - pad * 2);
+            const barW = stepX > 0 ? Math.min(16, stepX * 0.35) : 8;
 
-            // 版本分段背景色（按 version.created_at 划分）
+            // 版本分段背景色
             const versionColors = ['rgba(59,130,246,0.06)', 'rgba(16,185,129,0.06)', 'rgba(245,158,11,0.06)', 'rgba(139,92,246,0.06)', 'rgba(236,72,153,0.06)'];
             const sortedVersions = [...versions].sort((a, b) => (a.created_at || '').localeCompare(b.created_at || ''));
             const versionBgBlocks = sortedVersions.map((v, vi) => {
-                const vStart = v.created_at;
-                const vEnd = vi < sortedVersions.length - 1 ? sortedVersions[vi + 1].created_at : null;
-                const trendStart = trend[0].created_at;
-                const trendEnd = trend[trend.length - 1].created_at;
-                if (vEnd && vStart < trendStart && vEnd < trendStart) return '';
-                const xStart = xOf(0);
-                const xEnd = xOf(trend.length - 1);
-                return `<rect x="${xStart}" y="${pad}" width="${xEnd - xStart}" height="${h - pad * 2}" fill="${versionColors[vi % versionColors.length]}" />`;
+                const trendStart = trend[0].created_at, trendEnd = trend[trend.length - 1].created_at;
+                if (v.created_at < trendStart && vi < sortedVersions.length - 1 && sortedVersions[vi + 1].created_at < trendStart) return '';
+                return `<rect x="${xOf(0)}" y="${pad}" width="${xOf(trend.length - 1) - xOf(0)}" height="${h - pad * 2}" fill="${versionColors[vi % versionColors.length]}" />`;
             }).join('');
 
-            // 评测集变更标记 ◆（content_updated_at 落在 x 轴）
+            // 评测集变更标记 ◆
             let changeMarker = '';
             if (contentUpdatedAt) {
                 const idx = trend.findIndex(t => t.created_at >= contentUpdatedAt);
@@ -2824,39 +2951,105 @@
                 }
             }
 
+            // token 柱（运行 token + 评测 token 叠加）
+            const bars = trend.map((t, i) => {
+                const cx = xOf(i);
+                const runTok = t.total_token || 0;
+                const judgeTok = t.judge_token || 0;
+                const runH = (runTok / maxTok) * (h - pad * 2);
+                const judgeH = (judgeTok / maxTok) * (h - pad * 2);
+                return `
+                    <rect x="${cx - barW}" y="${h - pad - runH}" width="${barW}" height="${runH}" fill="rgba(59,130,246,0.5)" rx="1" />
+                    <rect x="${cx - barW}" y="${h - pad - runH - judgeH}" width="${barW}" height="${judgeH}" fill="rgba(245,158,11,0.5)" rx="1" />
+                `;
+            }).join('');
+
             // pass_rate 折线
-            const pts = trend.map((t, i) => `${xOf(i)},${yOf(t.pass_rate)}`).join(' ');
+            const pts = trend.map((t, i) => `${xOf(i)},${yOfRate(t.pass_rate)}`).join(' ');
             const dots = trend.map((t, i) => {
                 const color = t.status === 'completed' ? (t.pass_rate >= 0.8 ? 'var(--green)' : t.pass_rate >= 0.5 ? 'var(--amber, #b45309)' : 'var(--red)') : 'var(--ink-4)';
-                return `<circle cx="${xOf(i)}" cy="${yOf(t.pass_rate)}" r="3" fill="${color}"><title>${escapeHtml(t.run_id)}: ${(t.pass_rate * 100).toFixed(1)}%</title></circle>`;
+                const cx = xOf(i), cy = yOfRate(t.pass_rate);
+                return `<circle cx="${cx}" cy="${cy}" r="3" fill="${color}"/>`;
+            }).join('');
+
+            // hover 热区（每个 run 覆盖一个透明矩形，mouseover 显示 tooltip）
+            const halfStep = trend.length > 1 ? stepX / 2 : (w - pad * 2) / 2;
+            const hoverZones = trend.map((t, i) => {
+                const cx = xOf(i);
+                const rate = (t.pass_rate * 100).toFixed(1) + '%';
+                const runTok = formatNumber(t.total_token || 0);
+                const judgeTok = formatNumber(t.judge_token || 0);
+                const ts = t.created_at ? new Date(t.created_at).toLocaleString('zh-CN', { hour12: false, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '';
+                const tip = `${escapeHtml(ts)}\npass rate: ${rate}\n运行 token: ${runTok}\n评测 token: ${judgeTok}`;
+                const x0 = Math.max(pad, cx - halfStep);
+                const x1 = Math.min(w - pad, cx + halfStep);
+                return `<rect x="${x0}" y="${pad - 4}" width="${x1 - x0}" height="${h - pad + 8}" fill="transparent"
+                    data-run-tip='${escapeHtml(JSON.stringify({ rate, runTok, judgeTok, ts, rid: t.run_id, cx: cx, cy: yOfRate(t.pass_rate) }))}'
+                    onmouseenter="showTrendTip(this, event)" onmouseleave="hideTrendTip()" style="cursor: pointer;"/>`;
             }).join('');
 
             // 版本标签
-            const versionLabels = sortedVersions.map((v, vi) => {
+            const versionLabels = sortedVersions.map((v) => {
                 const idx = trend.findIndex(t => t.version_id === v.id);
                 if (idx < 0) return '';
                 return `<text x="${xOf(idx)}" y="12" font-size="9" fill="var(--ink-4)" text-anchor="middle">${escapeHtml(v.name)}</text>`;
             }).join('');
 
             return `
-                <svg width="${w}" height="${h + 30}" style="display: block; overflow: visible; max-width: 100%;">
-                    ${versionBgBlocks}
-                    <line x1="${pad}" y1="${h - pad}" x2="${w - pad}" y2="${h - pad}" stroke="var(--border)" />
-                    <line x1="${pad}" y1="${pad}" x2="${pad}" y2="${h - pad}" stroke="var(--border)" />
-                    <text x="${pad - 4}" y="${pad + 4}" font-size="9" fill="var(--ink-4)" text-anchor="end">100%</text>
-                    <text x="${pad - 4}" y="${h - pad}" font-size="9" fill="var(--ink-4)" text-anchor="end">0%</text>
-                    <polyline points="${pts}" fill="none" stroke="var(--accent)" stroke-width="1.5" />
-                    ${dots}
-                    ${changeMarker}
-                    ${versionLabels}
-                </svg>
+                <div style="position: relative;">
+                    <svg width="${w}" height="${h + 30}" style="display: block; overflow: visible; max-width: 100%;">
+                        ${versionBgBlocks}
+                        <line x1="${pad}" y1="${h - pad}" x2="${w - pad}" y2="${h - pad}" stroke="var(--border)" />
+                        <line x1="${pad}" y1="${pad}" x2="${pad}" y2="${h - pad}" stroke="var(--border)" />
+                        <text x="${pad - 4}" y="${pad + 4}" font-size="9" fill="var(--ink-4)" text-anchor="end">100%</text>
+                        <text x="${pad - 4}" y="${h - pad}" font-size="9" fill="var(--ink-4)" text-anchor="end">0%</text>
+                        <text x="${w - pad}" y="${pad - 2}" font-size="9" fill="var(--ink-4)" text-anchor="end">${formatNumber(maxTok)}</text>
+                        ${bars}
+                        <polyline points="${pts}" fill="none" stroke="var(--accent)" stroke-width="1.5" />
+                        ${dots}
+                        ${changeMarker}
+                        ${versionLabels}
+                        ${hoverZones}
+                    </svg>
+                    <div id="trendTip" style="display: none; position: absolute; pointer-events: none; z-index: 50; background: var(--card-bg, #1e1e2e); border: 1px solid var(--border, #333); border-radius: 6px; padding: 8px 10px; font-size: 11px; box-shadow: 0 4px 12px rgba(0,0,0,0.4);"></div>
+                </div>
                 <div style="font-size: 10px; color: var(--ink-4); margin-top: 4px;">
-                    <span style="color: var(--green);">●</span> ≥80%
-                    <span style="color: var(--amber, #b45309); margin-left: 8px;">●</span> 50-80%
-                    <span style="color: var(--red); margin-left: 8px;">●</span> &lt;50%
+                    <span style="color: var(--accent);">—</span> pass rate
+                    <span style="color: rgba(59,130,246,0.7); margin-left: 8px;">▮</span> 运行 token
+                    <span style="color: rgba(245,158,11,0.7); margin-left: 8px;">▮</span> 评测 token
                     ${contentUpdatedAt ? '<span style="color: var(--amber, #b45309); margin-left: 12px;">◆</span> 评测集变更' : ''}
                 </div>
             `;
+        }
+
+        // 趋势图 hover tooltip
+        function showTrendTip(el, ev) {
+            let d; try { d = JSON.parse(el.dataset.runTip); } catch (e) { return; }
+            const tip = document.getElementById('trendTip');
+            if (!tip) return;
+            tip.innerHTML = `
+                <div style="font-size: 10px; color: var(--ink-4); margin-bottom: 4px;">${escapeHtml(d.ts || '')}</div>
+                <div style="display: grid; grid-template-columns: auto auto; gap: 2px 10px;">
+                    <span style="color: var(--ink-4);">pass rate</span>
+                    <span style="font-weight: 600;">${escapeHtml(d.rate)}</span>
+                    <span style="color: var(--ink-4);">运行 token</span>
+                    <span style="color: rgba(59,130,246,0.9); font-weight: 600;">${escapeHtml(d.runTok)}</span>
+                    <span style="color: var(--ink-4);">评测 token</span>
+                    <span style="color: rgba(245,158,11,0.9); font-weight: 600;">${escapeHtml(d.judgeTok)}</span>
+                </div>
+            `;
+            tip.style.display = 'block';
+            // 定位：相对外层容器，跟随鼠标但固定在 hover 区附近
+            const rect = el.ownerSVGElement.getBoundingClientRect();
+            const parent = tip.parentElement.getBoundingClientRect();
+            const x = ev.clientX - parent.left + 12;
+            const y = ev.clientY - parent.top + 12;
+            tip.style.left = Math.min(parent.width - 160, x) + 'px';
+            tip.style.top = Math.max(0, y) + 'px';
+        }
+        function hideTrendTip() {
+            const tip = document.getElementById('trendTip');
+            if (tip) tip.style.display = 'none';
         }
 
         // P-3: 从概览失败 case / 最不稳 case 导航到 run 详情页 case 对比
@@ -2869,6 +3062,72 @@
                     if (idx >= 0) showRunCaseDetail(idx);
                 }
             }, 500);
+        }
+        // P-5: 版本历史弹窗（取代历史 tab 的版本对比区）
+        async function showVersionCompareModal(projectId) {
+            const modal = document.createElement('div');
+            modal.className = 'modal-overlay';
+            modal.id = 'versionCompareModal';
+            modal.innerHTML = `
+                <div class="modal" style="max-width: 640px; max-height: 80vh; overflow: auto;">
+                    <div class="modal-header">
+                        <span class="modal-title">版本历史</span>
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                            <button class="btn btn-sm btn-primary" style="font-size: 11px; padding: 1px 8px;" onclick="closeModal('versionCompareModal'); showCreateVersionModal('${escapeHtml(projectId)}');">+ 开新版本</button>
+                            <button class="modal-close" onclick="closeModal('versionCompareModal')">×</button>
+                        </div>
+                    </div>
+                    <div class="modal-body" id="versionCompareBody" style="padding: 16px;">
+                        <div style="text-align: center; color: var(--ink-4); padding: 24px;">加载中...</div>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(modal);
+            try {
+                const project = state.currentProject;
+                const versions = project?.versions || [];
+                let body = '';
+                if (versions.length > 0) {
+                    body += `<div style="margin-bottom: 16px;">
+                        <div style="font-size: 12px; color: var(--ink-4); margin-bottom: 8px;">版本时间线</div>
+                        ${versions.map((v, i) => `
+                            <div style="display: flex; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--border);">
+                                <span style="width: 20px; height: 20px; border-radius: 50%; background: var(--accent); color: #fff; display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 600;">${i + 1}</span>
+                                <span style="font-weight: 500; font-size: 13px;">${escapeHtml(v.name)}</span>
+                                <span style="color: var(--ink-4); font-size: 11px;">${formatRelativeTime(v.created_at)}</span>
+                            </div>
+                        `).join('')}
+                    </div>`;
+                    const compareData = await api(`/projects/${projectId}/versions/compare`);
+                    const compareRows = compareData.versions || [];
+                    if (compareRows.length > 0) {
+                        body += `<div>
+                            <div style="font-size: 12px; color: var(--ink-4); margin-bottom: 8px;">跨版本对比</div>
+                            <table class="table" style="font-size: 12px;">
+                                <thead><tr><th>版本</th><th>run 数</th><th>pass rate</th><th>Δ pass rate</th><th>总 token</th></tr></thead>
+                                <tbody>
+                                    ${compareRows.map(r => {
+                                        const dpr = r.delta_pass_rate;
+                                        const dprColor = dpr > 0 ? 'var(--green)' : dpr < 0 ? 'var(--red)' : 'var(--ink-4)';
+                                        return `<tr>
+                                            <td><strong>${escapeHtml(r.version_name)}</strong></td>
+                                            <td style="text-align: right;">${r.run_count}</td>
+                                            <td style="text-align: right;">${(r.pass_rate * 100).toFixed(1)}%</td>
+                                            <td style="text-align: right; color: ${dprColor};">${dpr !== undefined ? (dpr > 0 ? '+' : '') + (dpr * 100).toFixed(1) + '%' : '-'}</td>
+                                            <td style="text-align: right;">${formatNumber(r.total_token)}</td>
+                                        </tr>`;
+                                    }).join('')}
+                                </tbody>
+                            </table>
+                        </div>`;
+                    }
+                } else {
+                    body = '<div style="text-align: center; color: var(--ink-4); padding: 24px;">还没有版本</div>';
+                }
+                document.getElementById('versionCompareBody').innerHTML = body;
+            } catch (e) {
+                document.getElementById('versionCompareBody').innerHTML = `<div style="color: var(--red); padding: 16px;">加载失败：${escapeHtml(e.message)}</div>`;
+            }
         }
         function navToRunDetailFromOverview(projectId, runId) {
             if (!runId) return;
@@ -3263,10 +3522,6 @@
                         <div style="padding: 8px 16px; color: var(--ink-4); font-size: 12px; ${(tagFilter.length || typeFilter.length || statusFilter !== 'all' || keyword) ? 'background: var(--amber-bg, #fffbeb); color: var(--amber, #b45309);' : ''}">
                             共 ${cases.length} 条 · 启用 ${enabledCount} 条${allTags.length ? ' · 标签 ' + allTags.length + ' 个' : ''}${(tagFilter.length || typeFilter.length || statusFilter !== 'all' || keyword) ? ' · 已筛选 ' + filteredCases.length + ' / 共 ' + cases.length + ' 条' : ''}
                         </div>
-                        ${evalset.content_updated_at && state._evalsetSampling && state._evalsetSampling.total_runs === 0 ? `
-                        <div style="padding: 6px 16px; background: var(--amber-bg, #fffbeb); border-bottom: 1px solid var(--amber-bd, #fde68a); color: var(--amber, #b45309); font-size: 12px;">
-                            评测集内容已更新，旧采样统计已清零，需积累新采样
-                        </div>` : ''}
                         <div class="evalset-tag-filter" style="padding: 8px 16px; border-bottom: 1px solid var(--border); ${tagFilter.length || typeFilter.length || statusFilter !== 'all' || keyword ? 'background: var(--amber-bg, #fffbeb);' : ''} display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
                             <input type="text" class="form-input" id="evalsetKeywordInput" placeholder="搜索 case 名或输入内容..." value="${escapeHtml(state._evalsetKeyword || '')}" oninput="onEvalsetKeywordInput(this.value)" style="width: 220px; font-size: 12px; padding: 4px 8px;">
                             <span style="font-size: 12px; color: var(--ink-4);">类型：</span>
@@ -3285,7 +3540,7 @@
                                 ${allTags.map(t => `<button class="tag-chip filter-chip ${tagFilter.includes(t) ? 'active' : ''}" data-tag="${escapeHtml(t)}" onclick="toggleEvalsetTagFilter(this)">${escapeHtml(t)}</button>`).join('')}
                             </div>
                             `}
-                            ${(tagFilter.length || typeFilter.length || statusFilter !== 'all' || keyword) ? `<button class="btn btn-sm btn-secondary" style="font-size: 11px; padding: 2px 8px; margin-left: auto;" onclick="resetAllEvalsetFilters()">重置筛选</button>` : ''}
+                            <button class="btn btn-sm btn-secondary" style="font-size: 11px; padding: 2px 8px; margin-left: auto; ${(tagFilter.length || typeFilter.length || statusFilter !== 'all' || keyword) ? '' : 'opacity: 0.4; cursor: not-allowed;'}" ${(tagFilter.length || typeFilter.length || statusFilter !== 'all' || keyword) ? `onclick="resetAllEvalsetFilters()"` : 'disabled'}>重置</button>
                         </div>
                         <div id="batchOpsBar" style="display: none; padding: 8px 16px; background: var(--gray-bg); border-bottom: 1px solid var(--border); align-items: center; gap: 8px;">
                             <span id="batchSelectedCount" style="font-size: 13px; color: var(--ink-3);">已选 0 条</span>
@@ -3354,7 +3609,8 @@
         // P-2: 评测集 tab 标签过滤（OR 语义，从缓存重新渲染，不重新拉数据）
         function toggleEvalsetTagFilter(el) {
             const tag = el.dataset.tag;
-            const filter = state._evalsetTagFilter || [];
+            if (!state._evalsetTagFilter) state._evalsetTagFilter = [];
+            const filter = state._evalsetTagFilter;
             const idx = filter.indexOf(tag);
             if (idx >= 0) filter.splice(idx, 1);
             else filter.push(tag);
@@ -3367,7 +3623,8 @@
         // P-2: 类型筛选（多选 chips）
         function toggleEvalsetTypeFilter(el) {
             const t = el.dataset.type;
-            const filter = state._evalsetTypeFilter || [];
+            if (!state._evalsetTypeFilter) state._evalsetTypeFilter = [];
+            const filter = state._evalsetTypeFilter;
             const idx = filter.indexOf(t);
             if (idx >= 0) filter.splice(idx, 1);
             else filter.push(t);
@@ -3569,7 +3826,7 @@
             modal.innerHTML = `
                 <div class="modal" style="max-width: 760px;">
                     <div class="modal-header">
-                        <span class="modal-title">${isNew ? '新增用例' : '编辑用例'}</span>
+                        <span class="modal-title">${isNew ? '新增用例' : '用例详情'}</span>
                         <button class="modal-close" onclick="closeModal('caseEditorModal')">×</button>
                     </div>
                     <div class="modal-body">
@@ -5237,7 +5494,14 @@
                 state.currentProject = updated;
                 closeModal('createVersionModal');
                 showToast('版本已创建');
-                renderVersionsTab(document.getElementById('tabContent'), projectId);
+                // P-5: 如果当前在概览 tab，刷新概览页；否则保留原 renderVersionsTab
+                const tabContent = document.getElementById('tabContent');
+                const activeTab = document.querySelector('.project-detail-tabs .tab.active');
+                if (activeTab && activeTab.dataset.tab === 'overview') {
+                    loadProjectOverview(projectId);
+                } else {
+                    renderVersionsTab(tabContent, projectId);
+                }
             } catch (err) {}
         }
 
@@ -5698,11 +5962,14 @@
                 : (hh.skipped_reason ? '<span class="status-badge status-disabled"><span class="status-dot"></span>跳过: ' + escapeHtml(hh.skipped_reason) + '</span>' : '<span class="status-badge status-failed"><span class="status-dot"></span>失败</span>');
             const judgeTokenLine = hh.judge_token ? `<span style="margin-left: 16px; color: var(--ink-4);" title="LLM Judge 自身消耗">Judge token: ${hh.judge_token}</span>` : '';
 
-            // Validation 表格
-            const validationRows = displayChecks.map(c => {
+            // Validation 表格（期望/判据：缩略+点击展开完整内容）
+            const validationRows = displayChecks.map((c, idx) => {
                 const fld = c.field || 'output';
                 const typeLabel = c.eval_type || 'exact';
-                let expectedDisplay = c.expected || '—';
+                const expectedFull = c.expected || '—';
+                const EXP_TRUNC = 60;
+                const expShort = expectedFull.length > EXP_TRUNC ? expectedFull.slice(0, EXP_TRUNC) + '…' : expectedFull;
+                const expId = `vexp_${Math.random().toString(36).slice(2, 9)}_${idx}`;
                 let resultDisplay;
                 if (c.judge_raw_response) {
                     resultDisplay = c.judge_raw_response.length > 80 ? c.judge_raw_response.slice(0, 80) + '…' : c.judge_raw_response;
@@ -5710,11 +5977,17 @@
                     resultDisplay = c.passed ? '✓ 通过' : '✗ 失败';
                 }
                 const synthTag = c.synthesized ? `<span style="color: var(--ink-5); font-size: 10px;">（历史回退）</span>` : '';
+                const expCell = expectedFull.length > EXP_TRUNC ? `
+                    <span id="${expId}_s">${escapeHtml(expShort)}<span style="color: var(--blue); cursor: pointer; margin-left: 4px; text-decoration: underline;" onclick="document.getElementById('${expId}_s').style.display='none';document.getElementById('${expId}_l').style.display='block';">展开</span></span>
+                    <div id="${expId}_l" style="display: none; margin-top: 2px; padding: 4px 6px; background: var(--bg-2); border-radius: 3px; white-space: pre-wrap; line-height: 1.4; max-height: 200px; overflow: auto;">
+                        ${escapeHtml(expectedFull)}
+                        <div style="margin-top: 4px;"><span style="color: var(--blue); cursor: pointer; text-decoration: underline;" onclick="document.getElementById('${expId}_l').style.display='none';document.getElementById('${expId}_s').style.display='inline';">收起</span></div>
+                    </div>` : escapeHtml(expectedFull);
                 return `
                     <tr>
                         <td style="padding: 4px 6px; font-family: monospace; font-size: 11px;">${escapeHtml(fld)}${synthTag}</td>
                         <td style="padding: 4px 6px;"><span class="tag tag-${escapeHtml(c.eval_type || 'exact')}">${escapeHtml(typeLabel)}</span></td>
-                        <td style="padding: 4px 6px; font-family: monospace; font-size: 11px;" title="${escapeHtml(expectedDisplay)}">${escapeHtml(expectedDisplay.length > 40 ? expectedDisplay.slice(0, 40) + '…' : expectedDisplay)}</td>
+                        <td style="padding: 4px 6px; font-family: monospace; font-size: 11px; max-width: 320px;">${expCell}</td>
                         <td style="padding: 4px 6px; font-family: monospace; font-size: 11px; ${c.passed ? 'color: var(--green);' : 'color: var(--red);'}" title="${escapeHtml(resultDisplay)}">${escapeHtml(resultDisplay)}</td>
                         <td style="padding: 4px 6px; font-size: 11px; text-align: right;">${c.score != null ? Number(c.score).toFixed(2) : '—'}</td>
                     </tr>
@@ -5732,32 +6005,41 @@
                 `;
             }).join('');
 
-            // Judge 信息块
+            // Judge 信息块（提示词摘要：给全，允许缩略→点击展开）
+            // judge 来源有两种：来自 project.judge_config（带 prompt_template 全文），或来自 aggregate.judge_summary（带 prompt_summary+prompt_full）
+            const judgePromptFull = (judge && (judge.prompt_template != null ? judge.prompt_template : judge.prompt_full)) || '';
+            const judgePromptShort = judgePromptFull ? (judgePromptFull.length > 80 ? judgePromptFull.slice(0, 80) + '…' : judgePromptFull) : '';
+            const judgeHintId = `jt_${Math.random().toString(36).slice(2, 9)}`;
             const judgeBlock = hasLlmChecks && hasJudge ? `
                 <div style="margin-top: 12px; padding: 8px 12px; background: var(--light-bg); border-radius: 6px;">
                     <div style="font-size: 11px; color: var(--ink-3); margin-bottom: 4px; font-weight: 600;">Judge 模型</div>
                     <div style="font-size: 11px; color: var(--ink-2);">
                         模型：<code>${escapeHtml(judge.model || '—')}</code> · API 类型：${escapeHtml(judge.api_type || '—')}
                     </div>
-                    ${judge.prompt_summary ? `<div style="font-size: 10px; color: var(--ink-4); margin-top: 4px;">提示词摘要：${escapeHtml(judge.prompt_summary)}</div>` : ''}
+                    ${judgePromptShort ? `
+                    <div style="font-size: 10px; color: var(--ink-4); margin-top: 6px;">
+                        <span style="color: var(--ink-3);">提示词：</span>
+                        <span id="${judgeHintId}_short">${escapeHtml(judgePromptShort)}${judgePromptFull.length > 80 ? `<span style="color: var(--blue); cursor: pointer; margin-left: 4px; text-decoration: underline;" onclick="document.getElementById('${judgeHintId}_short').style.display='none';document.getElementById('${judgeHintId}_full').style.display='block';">展开</span>` : ''}</span>
+                        <div id="${judgeHintId}_full" style="display: none; margin-top: 4px; padding: 6px 8px; background: var(--bg-2); border-radius: 4px; font-family: monospace; white-space: pre-wrap; line-height: 1.45; max-height: 260px; overflow: auto;">
+                            ${escapeHtml(judgePromptFull)}
+                            ${judgePromptFull.length > 80 ? `<div style="margin-top: 6px;"><span style="color: var(--blue); cursor: pointer; text-decoration: underline;" onclick="document.getElementById('${judgeHintId}_full').style.display='none';document.getElementById('${judgeHintId}_short').style.display='inline';">收起</span></div>` : ''}
+                        </div>
+                    </div>` : ''}
                 </div>
             ` : '';
 
-            // 头部判定行（状态/得分/延迟/token）
+            // 头部判定行（仅保留状态/得分/版本——冗余的延迟/token/judge token 已在 modal 顶部展示）
             const headerLine = `
                 <div style="display: flex; gap: 16px; margin-bottom: 12px; font-size: 11px; align-items: center; flex-wrap: wrap;">
                     ${statusBadge}
                     <span style="color: var(--ink-4);">得分: ${hh.score != null ? Number(hh.score).toFixed(2) : '-'}</span>
-                    <span style="color: var(--ink-4);">延迟: ${((hh.latency_ms || 0) / 1000).toFixed(2)}s</span>
-                    <span style="color: var(--ink-4);" title="${hh.token_missing ? '响应未配置 token 统计路径，或路径未命中' : ''}">token: ${hh.token_missing ? '不可得' : (hh.token_used || 0)}</span>
-                    ${judgeTokenLine}
                     ${hh.version_name ? `<span style="color: var(--ink-4);">${escapeHtml(hh.version_name)}</span>` : ''}
                 </div>
             `;
 
             return `
                 ${headerLine}
-                <div class="comparison-view">${inputCol}${expectedCol}${actualCol}</div>
+                <div class="comparison-view">${inputCol}${actualCol}</div>
                 <div class="form-group" style="margin-top: 16px;">
                     <label class="form-label">全部 Validation（${displayChecks.length} 项，${displayChecks.filter(c => c.passed).length}/${displayChecks.length} 通过）</label>
                     <table style="font-size: 12px; border-collapse: collapse; width: 100%;">
@@ -5813,6 +6095,54 @@
             switchCaseEditorTab('stats');
         }
 
+        // P-8: pass@k / pass^k 双线图（k=1..3，夹缝阴影=不确定性）
+        function renderPassDualLineChart(n, c) {
+            const _passAtK = (n, c, k) => {
+                if (n < k || n === 0) return null;
+                let r = 1;
+                for (let i = 0; i < k; i++) r *= (n - c - i) / (n - i);
+                return 1 - r;
+            };
+            const _passPowK = (n, c, k) => {
+                if (n < k || n === 0) return null;
+                let r = 1;
+                for (let i = 0; i < k; i++) r *= (c - i) / (n - i);
+                return r;
+            };
+            const ks = [1, 2, 3];
+            const atVals = ks.map(k => _passAtK(n, c, k));
+            const powVals = ks.map(k => _passPowK(n, c, k));
+            const w = 240, h = 100, pad = 24;
+            const stepX = (w - pad * 2) / (ks.length - 1);
+            const xOf = i => pad + i * stepX;
+            const yOf = v => h - pad - (v != null ? v : 0) * (h - pad * 2);
+            const atPts = ks.map((k, i) => `${xOf(i)},${yOf(atVals[i])}`).join(' ');
+            const powPts = ks.map((k, i) => `${xOf(i)},${yOf(powVals[i])}`).join(' ');
+            // 夹缝阴影
+            const shadePath = ks.map((k, i) => `${xOf(i)},${yOf(atVals[i])}`).join(' ') +
+                ' ' + ks.slice().reverse().map((k, ri) => { const i = ks.length - 1 - ri; return `${xOf(i)},${yOf(powVals[i])}`; }).join(' ');
+            return `
+                <svg width="${w}" height="${h + 16}" style="display: block; overflow: visible; max-width: 100%;">
+                    <polygon points="${shadePath}" fill="rgba(245,158,11,0.12)" />
+                    <line x1="${pad}" y1="${h - pad}" x2="${w - pad}" y2="${h - pad}" stroke="var(--border)" />
+                    <line x1="${pad}" y1="${pad}" x2="${pad}" y2="${h - pad}" stroke="var(--border)" />
+                    <text x="${pad - 4}" y="${pad + 4}" font-size="9" fill="var(--ink-4)" text-anchor="end">100%</text>
+                    <text x="${pad - 4}" y="${h - pad}" font-size="9" fill="var(--ink-4)" text-anchor="end">0%</text>
+                    <polyline points="${atPts}" fill="none" stroke="var(--accent)" stroke-width="1.5" />
+                    <polyline points="${powPts}" fill="none" stroke="var(--amber, #b45309)" stroke-width="1.5" stroke-dasharray="3,2" />
+                    ${ks.map((k, i) => `
+                        <circle cx="${xOf(i)}" cy="${yOf(atVals[i])}" r="3" fill="var(--accent)" />
+                        <circle cx="${xOf(i)}" cy="${yOf(powVals[i])}" r="3" fill="var(--amber, #b45309)" />
+                        <text x="${xOf(i)}" y="${h - pad + 12}" font-size="9" fill="var(--ink-4)" text-anchor="middle">k=${k}</text>
+                    `).join('')}
+                </svg>
+                <div style="font-size: 10px; color: var(--ink-4); margin-top: 2px;">
+                    <span style="color: var(--accent);">●</span> pass@k（潜力）
+                    <span style="color: var(--amber, #b45309); margin-left: 12px;">|--</span> pass^k（稳定）
+                </div>
+            `;
+        }
+
         // O-4: 统计 tab 内容加载（复用原 case history 渲染逻辑，写入目标容器）
         async function loadCaseStatsInto(targetElId, evalsetId, projectId, caseId) {
             const target = document.getElementById(targetElId);
@@ -5834,28 +6164,6 @@
             const fmtToken = (v) => (v == null || v === 0) ? '-' : Number(v).toLocaleString();
 
             const judge = aggregate.judge_summary || null;
-
-            // W-5: 趋势箭头（与上一 run 比较）
-            const trendArrow = (curr, prev) => {
-                if (prev == null || curr == null || isNaN(curr) || isNaN(prev)) return '<span style="color: var(--ink-5);">—</span>';
-                if (curr > prev) return '<span style="color: var(--green);">↑</span>';
-                if (curr < prev) return '<span style="color: var(--red);">↓</span>';
-                return '<span style="color: var(--ink-4);">→</span>';
-            };
-            const prevRun = history.length >= 2 ? history[history.length - 2] : null;
-            const lastRun = history.length >= 1 ? history[history.length - 1] : null;
-
-            const aggRows = [
-                ['采样 n', aggregate.n ?? 0, null],
-                ['通过 c', aggregate.c ?? 0, null],
-                ['pass rate', fmtPct(aggregate.pass_rate), prevRun ? trendArrow(aggregate.pass_rate, prevRun.passed ? 1 : 0) : '—'],
-                ['pass@3', fmtPct(aggregate.pass_at_3), null],
-                ['pass^3', fmtPct(aggregate.pass_pow_3), null],
-                ['延迟 P50', fmtMs(aggregate.latency_p50), prevRun ? trendArrow(aggregate.latency_p50, prevRun.latency_ms) : '—'],
-                ['延迟 P95', fmtMs(aggregate.latency_p95), null],
-                ['总 token', fmtToken(aggregate.total_token), prevRun ? trendArrow(aggregate.total_token, (prevRun.token_used || 0) + (prevRun.judge_token || 0)) : '—'],
-                ['每万 token 完成率', aggregate.token_per_pass ? (aggregate.token_per_pass).toFixed(1) + ' 个/万token' : '-', null],
-            ];
 
             // 趋势小图：用 SVG 画 pass/fail 时序
             const w = Math.max(120, history.length * 14);
@@ -5904,13 +6212,18 @@
             target.innerHTML = `
                 ${history.length === 0 ? `<div style="text-align: center; padding: 24px; color: var(--ink-4);">该 case 在已完成 run 中暂无记录</div>` : ''}
                 ${history.length > 0 && aggregate.n > 0 ? `
-                <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; margin-bottom: 12px;">
-                    ${aggRows.map(([k, v, arrow]) => `
-                        <div style="padding: 4px 8px; background: var(--light-bg); border-radius: 4px;">
-                            <div style="font-size: 10px; color: var(--ink-4);">${escapeHtml(k)}</div>
-                            <div style="font-size: 13px; font-weight: 600;">${v} ${arrow || ''}</div>
-                        </div>
-                    `).join('')}
+                <div style="margin-bottom: 12px;">
+                    <div style="font-size: 11px; color: var(--ink-3); margin-bottom: 4px;">pass@k / pass^k（k=1..3，夹缝=不确定性）</div>
+                    ${renderPassDualLineChart(aggregate.n, aggregate.c)}
+                </div>
+                <div style="font-size: 11px; color: var(--ink-4); margin-bottom: 12px; display: flex; gap: 16px; flex-wrap: wrap;">
+                    <span>n=${aggregate.n ?? 0}</span>
+                    <span>c=${aggregate.c ?? 0}</span>
+                    <span>pass rate ${fmtPct(aggregate.pass_rate)}</span>
+                    <span>P50 ${fmtMs(aggregate.latency_p50)}</span>
+                    <span>P95 ${fmtMs(aggregate.latency_p95)}</span>
+                    <span>token ${fmtToken(aggregate.total_token)}</span>
+                    <span>${aggregate.token_per_pass ? (aggregate.token_per_pass).toFixed(1) + '/万tok' : '-'}</span>
                 </div>
                 <div style="margin-bottom: 12px;">
                     <div style="font-size: 11px; color: var(--ink-3); margin-bottom: 2px;">单 case 趋势（最近 ${history.length} 次）</div>
@@ -5941,12 +6254,6 @@
                         <tbody>${rowsHtml}</tbody>
                     </table>
                 </div>
-                ${judge && history.some(h => h.eval_type === 'llm_judge') ? `
-                    <div style="margin-top: 12px; font-size: 11px; color: var(--ink-4);">
-                        Judge 模型：${escapeHtml(judge.model || '?')} · 提示词预览：${escapeHtml(judge.prompt_summary || '（空）')}
-                        <span title="run 不快照 Judge 配置，历史 run 可能与当前配置不一致">⚠ 历史 run 实际 Judge 可能与当前不一致</span>
-                    </div>
-                ` : ''}
                 ` : ''}
             `;
         }
@@ -6631,10 +6938,6 @@
                 }
                 progressDiv.innerHTML = '<div style="color: var(--green);">✓ 导入完成（' + result.imported + ' 条，模式: ' + result.mode + '）</div>';
                 showToast('成功导入 ' + result.imported + ' 条用例', 'success');
-                // T3-2: replace 模式会触发 content_updated_at 更新，旧采样统计清零
-                if (mode === 'replace') {
-                    setTimeout(() => showToast('采样统计已按新评测集重置，需积累新采样', 'warning'), 900);
-                }
                 // 重置导入状态，避免下次打开残留
                 importData = { cases: [], errors: [], total: 0 };
                 switchTab('evalsets');
