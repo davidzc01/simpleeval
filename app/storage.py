@@ -1,6 +1,7 @@
 """JSON 文件存储模块"""
 
 import json
+import math
 import os
 import uuid
 from collections import defaultdict
@@ -822,16 +823,14 @@ def _is_skipped_sample(cr: dict) -> bool:
 def batch_estimate(project: Project, count: int,
                    plan_hour: Optional[int] = None,
                    version_id: Optional[str] = None,
-                   tags: Optional[list[str]] = None,
                    concurrency: int = 1) -> dict:
-    """Q-6: 基于 case 级历史样本预估批量任务的成本/用时区间
+    """Q-6: 基于 case 级历史样本预估批量任务的成本/用时区间（Q-8: 移除标签筛选；Q-9: 剔除 Judge）
 
     - 样本 = 每条 case 每次执行（CaseResult 级，非 run 级）
     - 仅取 project_id 下 completed run；version_id 给定时按版本过滤，否则按 current_version_id
-    - tags 给定时按 run.filter_tags 命中过滤（OR；空 = 不过滤）
     - 跳过类 case（skipped_reason 非空或 token 全 0）分离统计：skipped_ratio
-    - 单样本成本 = (token_used + judge_token) / 1e6 × 选定时段价
-      （target+judge 各自匹配价格；plan_hour 给定时按峰/谷选价，None → 峰价兜底）
+    - 单样本成本 = token_used / 1e6 × 选定时段价（Q-9: 仅 target，Judge 是评测仪器不计入生产成本；
+      target 端点+模型匹配价格；plan_hour 给定时按峰/谷选价，None → 峰价兜底）
     - 单样本时长 = latency_ms（毫秒）
     - 区间 = P5/P50/P95 × N；time 区间按并发度 ÷ concurrency
     - 最小样本量：< 30 拒绝（low_confidence=False，error）；30~100 低置信标注
@@ -852,14 +851,9 @@ def batch_estimate(project: Project, count: int,
     if target_vid:
         scoped = [r for r in completed if r.version_id == target_vid]
         completed = scoped if scoped else completed  # 没数据则回退全量避免空结果
-    # tags 过滤：run.filter_tags 与给定 tags 有交集即入选（OR），tags 为空 = 不过滤
-    if tags:
-        tag_set = set(tags)
-        filtered = [r for r in completed if tag_set & set(r.filter_tags or [])]
-        completed = filtered if filtered else completed
 
     # 收集 case 级样本
-    exec_samples_token: list[int] = []  # 每条 case 的 token_used + judge_token（用于价格匹配）
+    exec_samples_token: list[int] = []  # 每条 case 的 token_used（Q-9: 仅 target，剔除 judge）
     exec_samples_latency: list[float] = []  # 每条 case 的 latency_ms
     skipped_count = 0
     seen_run_ids: set[str] = set()
@@ -870,7 +864,7 @@ def batch_estimate(project: Project, count: int,
             if _is_skipped_sample(cr_dict):
                 skipped_count += 1
                 continue
-            t = (cr_dict.get("token_used") or 0) + (cr_dict.get("judge_token") or 0)
+            t = cr_dict.get("token_used") or 0
             exec_samples_token.append(t)
             exec_samples_latency.append(cr_dict.get("latency_ms") or 0.0)
 
@@ -895,49 +889,29 @@ def batch_estimate(project: Project, count: int,
             "run_count": run_count,
         }
 
-    # 价格匹配：用 project.target_config / judge_config 解析端点+模型
+    # 价格匹配：仅 target（Q-9: Judge 是评测仪器，生产成本不含 judge）
     target_ep = getattr(project.target_config, "base_url", None)
     target_mod = getattr(project.target_config, "model", None)
-    # judge 解析优先 judge_config_id 全局引用
-    judge_ep = None
-    judge_mod = None
-    if project.judge_config_id:
-        jc_global = get_judge_config_with_secrets(project.judge_config_id)
-        if jc_global and "judge_config" in jc_global:
-            jc = JudgeConfig(**jc_global["judge_config"])
-            judge_ep = jc.base_url
-            judge_mod = jc.model
-    if judge_ep is None:
-        judge_ep = getattr(project.judge_config, "base_url", None)
-        judge_mod = getattr(project.judge_config, "model", None)
 
     # 每样本成本：token × 价格 / 1e6；plan_hour 给定 → 按价格条目峰谷选价
     target_price = _match_model_price(target_ep or "", target_mod or "") if (target_ep or target_mod) else None
-    judge_price = _match_model_price(judge_ep or "", judge_mod or "") if (judge_ep or judge_mod) else None
     t_price = _select_price_for_hour(target_price, plan_hour) if target_price else None
-    j_price = _select_price_for_hour(judge_price, plan_hour) if judge_price else None
-    currency = (target_price or judge_price or {}).get("currency", "¥")
+    currency = (target_price or {}).get("currency", "¥")
 
-    def _sample_cost(total_tok: int, judge_tok: int) -> Optional[float]:
-        if t_price is None and j_price is None:
+    def _sample_cost(target_tok: int) -> Optional[float]:
+        if t_price is None:
             return None
-        c = 0.0
-        if t_price is not None:
-            c += (total_tok - judge_tok) / 1_000_000 * t_price
-        if j_price is not None:
-            c += judge_tok / 1_000_000 * j_price
-        return c
+        return target_tok / 1_000_000 * t_price
 
-    # 拆分 target / judge token（CaseResult 把 target token 存 token_used，judge 存 judge_token）
+    # 仅取 target token（CaseResult.token_used = target 消耗）
     cost_samples: list[float] = []
     for r in completed:
         for cr in (r.results or []):
             cr_dict = cr.model_dump() if hasattr(cr, "model_dump") else cr
             if _is_skipped_sample(cr_dict):
                 continue
-            total_tok = (cr_dict.get("token_used") or 0) + (cr_dict.get("judge_token") or 0)
-            judge_tok = cr_dict.get("judge_token") or 0
-            c = _sample_cost(total_tok, judge_tok)
+            target_tok = cr_dict.get("token_used") or 0
+            c = _sample_cost(target_tok)
             if c is None:
                 continue
             cost_samples.append(c)
@@ -980,4 +954,249 @@ def batch_estimate(project: Project, count: int,
         "run_count": run_count,
         "low_confidence": low_confidence,
         "note": note,
+    }
+
+
+# ============== Q-7: 质量-成本闭环预估 ==============
+
+def _peak_window_length(p: dict) -> float:
+    """峰时段长度（小时），支持跨午夜"""
+    start = p.get("peak_start_hour", 9)
+    end = p.get("peak_end_hour", 22)
+    if start <= end:
+        return end - start
+    return 24 - start + end
+
+
+def _effective_price_for_mode(price: Optional[dict], mode: str) -> Optional[float]:
+    """Q-7: 按 time_mode 返回有效单价
+
+    - peak: 峰价
+    - off_peak: 谷价
+    - mixed: 峰谷加权（按峰/谷时段占比）
+    """
+    if price is None:
+        return None
+    peak = _effective_peak_price(price)
+    off = _effective_off_peak_price(price)
+    if mode == "off_peak":
+        return off
+    if mode == "mixed":
+        pw = _peak_window_length(price)
+        peak_frac = pw / 24.0
+        off_frac = 1.0 - peak_frac
+        return peak * peak_frac + off * off_frac
+    return peak
+
+
+def batch_estimate_quality_cost(project: Project, count: int,
+                                target_pass_rate: float = 1.0,
+                                rerun_strategy: str = "failed_only",
+                                time_mode: str = "peak",
+                                production_concurrency: int = 1,
+                                version_id: Optional[str] = None) -> dict:
+    """Q-7: 质量-成本闭环预估——回答"达到目标正确率总共要花多少钱、多少时间"（Q-9: 剔除 Judge）
+
+    - p = 版本内历史 pass rate（非跳过 case 中 passed 比例）
+    - p 不确定性：正态近似 90% CI（z=1.645）→ 总执行数区间
+    - 仅失败重跑：总执行数 = N/p；全部重跑：N × ceil(log(1-目标)/log(1-p))
+    - 成本区间 = 总执行数 × 单样本成本分布（P5/P50/P95）× 时段有效价
+      （Q-9: 单样本成本仅取 token_used（target），Judge 是评测仪器不计入生产成本）
+    - 时长区间 = 总执行数 × 延迟分布 ÷ 生产并发度；仅谷时含停产
+    - note[] 含并发不一致提示、准确度条件、对比陈述
+
+    返回 {rounds_expected, total_cost: {median, p5, p95, currency},
+           total_time: {median, p5, p95}, skipped_ratio, sample_count,
+           run_count, low_confidence, note[]}
+    """
+    if count <= 0:
+        return {"error": "invalid_count", "message": "count 必须 > 0"}
+    if not (0 < target_pass_rate <= 1.0):
+        return {"error": "invalid_target_pass_rate",
+                "message": "目标正确率必须在 (0, 1] 区间"}
+    if production_concurrency < 1:
+        production_concurrency = 1
+
+    runs = list_runs(project.id)
+    completed = [r for r in runs if r.status == "completed"]
+    target_vid = version_id or project.current_version_id
+    if target_vid:
+        scoped = [r for r in completed if r.version_id == target_vid]
+        completed = scoped if scoped else completed
+
+    # 收集 case 级样本 + pass 统计
+    exec_samples_token: list[int] = []
+    exec_samples_latency: list[float] = []
+    passed_count = 0
+    skipped_count = 0
+    seen_run_ids: set[str] = set()
+    for r in completed:
+        seen_run_ids.add(r.id)
+        for cr in (r.results or []):
+            cr_dict = cr.model_dump() if hasattr(cr, "model_dump") else cr
+            if _is_skipped_sample(cr_dict):
+                skipped_count += 1
+                continue
+            t = cr_dict.get("token_used") or 0
+            exec_samples_token.append(t)
+            exec_samples_latency.append(cr_dict.get("latency_ms") or 0.0)
+            if cr_dict.get("passed"):
+                passed_count += 1
+
+    non_skipped = len(exec_samples_token)
+    total_samples = non_skipped + skipped_count
+    run_count = len(seen_run_ids)
+    skipped_ratio = round(skipped_count / total_samples, 4) if total_samples else 0.0
+
+    if total_samples < 30:
+        return {
+            "error": "insufficient_samples",
+            "message": f"样本量不足：当前 {total_samples} 条，需 ≥ 30 条 case 样本（含跨 ≥ 2 次 run）才能预估",
+            "sample_count": total_samples,
+            "run_count": run_count,
+        }
+    low_confidence = total_samples < 100
+    if run_count < 2:
+        return {
+            "error": "insufficient_runs",
+            "message": f"样本仅来自 {run_count} 次 run，需跨 ≥ 2 次 run 才能预估（防单次系统偏差）",
+            "sample_count": total_samples,
+            "run_count": run_count,
+        }
+    if non_skipped == 0:
+        return {"error": "all_skipped", "message": "所有样本均为跳过类，无法预估通过率"}
+
+    # 通过率 p + 90% CI（正态近似 z=1.645）
+    p = passed_count / non_skipped
+    z = 1.645
+    margin = z * math.sqrt(p * (1 - p) / non_skipped) if non_skipped > 0 else 0.0
+    p_lower = max(0.001, p - margin)
+    p_upper = min(1.0, p + margin)
+
+    # 总执行数区间（按策略）
+    if rerun_strategy == "failed_only":
+        # 总执行数 = N/p
+        if p <= 0:
+            return {"error": "zero_pass_rate", "message": "历史通过率为 0，无法预估（仅失败重跑需无穷多次）"}
+        total_exec_p50 = count / p
+        total_exec_p5 = count / p_upper if p_upper > 0 else count / 0.001
+        total_exec_p95 = count / p_lower
+        rounds_expected = round(1.0 / p, 2)
+    else:  # "all"
+        if target_pass_rate >= 1.0:
+            return {"error": "infinite_rounds",
+                    "message": "目标正确率 100% 在「全部重跑」策略下需无穷多轮；请降低目标正确率或改用「仅失败重跑」"}
+        log_target = math.log(1 - target_pass_rate)
+        if p >= 1.0:
+            k_p50 = 1
+        else:
+            k_p50 = max(1, math.ceil(log_target / math.log(1 - p)))
+        k_p5 = max(1, math.ceil(log_target / math.log(1 - p_upper))) if p_upper < 1.0 else 1
+        k_p95 = max(1, math.ceil(log_target / math.log(1 - p_lower))) if p_lower < 1.0 else 1
+        total_exec_p50 = count * k_p50
+        total_exec_p5 = count * k_p5
+        total_exec_p95 = count * k_p95
+        rounds_expected = k_p50
+
+    # 价格匹配（Q-9: 仅 target；Judge 是评测仪器，不计入生产成本）
+    target_ep = getattr(project.target_config, "base_url", None)
+    target_mod = getattr(project.target_config, "model", None)
+
+    target_price = _match_model_price(target_ep or "", target_mod or "") if (target_ep or target_mod) else None
+    currency = (target_price or {}).get("currency", "¥")
+
+    # 时段有效价
+    t_eff = _effective_price_for_mode(target_price, time_mode)
+
+    # 单样本成本 = token_used（仅 target）× 时段有效价 / 1e6
+    cost_samples: list[float] = []
+    if t_eff is not None:
+        for r in completed:
+            for cr in (r.results or []):
+                cr_dict = cr.model_dump() if hasattr(cr, "model_dump") else cr
+                if _is_skipped_sample(cr_dict):
+                    continue
+                target_tok = cr_dict.get("token_used") or 0
+                cost_samples.append(target_tok / 1_000_000 * t_eff)
+
+    # 成本区间 = 总执行数 × 单样本成本分位（两个不确定性同向复合）
+    if cost_samples:
+        cost_p50 = total_exec_p50 * _percentile(cost_samples, 0.50)
+        cost_p5 = total_exec_p5 * _percentile(cost_samples, 0.05)
+        cost_p95 = total_exec_p95 * _percentile(cost_samples, 0.95)
+    else:
+        cost_p50 = cost_p5 = cost_p95 = 0.0
+
+    # 时长区间（毫秒 → 秒，按生产并发分摊）
+    lat_p50 = _percentile(exec_samples_latency, 0.50)
+    lat_p5 = _percentile(exec_samples_latency, 0.05)
+    lat_p95 = _percentile(exec_samples_latency, 0.95)
+    time_p50_s = total_exec_p50 * lat_p50 / 1000.0 / production_concurrency
+    time_p5_s = total_exec_p5 * lat_p5 / 1000.0 / production_concurrency
+    time_p95_s = total_exec_p95 * lat_p95 / 1000.0 / production_concurrency
+
+    # 仅谷时模式：总时长含停产（E + (ceil(E/W) - 1) × P）
+    if time_mode == "off_peak" and target_price:
+        pw = _peak_window_length(target_price)
+        valley_h = 24.0 - pw
+        peak_h = pw
+        valley_s = valley_h * 3600
+        peak_s = peak_h * 3600
+        if valley_s > 0:
+            if time_p50_s > valley_s:
+                time_p50_s = time_p50_s + (math.ceil(time_p50_s / valley_s) - 1) * peak_s
+            if time_p5_s > valley_s:
+                time_p5_s = time_p5_s + (math.ceil(time_p5_s / valley_s) - 1) * peak_s
+            if time_p95_s > valley_s:
+                time_p95_s = time_p95_s + (math.ceil(time_p95_s / valley_s) - 1) * peak_s
+
+    # 对比陈述：基线（单轮 N 条）vs 目标方案
+    baseline_cost = count * _percentile(cost_samples, 0.50) if cost_samples else 0.0
+    baseline_time = count * lat_p50 / 1000.0 / production_concurrency
+    extra_cost = cost_p50 - baseline_cost
+    extra_time_min = (time_p50_s - baseline_time) / 60.0
+    baseline_fail = (1 - p) * 100
+    target_fail = (1 - target_pass_rate) * 100
+
+    # notes
+    notes: list[str] = []
+    # 采集并发 vs 生产并发（用 project.max_concurrency 作为采集并发的代理）
+    coll_conc = getattr(project, "max_concurrency", 1) or 1
+    if coll_conc != production_concurrency:
+        notes.append(f"评测数据在并发 {coll_conc} 下采集，与生产并发 {production_concurrency} 不一致，延迟估计可能偏差")
+    # 准确度条件
+    notes.append(f"准确度基于评测集 {non_skipped} 条估计，生产流量分布可能与评测集不同，建议定期用生产样本扩充评测集")
+    # 版本作用域
+    if target_vid:
+        v = next((v for v in (project.versions or []) if v.id == target_vid), None)
+        if v:
+            notes.append(f"按版本「{v.name}」作用域采样")
+    # 低置信
+    if low_confidence:
+        notes.append(f"样本量 {total_samples} < 100，区间为低置信估计")
+    # 跳过比例
+    if skipped_ratio > 0:
+        notes.append(f"含跳过 case 比例 {skipped_ratio * 100:.1f}%（已分离统计，不计入区间）")
+    # 对比陈述
+    notes.append(f"多花 {currency}{extra_cost:.2f}、多跑 {extra_time_min:.1f} 分钟，把失败率从 {baseline_fail:.1f}% 压到 {target_fail:.1f}%")
+
+    return {
+        "rounds_expected": rounds_expected,
+        "total_cost": {
+            "median": round(cost_p50, 2),
+            "p5": round(cost_p5, 2),
+            "p95": round(cost_p95, 2),
+            "currency": currency,
+        },
+        "total_time": {
+            "median": round(time_p50_s, 2),
+            "p5": round(time_p5_s, 2),
+            "p95": round(time_p95_s, 2),
+        },
+        "skipped_ratio": skipped_ratio,
+        "sample_count": total_samples,
+        "run_count": run_count,
+        "low_confidence": low_confidence,
+        "pass_rate": round(p, 4),
+        "note": notes,
     }

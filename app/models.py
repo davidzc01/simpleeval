@@ -421,19 +421,35 @@ class UpdateModelPriceRequest(BaseModel):
 
 
 class BatchEstimateRequest(BaseModel):
-    """Q-6: 批量预估请求
+    """Q-6: 批量预估请求（Q-8: 移除标签筛选——生产流量随机分布，无标签语义）
 
     - count: 批量任务规模 N（每条视为 1 个 case 执行）
     - plan_hour: 计划运行时段（0-23），用于选峰/谷价；None → 峰价兜底
     - version_id: 限定版本作用域采样（None → 用 current_version_id，再 None → 全量）
-    - tags: 按标签筛选 run（OR；空 = 不过滤）
     - concurrency: 生产端并发度（time 区间按此分摊；默认 1 = 串行）
     """
     count: int
     plan_hour: Optional[int] = None
     version_id: Optional[str] = None
-    tags: list[str] = Field(default_factory=list)
     concurrency: int = 1
+
+
+class BatchEstimateQualityRequest(BaseModel):
+    """Q-7: 质量-成本闭环预估请求
+
+    - count: 批量任务规模 N
+    - target_pass_rate: 目标正确率（0~1，默认 1.0 = 全过）
+    - rerun_strategy: 仅失败重跑 / 全部重跑
+    - time_mode: 峰 / 谷 / 混合
+    - production_concurrency: 生产端并发度（默认预填评测环境值）
+    - version_id: 指定版本（默认当前版本）
+    """
+    count: int
+    target_pass_rate: float = 1.0
+    rerun_strategy: Literal["failed_only", "all"] = "failed_only"
+    time_mode: Literal["peak", "off_peak", "mixed"] = "peak"
+    production_concurrency: int = 1
+    version_id: Optional[str] = None
 
 
 class TestTargetRequest(BaseModel):

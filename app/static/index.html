@@ -2668,6 +2668,7 @@
                 document.getElementById('pageTitle').textContent = project.name;
                 headerActions.innerHTML = `
                     <button class="btn btn-primary" onclick="showRunModal('${project.id}')">▶ 发起评测</button>
+                    <button class="btn btn-secondary" onclick="showBatchEstimateModal('${project.id}')">批量预估</button>
                     <button class="btn btn-secondary" style="color: var(--red); border-color: var(--red-bd);" onclick="showDeleteProjectModal('${project.id}')">删除项目</button>
                 `;
 
@@ -2837,14 +2838,12 @@
             const versionBar = activeVersion ? `
                 <div style="display: flex; justify-content: flex-end; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 12px; color: var(--ink-4);">
                     <span>当前版本：${versionSelect}${cvId ? '<span style="color: var(--ink-5); margin-left: 4px;" title="已切换到此活动版本，新发起的评测默认归属此版本">●已切换</span>' : ''}${runVersionHint}</span>
-                    <button class="btn btn-sm btn-secondary" style="font-size: 11px; padding: 1px 8px;" onclick="showBatchEstimateModal('${escapeHtml(projectId)}')">批量预估</button>
                     <button class="btn btn-sm btn-primary" style="font-size: 11px; padding: 1px 8px;" onclick="showCreateVersionModal('${escapeHtml(projectId)}')">+ 开新版本</button>
                     <button class="btn btn-sm btn-secondary" style="font-size: 11px; padding: 1px 8px;" onclick="showVersionCompareModal('${projectId}')">版本历史 →</button>
                 </div>
             ` : `
                 <div style="display: flex; justify-content: flex-end; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 12px; color: var(--ink-4);">
                     <span>当前版本：<em style="color: var(--ink-4);">还没有版本</em></span>
-                    <button class="btn btn-sm btn-secondary" style="font-size: 11px; padding: 1px 8px;" onclick="showBatchEstimateModal('${escapeHtml(projectId)}')">批量预估</button>
                     <button class="btn btn-sm btn-primary" style="font-size: 11px; padding: 1px 8px;" onclick="showCreateVersionModal('${escapeHtml(projectId)}')">+ 开新版本</button>
                 </div>
             `;
@@ -4238,17 +4237,6 @@
             addTagToEditor(val);
             inp.value = '';
             filterGlobalTagsForEditorAdd('');
-        }
-
-        // T1-2: 逗号分隔 → chips 预览
-        function renderTagsPreview(str, targetId) {
-            const el = document.getElementById(targetId);
-            if (!el) return;
-            const tags = (str || '').split(/[,，]/).map(s => s.trim()).filter(Boolean);
-            el.innerHTML = tags.map(t => `<span class="tag-chip">${escapeHtml(t)}</span>`).join('') || '<span style="font-size: 11px; color: var(--ink-4);">无</span>';
-        }
-        function parseTagsInput(str) {
-            return (str || '').split(/[,，]/).map(s => s.trim()).filter(Boolean);
         }
 
         // T1-5: checks 列表编辑器
@@ -5747,9 +5735,8 @@
             } catch (err) {}
         }
 
-        // Q-6: 批量预估弹窗——基于历史 case 级样本预估 N 条任务的成本/用时区间
+        // Q-6/Q-7: 批量预估弹窗（基础/进阶模式）
         async function showBatchEstimateModal(projectId) {
-            // 拉项目当前版本与版本列表，预填默认值
             let proj = state.currentProject;
             if (!proj || proj.id !== projectId) {
                 try { proj = await api(`/projects/${projectId}`); } catch (e) { return; }
@@ -5763,20 +5750,39 @@
             modal.className = 'modal-overlay';
             modal.id = 'batchEstimateModal';
             modal.innerHTML = `
-                <div class="modal" style="max-width: 540px;">
+                <div class="modal" style="max-width: 580px;">
                     <div class="modal-header">
                         <span class="modal-title">批量预估</span>
                         <button class="modal-close" onclick="closeModal('batchEstimateModal')">×</button>
                     </div>
                     <div class="modal-body" style="padding: 16px;">
-                        <div style="color: var(--ink-3); font-size: 12px; margin-bottom: 12px;">
-                            基于历史 case 级样本（每条 case 每次执行为一样本）预估 N 条任务的成本与用时区间。P5–P95 为约 90% 置信区间，跳过类 case 已分离统计（不计入区间）。
+                        <div style="display: flex; gap: 8px; margin-bottom: 12px;">
+                            <button class="btn btn-sm btn-primary" id="beModeBasic" onclick="toggleEstimateMode('basic')">基础预估</button>
+                            <button class="btn btn-sm btn-secondary" id="beModeAdvanced" onclick="toggleEstimateMode('advanced')">进阶：质量-成本闭环</button>
+                        </div>
+                        <div style="color: var(--ink-3); font-size: 12px; margin-bottom: 12px;" id="beDescBasic">
+                            基于历史 case 级样本预估 N 条任务的成本与用时区间。P5–P95 为约 90% 置信区间。
+                        </div>
+                        <div style="color: var(--ink-3); font-size: 12px; margin-bottom: 12px; display: none;" id="beDescAdvanced">
+                            回答「达到目标正确率总共要花多少钱、多少时间」——含重跑策略、峰谷计价、生产并发与 p 不确定性传导。
                         </div>
                         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
                             <div class="form-group">
                                 <label class="form-label">任务规模 N</label>
                                 <input type="number" min="1" class="form-input" id="beCount" value="100" placeholder="如 1000">
                             </div>
+                            <div class="form-group">
+                                <label class="form-label">版本作用域</label>
+                                ${versionOptions
+                                    ? `<select class="form-control" id="beVersionId">
+                                        <option value="">自动（按当前活动版本）</option>
+                                        ${versionOptions}
+                                      </select>`
+                                    : `<input type="text" class="form-input" value="（无版本，全量）" disabled>`}
+                            </div>
+                        </div>
+                        <!-- 基础模式字段 -->
+                        <div id="beBasicFields" style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px;">
                             <div class="form-group">
                                 <label class="form-label">生产端并发度</label>
                                 <input type="number" min="1" class="form-input" id="beConcurrency" value="1" placeholder="1 = 串行">
@@ -5795,19 +5801,36 @@
                                 </select>
                                 <div style="font-size: 10px; color: var(--ink-5); margin-top: 2px;">影响峰/谷价选择</div>
                             </div>
-                            <div class="form-group">
-                                <label class="form-label">版本作用域</label>
-                                ${versionOptions
-                                    ? `<select class="form-control" id="beVersionId">
-                                        <option value="">自动（按当前活动版本）</option>
-                                        ${versionOptions}
-                                      </select>`
-                                    : `<input type="text" class="form-input" value="（无版本，全量）" disabled>`}
-                            </div>
                         </div>
-                        <div class="form-group">
-                            <label class="form-label">标签筛选（可选，逗号分隔，OR）</label>
-                            <input type="text" class="form-input" id="beTags" placeholder="如 smoke,regression">
+                        <!-- 进阶模式字段 -->
+                        <div id="beAdvancedFields" style="display: none; margin-top: 12px;">
+                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+                                <div class="form-group">
+                                    <label class="form-label">目标正确率 (%)</label>
+                                    <input type="number" min="1" max="100" step="0.1" class="form-input" id="beTargetPassRate" value="100" placeholder="如 95">
+                                    <div style="font-size: 10px; color: var(--ink-5); margin-top: 2px;">100 = 全过；&lt; 100 则按重跑策略推算</div>
+                                </div>
+                                <div class="form-group">
+                                    <label class="form-label">重跑策略</label>
+                                    <select class="form-control" id="beRerunStrategy">
+                                        <option value="failed_only">仅失败重跑</option>
+                                        <option value="all">全部重跑</option>
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <label class="form-label">运行时段</label>
+                                    <select class="form-control" id="beTimeMode">
+                                        <option value="peak">峰时（全部峰价）</option>
+                                        <option value="off_peak">仅谷时（全部谷价 + 含停产时长）</option>
+                                        <option value="mixed">混合（按峰谷占比加权）</option>
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <label class="form-label">生产端并发度</label>
+                                    <input type="number" min="1" class="form-input" id="beProdConcurrency" value="1" placeholder="1 = 串行">
+                                    <div style="font-size: 10px; color: var(--ink-5); margin-top: 2px;">时长区间按此分摊</div>
+                                </div>
+                            </div>
                         </div>
                         <div id="beResult" style="margin-top: 16px;"></div>
                     </div>
@@ -5818,61 +5841,125 @@
                 </div>
             `;
             document.body.appendChild(modal);
+            state._estimateMode = 'basic';
+        }
+
+        function toggleEstimateMode(mode) {
+            state._estimateMode = mode;
+            const isBasic = mode === 'basic';
+            const btnBasic = document.getElementById('beModeBasic');
+            const btnAdv = document.getElementById('beModeAdvanced');
+            if (btnBasic) { btnBasic.className = isBasic ? 'btn btn-sm btn-primary' : 'btn btn-sm btn-secondary'; }
+            if (btnAdv) { btnAdv.className = isBasic ? 'btn btn-sm btn-secondary' : 'btn btn-sm btn-primary'; }
+            const basicFields = document.getElementById('beBasicFields');
+            const advFields = document.getElementById('beAdvancedFields');
+            const descBasic = document.getElementById('beDescBasic');
+            const descAdv = document.getElementById('beDescAdvanced');
+            if (basicFields) basicFields.style.display = isBasic ? 'grid' : 'none';
+            if (advFields) advFields.style.display = isBasic ? 'none' : 'block';
+            if (descBasic) descBasic.style.display = isBasic ? 'block' : 'none';
+            if (descAdv) descAdv.style.display = isBasic ? 'none' : 'block';
         }
 
         async function runBatchEstimate(projectId) {
             const count = parseInt(document.getElementById('beCount')?.value || '0', 10);
-            const concurrency = parseInt(document.getElementById('beConcurrency')?.value || '1', 10);
-            const planHourRaw = document.getElementById('bePlanHour')?.value || '';
-            const planHour = planHourRaw === '' ? null : parseInt(planHourRaw, 10);
             const versionIdRaw = document.getElementById('beVersionId')?.value || '';
             const versionId = versionIdRaw === '' ? null : versionIdRaw;
-            const tagsStr = document.getElementById('beTags')?.value?.trim() || '';
-            const tags = tagsStr ? tagsStr.split(',').map(s => s.trim()).filter(Boolean) : [];
             const resultEl = document.getElementById('beResult');
             if (!count || count <= 0) { showToast('N 必须 > 0', 'error'); return; }
-            if (concurrency < 1) { showToast('并发度必须 ≥ 1', 'error'); return; }
+            const isAdvanced = state._estimateMode === 'advanced';
             resultEl.innerHTML = `<div style="color: var(--ink-4); font-size: 12px; padding: 12px;">估算中…</div>`;
+            const fmtCost = (v, cur) => v != null ? `${cur || '¥'}${Number(v).toLocaleString(undefined, { maximumFractionDigits: 2 })}` : '—';
+            const fmtSec = (v) => {
+                if (v == null) return '—';
+                const s = Number(v);
+                if (s < 60) return `${s.toFixed(1)} 秒`;
+                if (s < 3600) return `${(s / 60).toFixed(1)} 分钟`;
+                return `${(s / 3600).toFixed(1)} 小时`;
+            };
             try {
-                const body = { count, concurrency };
-                if (planHour !== null) body.plan_hour = planHour;
-                if (versionId) body.version_id = versionId;
-                if (tags.length) body.tags = tags;
-                const data = await api(`/projects/${projectId}/estimate`, {
-                    method: 'POST', body: JSON.stringify(body),
-                });
-                const cost = data.cost || {};
-                const time = data.time || {};
-                const fmtCost = (v) => v != null ? `${cost.currency || '¥'}${Number(v).toLocaleString(undefined, { maximumFractionDigits: 2 })}` : '—';
-                const fmtSec = (v) => {
-                    if (v == null) return '—';
-                    const s = Number(v);
-                    if (s < 60) return `${s.toFixed(1)} 秒`;
-                    if (s < 3600) return `${(s / 60).toFixed(1)} 分钟`;
-                    return `${(s / 3600).toFixed(1)} 小时`;
-                };
-                const lowConfTag = data.low_confidence
-                    ? `<span style="color: var(--amber, #b45309); font-size: 11px; margin-left: 8px;">⚠ 低置信（< 100 样本）</span>` : '';
-                const noteBlock = data.note
-                    ? `<div style="margin-top: 12px; padding: 8px 10px; background: var(--bg-2); border-radius: 4px; font-size: 11px; color: var(--ink-3);">${escapeHtml(data.note)}</div>`
-                    : '';
-                resultEl.innerHTML = `
-                    <div style="border-top: 1px solid var(--border); padding-top: 12px;">
-                        <div style="display: flex; align-items: center; margin-bottom: 10px;">
-                            <strong style="font-size: 13px;">预估区间</strong>
-                            ${lowConfTag}
+                if (!isAdvanced) {
+                    // 基础模式 → Q-6 endpoint
+                    const concurrency = parseInt(document.getElementById('beConcurrency')?.value || '1', 10);
+                    const planHourRaw = document.getElementById('bePlanHour')?.value || '';
+                    const planHour = planHourRaw === '' ? null : parseInt(planHourRaw, 10);
+                    if (concurrency < 1) { showToast('并发度必须 ≥ 1', 'error'); return; }
+                    const body = { count, concurrency };
+                    if (planHour !== null) body.plan_hour = planHour;
+                    if (versionId) body.version_id = versionId;
+                    const data = await api(`/projects/${projectId}/estimate`, {
+                        method: 'POST', body: JSON.stringify(body),
+                    });
+                    const cost = data.cost || {};
+                    const time = data.time || {};
+                    const lowConfTag = data.low_confidence
+                        ? `<span style="color: var(--amber, #b45309); font-size: 11px; margin-left: 8px;">⚠ 低置信（&lt; 100 样本）</span>` : '';
+                    const noteBlock = data.note
+                        ? `<div style="margin-top: 12px; padding: 8px 10px; background: var(--bg-2); border-radius: 4px; font-size: 11px; color: var(--ink-3);">${escapeHtml(data.note)}</div>`
+                        : '';
+                    resultEl.innerHTML = `
+                        <div style="border-top: 1px solid var(--border); padding-top: 12px;">
+                            <div style="display: flex; align-items: center; margin-bottom: 10px;">
+                                <strong style="font-size: 13px;">预估区间</strong>
+                                ${lowConfTag}
+                            </div>
+                            <div style="display: grid; grid-template-columns: 100px 1fr; gap: 6px 12px; font-size: 12px;">
+                                <span style="color: var(--ink-4);">成本 P50：</span><span style="font-weight: 600;">${fmtCost(cost.median, cost.currency)}</span>
+                                <span style="color: var(--ink-4);">成本 P5–P95：</span><span>${fmtCost(cost.p5, cost.currency)} ~ ${fmtCost(cost.p95, cost.currency)}</span>
+                                <span style="color: var(--ink-4);">用时 P50：</span><span style="font-weight: 600;">${fmtSec(time.median)}</span>
+                                <span style="color: var(--ink-4);">用时 P5–P95：</span><span>${fmtSec(time.p5)} ~ ${fmtSec(time.p95)}</span>
+                                <span style="color: var(--ink-4);">跳过比例：</span><span>${(data.skipped_ratio * 100).toFixed(1)}%</span>
+                                <span style="color: var(--ink-4);">样本来源：</span><span>${data.sample_count} 条 case 样本，跨 ${data.run_count} 次 run</span>
+                            </div>
+                            ${noteBlock}
                         </div>
-                        <div style="display: grid; grid-template-columns: 90px 1fr; gap: 6px 12px; font-size: 12px;">
-                            <span style="color: var(--ink-4);">成本 P50：</span><span style="font-weight: 600;">${fmtCost(cost.median)}</span>
-                            <span style="color: var(--ink-4);">成本 P5–P95：</span><span>${fmtCost(cost.p5)} ~ ${fmtCost(cost.p95)}</span>
-                            <span style="color: var(--ink-4);">用时 P50：</span><span style="font-weight: 600;">${fmtSec(time.median)}</span>
-                            <span style="color: var(--ink-4);">用时 P5–P95：</span><span>${fmtSec(time.p5)} ~ ${fmtSec(time.p95)}</span>
-                            <span style="color: var(--ink-4);">跳过比例：</span><span>${(data.skipped_ratio * 100).toFixed(1)}%</span>
-                            <span style="color: var(--ink-4);">样本来源：</span><span>${data.sample_count} 条 case 样本，跨 ${data.run_count} 次 run</span>
+                    `;
+                } else {
+                    // 进阶模式 → Q-7 endpoint
+                    const targetPct = parseFloat(document.getElementById('beTargetPassRate')?.value || '100');
+                    const rerunStrategy = document.getElementById('beRerunStrategy')?.value || 'failed_only';
+                    const timeMode = document.getElementById('beTimeMode')?.value || 'peak';
+                    const prodConcurrency = parseInt(document.getElementById('beProdConcurrency')?.value || '1', 10);
+                    if (targetPct <= 0 || targetPct > 100) { showToast('目标正确率必须在 (0, 100]', 'error'); return; }
+                    if (prodConcurrency < 1) { showToast('生产并发度必须 ≥ 1', 'error'); return; }
+                    const body = {
+                        count,
+                        target_pass_rate: targetPct / 100,
+                        rerun_strategy: rerunStrategy,
+                        time_mode: timeMode,
+                        production_concurrency: prodConcurrency,
+                    };
+                    if (versionId) body.version_id = versionId;
+                    const data = await api(`/projects/${projectId}/estimate-quality`, {
+                        method: 'POST', body: JSON.stringify(body),
+                    });
+                    const cost = data.total_cost || {};
+                    const time = data.total_time || {};
+                    const lowConfTag = data.low_confidence
+                        ? `<span style="color: var(--amber, #b45309); font-size: 11px; margin-left: 8px;">⚠ 低置信（&lt; 100 样本）</span>` : '';
+                    const noteBlock = (data.note && data.note.length)
+                        ? `<div style="margin-top: 12px; padding: 8px 10px; background: var(--bg-2); border-radius: 4px; font-size: 11px; color: var(--ink-3);">${data.note.map(n => `<div style="margin-bottom: 4px;">• ${escapeHtml(n)}</div>`).join('')}</div>`
+                        : '';
+                    resultEl.innerHTML = `
+                        <div style="border-top: 1px solid var(--border); padding-top: 12px;">
+                            <div style="display: flex; align-items: center; margin-bottom: 10px;">
+                                <strong style="font-size: 13px;">质量-成本闭环预估</strong>
+                                ${lowConfTag}
+                            </div>
+                            <div style="display: grid; grid-template-columns: 100px 1fr; gap: 6px 12px; font-size: 12px;">
+                                <span style="color: var(--ink-4);">期望轮次：</span><span style="font-weight: 600;">${data.rounds_expected}</span>
+                                <span style="color: var(--ink-4);">通过率 p：</span><span>${(data.pass_rate * 100).toFixed(1)}%</span>
+                                <span style="color: var(--ink-4);">总成本 P50：</span><span style="font-weight: 600;">${fmtCost(cost.median, cost.currency)}</span>
+                                <span style="color: var(--ink-4);">总成本 P5–P95：</span><span>${fmtCost(cost.p5, cost.currency)} ~ ${fmtCost(cost.p95, cost.currency)}</span>
+                                <span style="color: var(--ink-4);">总时长 P50：</span><span style="font-weight: 600;">${fmtSec(time.median)}</span>
+                                <span style="color: var(--ink-4);">总时长 P5–P95：</span><span>${fmtSec(time.p5)} ~ ${fmtSec(time.p95)}</span>
+                                <span style="color: var(--ink-4);">跳过比例：</span><span>${(data.skipped_ratio * 100).toFixed(1)}%</span>
+                                <span style="color: var(--ink-4);">样本来源：</span><span>${data.sample_count} 条 case 样本，跨 ${data.run_count} 次 run</span>
+                            </div>
+                            ${noteBlock}
                         </div>
-                        ${noteBlock}
-                    </div>
-                `;
+                    `;
+                }
             } catch (err) {
                 resultEl.innerHTML = `<div style="color: var(--red); font-size: 12px; padding: 12px;">预估失败：${escapeHtml(err.message)}</div>`;
             }
@@ -6970,9 +7057,9 @@
                                 <button class="btn btn-sm btn-secondary" onclick="addManualVarRow()">+ 添加变量</button>
                             </div>
                             <div class="form-group">
-                                <label class="form-label">标签 tags（逗号分隔）</label>
-                                <input type="text" class="form-input" id="manualTags" placeholder="如：regression, smoke" oninput="renderTagsPreview(this.value, 'manualTagsPreview')">
-                                <div id="manualTagsPreview" class="tag-chips"></div>
+                                <label class="form-label">标签 tags（chips：点 × 删除；输入回车添加）</label>
+                                <div id="manualTagsChips" class="tag-chips" style="display: flex; gap: 4px; flex-wrap: wrap; min-height: 28px; padding: 4px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--card-bg);"></div>
+                                <input type="text" class="form-input" id="manualTagsInput" placeholder="输入标签名回车添加" style="margin-top: 4px;" onkeydown="if(event.key==='Enter'){event.preventDefault(); addManualTag();}">
                             </div>
                             <button class="btn btn-secondary" onclick="addManualCaseToList()">+ 添加到待导入列表</button>
                             <div id="manualCaseList" style="margin-top: 16px;"></div>
@@ -7009,6 +7096,9 @@
             if (mvList && mvList.children.length === 0) {
                 mvList.innerHTML = kvRowHTML('', '');
             }
+            // Q-8: 初始化 tags chips
+            state.manualTags = [];
+            renderManualTagsChips();
         }
 
         // B-13: 导入表单加变量行
@@ -7221,6 +7311,41 @@
             else if (t === 'llm_judge') show('manualLlmGroup');
         }
 
+        // Q-8: 手动添加用例表单 tags chips 交互（与主编辑器一致）
+        function renderManualTagsChips() {
+            const el = document.getElementById('manualTagsChips');
+            if (!el) return;
+            if (!state.manualTags) state.manualTags = [];
+            if (state.manualTags.length === 0) {
+                el.innerHTML = '<span style="font-size: 11px; color: var(--ink-5); padding: 4px;">暂无标签</span>';
+                return;
+            }
+            el.innerHTML = state.manualTags.map(t => `
+                <span class="tag-chip" style="display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; background: var(--light-bg); border: 1px solid var(--border); border-radius: 999px; font-size: 12px;">
+                    ${escapeHtml(t)}
+                    <span style="cursor: pointer; color: var(--ink-5); font-size: 14px; line-height: 1;" data-tag="${escapeHtml(t)}" onclick="removeManualTag(this.dataset.tag)">×</span>
+                </span>
+            `).join('');
+        }
+
+        function addManualTag() {
+            const inp = document.getElementById('manualTagsInput');
+            if (!inp) return;
+            const tag = inp.value.trim();
+            if (!tag) return;
+            if (!state.manualTags) state.manualTags = [];
+            if (state.manualTags.includes(tag)) { inp.value = ''; return; }
+            state.manualTags.push(tag);
+            renderManualTagsChips();
+            inp.value = '';
+        }
+
+        function removeManualTag(tag) {
+            if (!state.manualTags) return;
+            state.manualTags = state.manualTags.filter(t => t !== tag);
+            renderManualTagsChips();
+        }
+
         // B-12: 从表单收集一条 case 加入待导入列表
         function addManualCaseToList() {
             const name = document.getElementById('manualCaseName').value.trim();
@@ -7244,8 +7369,8 @@
             // B-13: 收集 variables kv 行
             const vars = collectKvRows('manualVariablesList');
             if (vars) caseObj.variables = vars;
-            // T1-2: 收集 tags
-            const tags = parseTagsInput(document.getElementById('manualTags').value);
+            // T1-2: 收集 tags（chips）
+            const tags = (state.manualTags || []).slice();
             if (tags.length > 0) caseObj.tags = tags;
             // 加入待导入列表
             if (!Array.isArray(importData.cases)) importData.cases = [];
@@ -7261,8 +7386,9 @@
             document.getElementById('manualLenMin').value = '';
             document.getElementById('manualLenMax').value = '';
             document.getElementById('manualOutputRequirement').value = '';
-            document.getElementById('manualTags').value = '';
-            renderTagsPreview('', 'manualTagsPreview');
+            state.manualTags = [];
+            renderManualTagsChips();
+            document.getElementById('manualTagsInput').value = '';
             // 重置变量行（保留一条空行）
             const mvList = document.getElementById('manualVariablesList');
             if (mvList) mvList.innerHTML = kvRowHTML('', '');

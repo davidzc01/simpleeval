@@ -16,7 +16,7 @@ from .models import (
     CaseResult, ErrorResponse, CreateVersionRequest, ProjectVersion,
     CreateTagRequest, RenameTagRequest, ScheduleConfig, UpdateScheduleRequest,
     ModelPrice, CreateModelPriceRequest, UpdateModelPriceRequest,
-    BatchEstimateRequest,
+    BatchEstimateRequest, BatchEstimateQualityRequest,
 )
 from .storage import (
     list_projects, get_project, save_project, delete_project,
@@ -28,7 +28,7 @@ from .storage import (
     update_judge_config, delete_judge_config, find_judge_config_by_name,
     list_tags, save_tag, rename_tag, delete_tag, _migrate_legacy_tags,
     list_model_prices, save_model_price, update_model_price, delete_model_price, cost_estimate,
-    batch_estimate,
+    batch_estimate, batch_estimate_quality_cost,
 )
 from .runner import execute_run, _utc_now, _generate_run_id, _apply_case_filter, _resolve_effective_judge_config
 from .judge import call_target, judge_with_llm, compute_judge_fingerprint, NetworkError, APIError, ResponseFormatError
@@ -1857,8 +1857,36 @@ async def batch_estimate_route(project_id: str, req: BatchEstimateRequest):
         project, req.count,
         plan_hour=req.plan_hour,
         version_id=req.version_id,
-        tags=req.tags or None,
         concurrency=req.concurrency,
+    )
+    if "error" in result:
+        raise HTTPException(status_code=422, detail={"error": {
+            "code": result["error"], "message": result.get("message", ""),
+            "sample_count": result.get("sample_count", 0),
+            "run_count": result.get("run_count", 0),
+        }})
+    return result
+
+
+@router.post("/projects/{project_id}/estimate-quality")
+async def batch_estimate_quality_route(project_id: str, req: BatchEstimateQualityRequest):
+    """Q-7: 质量-成本闭环预估——回答"达到目标正确率总共要花多少钱、多少时间"
+
+    返回 {rounds_expected, total_cost: {median, p5, p95, currency},
+           total_time: {median, p5, p95}, skipped_ratio, sample_count,
+           run_count, low_confidence, pass_rate, note[]}
+    样本不足 / 仅 1 次 run / 目标 100%+全部重跑 → 422 + error.code
+    """
+    project = get_project(project_id)
+    if not project:
+        project_not_found(project_id)
+    result = batch_estimate_quality_cost(
+        project, req.count,
+        target_pass_rate=req.target_pass_rate,
+        rerun_strategy=req.rerun_strategy,
+        time_mode=req.time_mode,
+        production_concurrency=req.production_concurrency,
+        version_id=req.version_id,
     )
     if "error" in result:
         raise HTTPException(status_code=422, detail={"error": {

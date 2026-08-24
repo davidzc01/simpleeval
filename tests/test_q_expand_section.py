@@ -609,22 +609,22 @@ class TestQ6BatchEstimate:
                            json={"count": 100, "version_id": "ver-2"})
         assert r_v2.json()["time"]["median"] == 50.0
 
-    def test_tags_filter_runs(self, client, isolated_storage):
-        """tags 给定 → 仅取 filter_tags 命中的 run"""
+    def test_tags_ignored_q8(self, client, isolated_storage):
+        """Q-8: tags 已移除——发送 tags 不再过滤 run（所有 run 均纳入统计）"""
         self._make_project(isolated_storage)
-        # smoke 标签 run：100ms（两次以满足跨 run 校验）
         isolated_storage.save_run(self._make_run("r1a", [self._case(f"c{i}", latency=100.0) for i in range(25)],
                                                  created="2026-08-10T12:00:00Z", filter_tags=["smoke"]))
         isolated_storage.save_run(self._make_run("r1b", [self._case(f"c{i}", latency=100.0) for i in range(25)],
                                                  created="2026-08-11T12:00:00Z", filter_tags=["smoke"]))
-        # 全量 run：500ms
         isolated_storage.save_run(self._make_run("r2", [self._case(f"c{i}", latency=500.0) for i in range(50)],
                                                  created="2026-08-12T12:00:00Z", filter_tags=[]))
-        # 选 smoke → P50=100ms × 100 / 1000 = 10s
+        # 发送 tags → 应被忽略，所有 3 个 run 纳入统计（25+25+50=100 样本）
         r = client.post("/api/projects/q6-proj/estimate",
                         json={"count": 100, "tags": ["smoke"]})
         assert r.status_code == 200
-        assert r.json()["time"]["median"] == 10.0
+        data = r.json()
+        assert data["sample_count"] == 100
+        assert data["run_count"] == 3
 
     def test_concurrency_divides_time(self, client, isolated_storage):
         """concurrency=4 → 时间区间 ÷ 4"""
@@ -674,5 +674,572 @@ class TestQ6BatchEstimate:
         assert data["cost"]["median"] == 0.0
         assert data["cost"]["p5"] == 0.0
         assert data["cost"]["p95"] == 0.0
+
+
+# ============== Q-7: 质量-成本闭环预估 ==============
+
+class TestQ7QualityCostLoop:
+    """Q-7: 目标正确率 + 重跑策略 + 峰谷计价 + p 不确定性 + note[]"""
+
+    def _make_project(self, storage_mod, proj_id="q7-proj", target_model="ds-v3",
+                     judge_model="jm-1", versions=None, current=None):
+        proj = Project(
+            id=proj_id, name="Q7",
+            judge_config=JudgeConfig(base_url="https://j.example.com", model=judge_model, api_type="openai_compatible"),
+            target_config=TargetConfig(base_url="https://t.example.com", model=target_model, api_type="openai_compatible"),
+            versions=versions or [],
+            current_version_id=current,
+        )
+        storage_mod.save_project(proj)
+        return proj
+
+    def _make_run(self, run_id, case_results, created="2026-08-10T12:00:00Z",
+                  proj_id="q7-proj", evalset_id="q7-es", version_id=None, concurrency=None):
+        total_token = sum((cr.token_used or 0) for cr in case_results)
+        judge_token = sum((cr.judge_token or 0) for cr in case_results)
+        latencies = [cr.latency_ms or 0.0 for cr in case_results]
+        passed = sum(1 for cr in case_results if cr.passed)
+        total = len(case_results) or 1
+        run = EvalRun(
+            id=run_id, project_id=proj_id, evalset_id=evalset_id, status="completed",
+            created_at=created, version_id=version_id, concurrency=concurrency,
+            results=case_results,
+            summary=EvalSummary(
+                pass_rate=passed / total,
+                total_token=total_token, total_latency_ms=sum(latencies),
+                judge_token=judge_token,
+                latency_p50=sorted(latencies)[len(latencies) // 2] if latencies else 0,
+                latency_p95=max(latencies) if latencies else 0,
+                token_per_pass=1.0,
+            ),
+        )
+        return run
+
+    def _case(self, name, token=1000, j_token=0, latency=100.0, passed=True,
+              skipped_reason=None):
+        return CaseResult(
+            case_name=name, passed=passed, score=1.0 if passed else 0.0,
+            actual_output="ok", latency_ms=latency,
+            token_used=token, judge_token=j_token, skipped_reason=skipped_reason,
+        )
+
+    def _setup_100_samples_p50(self, storage):
+        """两 run × 50 = 100 样本，p=0.5（50 pass / 50 fail），latency=100ms"""
+        r1 = [self._case(f"c{i}", latency=100.0, passed=(i % 2 == 0)) for i in range(50)]
+        r2 = [self._case(f"c{i}", latency=100.0, passed=(i % 2 == 0)) for i in range(50)]
+        storage.save_run(self._make_run("r1", r1, created="2026-08-10T12:00:00Z"))
+        storage.save_run(self._make_run("r2", r2, created="2026-08-11T12:00:00Z"))
+
+    # ---- 错误分支 ----
+
+    def test_insufficient_samples_422(self, client, isolated_storage):
+        self._make_project(isolated_storage)
+        storage = isolated_storage
+        storage.save_run(self._make_run("r1", [self._case(f"c{i}") for i in range(10)]))
+        r = client.post("/api/projects/q7-proj/estimate-quality",
+                        json={"count": 100, "target_pass_rate": 0.95, "rerun_strategy": "failed_only"})
+        assert r.status_code == 422
+        assert r.json()["detail"]["error"]["code"] == "insufficient_samples"
+
+    def test_insufficient_runs_422(self, client, isolated_storage):
+        self._make_project(isolated_storage)
+        isolated_storage.save_run(self._make_run("r1", [self._case(f"c{i}") for i in range(50)]))
+        r = client.post("/api/projects/q7-proj/estimate-quality",
+                        json={"count": 100, "target_pass_rate": 0.95})
+        assert r.status_code == 422
+        assert r.json()["detail"]["error"]["code"] == "insufficient_runs"
+
+    def test_invalid_count_422(self, client, isolated_storage):
+        self._make_project(isolated_storage)
+        self._setup_100_samples_p50(isolated_storage)
+        r = client.post("/api/projects/q7-proj/estimate-quality",
+                        json={"count": 0, "target_pass_rate": 0.95})
+        assert r.status_code == 422
+        assert r.json()["detail"]["error"]["code"] == "invalid_count"
+
+    def test_invalid_target_pass_rate_422(self, client, isolated_storage):
+        self._make_project(isolated_storage)
+        self._setup_100_samples_p50(isolated_storage)
+        r = client.post("/api/projects/q7-proj/estimate-quality",
+                        json={"count": 100, "target_pass_rate": 0})
+        assert r.status_code == 422
+        assert r.json()["detail"]["error"]["code"] == "invalid_target_pass_rate"
+
+    def test_infinite_rounds_target_1_all_422(self, client, isolated_storage):
+        """target=1.0 + strategy=all → 422 infinite_rounds"""
+        self._make_project(isolated_storage)
+        self._setup_100_samples_p50(isolated_storage)
+        r = client.post("/api/projects/q7-proj/estimate-quality",
+                        json={"count": 100, "target_pass_rate": 1.0, "rerun_strategy": "all"})
+        assert r.status_code == 422
+        assert r.json()["detail"]["error"]["code"] == "infinite_rounds"
+
+    def test_project_not_found_404(self, client, isolated_storage):
+        r = client.post("/api/projects/none/estimate-quality",
+                        json={"count": 100, "target_pass_rate": 0.95})
+        assert r.status_code == 404
+
+    # ---- 正常预估 ----
+
+    def test_failed_only_default_target_1(self, client, isolated_storage):
+        """target=1.0 (默认全过), failed_only → total_exec = N/p"""
+        self._make_project(isolated_storage)
+        self._setup_100_samples_p50(isolated_storage)  # p=0.5
+        r = client.post("/api/projects/q7-proj/estimate-quality",
+                        json={"count": 100, "rerun_strategy": "failed_only"})
+        assert r.status_code == 200
+        data = r.json()
+        # p=0.5 → rounds_expected = 1/0.5 = 2.0
+        assert data["rounds_expected"] == 2.0
+        assert abs(data["pass_rate"] - 0.5) < 0.001
+        # total_exec = 100/0.5 = 200; P5 ≤ P50 ≤ P95
+        assert data["total_cost"]["p5"] <= data["total_cost"]["median"] <= data["total_cost"]["p95"]
+        assert data["total_time"]["p5"] <= data["total_time"]["median"] <= data["total_time"]["p95"]
+        # note 是数组
+        assert isinstance(data["note"], list)
+        assert len(data["note"]) > 0
+
+    def test_all_rerun_target_95(self, client, isolated_storage):
+        """target=0.95, all → k = ceil(log(0.05)/log(1-p))"""
+        self._make_project(isolated_storage)
+        self._setup_100_samples_p50(isolated_storage)  # p=0.5
+        r = client.post("/api/projects/q7-proj/estimate-quality",
+                        json={"count": 100, "target_pass_rate": 0.95, "rerun_strategy": "all"})
+        assert r.status_code == 200
+        data = r.json()
+        # p=0.5 → k = ceil(log(0.05)/log(0.5)) = ceil(-2.996/-0.693) = ceil(4.32) = 5
+        assert data["rounds_expected"] == 5
+
+    # ---- 峰谷计价 ----
+
+    def test_peak_vs_off_peak_pricing(self, client, isolated_storage):
+        """峰 vs 谷 → 成本不同"""
+        self._make_project(isolated_storage)
+        isolated_storage.save_model_price("t.example", "ds-v3", 1.0, "¥",
+                                          peak_price_per_mtok=2.0, off_peak_price_per_mtok=1.0,
+                                          peak_start_hour=9, peak_end_hour=22)
+        # 100 samples, each token=1e6 → per_sample peak=2.0 / off=1.0
+        r1 = [self._case(f"c{i}", token=1_000_000, latency=100.0, passed=True) for i in range(50)]
+        r2 = [self._case(f"c{i}", token=1_000_000, latency=100.0, passed=True) for i in range(50)]
+        isolated_storage.save_run(self._make_run("r1", r1, created="2026-08-10T12:00:00Z"))
+        isolated_storage.save_run(self._make_run("r2", r2, created="2026-08-11T12:00:00Z"))
+        # p=1.0, target=1.0, failed_only → total_exec = 100
+        r_peak = client.post("/api/projects/q7-proj/estimate-quality",
+                            json={"count": 100, "target_pass_rate": 1.0, "rerun_strategy": "failed_only", "time_mode": "peak"})
+        r_off = client.post("/api/projects/q7-proj/estimate-quality",
+                            json={"count": 100, "target_pass_rate": 1.0, "rerun_strategy": "failed_only", "time_mode": "off_peak"})
+        peak_cost = r_peak.json()["total_cost"]["median"]
+        off_cost = r_off.json()["total_cost"]["median"]
+        # peak: 100 × 1e6/1e6 × 2.0 = 200; off: 100 × 1.0 = 100
+        assert peak_cost == 200.0
+        assert off_cost == 100.0
+
+    def test_mixed_pricing(self, client, isolated_storage):
+        """混合模式 → 峰谷加权价"""
+        self._make_project(isolated_storage)
+        isolated_storage.save_model_price("t.example", "ds-v3", 1.0, "¥",
+                                          peak_price_per_mtok=2.0, off_peak_price_per_mtok=1.0,
+                                          peak_start_hour=9, peak_end_hour=22)
+        r1 = [self._case(f"c{i}", token=1_000_000, latency=100.0, passed=True) for i in range(50)]
+        r2 = [self._case(f"c{i}", token=1_000_000, latency=100.0, passed=True) for i in range(50)]
+        isolated_storage.save_run(self._make_run("r1", r1, created="2026-08-10T12:00:00Z"))
+        isolated_storage.save_run(self._make_run("r2", r2, created="2026-08-11T12:00:00Z"))
+        r_mixed = client.post("/api/projects/q7-proj/estimate-quality",
+                              json={"count": 100, "target_pass_rate": 1.0, "rerun_strategy": "failed_only", "time_mode": "mixed"})
+        # peak [9,22) = 13h, valley = 11h → mixed_price = 2.0*13/24 + 1.0*11/24 = 1.0833+0.4583 = 1.5417
+        # cost = 100 × 1.0 × 1.5417 ≈ 154.17
+        mixed_cost = r_mixed.json()["total_cost"]["median"]
+        peak_cost = client.post("/api/projects/q7-proj/estimate-quality",
+                                json={"count": 100, "target_pass_rate": 1.0, "rerun_strategy": "failed_only", "time_mode": "peak"}).json()["total_cost"]["median"]
+        off_cost = client.post("/api/projects/q7-proj/estimate-quality",
+                               json={"count": 100, "target_pass_rate": 1.0, "rerun_strategy": "failed_only", "time_mode": "off_peak"}).json()["total_cost"]["median"]
+        # mixed 应在 peak 和 off 之间
+        assert off_cost < mixed_cost < peak_cost
+
+    # ---- 仅谷时停产时长 ----
+
+    def test_off_peak_downtime_added(self, client, isolated_storage):
+        """仅谷时模式 + E > W → 总时长含停产"""
+        self._make_project(isolated_storage)
+        isolated_storage.save_model_price("t.example", "ds-v3", 1.0, "¥",
+                                          peak_price_per_mtok=2.0, off_peak_price_per_mtok=1.0,
+                                          peak_start_hour=9, peak_end_hour=22)
+        # p=0.5, count=1000 → total_exec=2000; latency=100000ms → E=2000×100=200000s ≈ 55.6h
+        # valley=11h=39600s → E > W → downtime = ceil(200000/39600)-1 = 5; total = 200000 + 5×46800 = 434000
+        r1 = [self._case(f"c{i}", token=1000, latency=100000.0, passed=(i % 2 == 0)) for i in range(50)]
+        r2 = [self._case(f"c{i}", token=1000, latency=100000.0, passed=(i % 2 == 0)) for i in range(50)]
+        isolated_storage.save_run(self._make_run("r1", r1, created="2026-08-10T12:00:00Z"))
+        isolated_storage.save_run(self._make_run("r2", r2, created="2026-08-11T12:00:00Z"))
+        r_off = client.post("/api/projects/q7-proj/estimate-quality",
+                            json={"count": 1000, "target_pass_rate": 1.0, "rerun_strategy": "failed_only", "time_mode": "off_peak"})
+        r_peak = client.post("/api/projects/q7-proj/estimate-quality",
+                             json={"count": 1000, "target_pass_rate": 1.0, "rerun_strategy": "failed_only", "time_mode": "peak"})
+        off_time = r_off.json()["total_time"]["median"]
+        peak_time = r_peak.json()["total_time"]["median"]
+        # peak: E = 2000 × 100000/1000/1 = 200000s
+        # off: 200000 + 5 × 46800 = 434000s
+        assert off_time > peak_time
+        assert peak_time == 200000.0
+
+    def test_off_peak_no_downtime_when_small(self, client, isolated_storage):
+        """仅谷时模式 + E ≤ W → 不加停产"""
+        self._make_project(isolated_storage)
+        isolated_storage.save_model_price("t.example", "ds-v3", 1.0, "¥",
+                                          peak_price_per_mtok=2.0, off_peak_price_per_mtok=1.0,
+                                          peak_start_hour=9, peak_end_hour=22)
+        # p=1.0, count=100 → total_exec=100; latency=100ms → E=100×0.1=10s << valley=39600s
+        r1 = [self._case(f"c{i}", token=1000, latency=100.0, passed=True) for i in range(50)]
+        r2 = [self._case(f"c{i}", token=1000, latency=100.0, passed=True) for i in range(50)]
+        isolated_storage.save_run(self._make_run("r1", r1, created="2026-08-10T12:00:00Z"))
+        isolated_storage.save_run(self._make_run("r2", r2, created="2026-08-11T12:00:00Z"))
+        r_off = client.post("/api/projects/q7-proj/estimate-quality",
+                            json={"count": 100, "target_pass_rate": 1.0, "rerun_strategy": "failed_only", "time_mode": "off_peak"})
+        r_peak = client.post("/api/projects/q7-proj/estimate-quality",
+                             json={"count": 100, "target_pass_rate": 1.0, "rerun_strategy": "failed_only", "time_mode": "peak"})
+        # E ≤ W → 无停产 → 时长相同
+        assert r_off.json()["total_time"]["median"] == r_peak.json()["total_time"]["median"]
+
+    # ---- p 不确定性传导 ----
+
+    def test_p_uncertainty_interval(self, client, isolated_storage):
+        """p 不确定性 → P5 ≤ P50 ≤ P95（成本和时长区间单调）"""
+        self._make_project(isolated_storage)
+        self._setup_100_samples_p50(isolated_storage)
+        r = client.post("/api/projects/q7-proj/estimate-quality",
+                        json={"count": 100, "target_pass_rate": 0.95, "rerun_strategy": "all"})
+        data = r.json()
+        assert data["total_cost"]["p5"] <= data["total_cost"]["median"]
+        assert data["total_cost"]["median"] <= data["total_cost"]["p95"]
+        assert data["total_time"]["p5"] <= data["total_time"]["median"]
+        assert data["total_time"]["median"] <= data["total_time"]["p95"]
+
+    # ---- note[] 提示 ----
+
+    def test_notes_concurrency_mismatch(self, client, isolated_storage):
+        """采集并发 ≠ 生产并发 → note 含并发不一致提示"""
+        proj = self._make_project(isolated_storage)
+        proj.max_concurrency = 4
+        isolated_storage.save_project(proj)
+        r1 = [self._case(f"c{i}", latency=100.0, passed=True) for i in range(50)]
+        r2 = [self._case(f"c{i}", latency=100.0, passed=True) for i in range(50)]
+        isolated_storage.save_run(self._make_run("r1", r1, created="2026-08-10T12:00:00Z"))
+        isolated_storage.save_run(self._make_run("r2", r2, created="2026-08-11T12:00:00Z"))
+        r = client.post("/api/projects/q7-proj/estimate-quality",
+                        json={"count": 100, "target_pass_rate": 1.0, "rerun_strategy": "failed_only",
+                              "production_concurrency": 1})
+        data = r.json()
+        joined = " ".join(data["note"])
+        assert "并发" in joined and "不一致" in joined
+
+    def test_notes_accuracy_and_comparison(self, client, isolated_storage):
+        """note 必含准确度条件 + 对比陈述"""
+        self._make_project(isolated_storage)
+        self._setup_100_samples_p50(isolated_storage)
+        r = client.post("/api/projects/q7-proj/estimate-quality",
+                        json={"count": 100, "target_pass_rate": 0.95, "rerun_strategy": "failed_only"})
+        data = r.json()
+        joined = " ".join(data["note"])
+        assert "准确度" in joined
+        assert "生产流量" in joined
+        assert "多花" in joined
+        assert "失败率" in joined
+
+    # ---- 版本作用域 ----
+
+    def test_version_scope(self, client, isolated_storage):
+        """version_id 限定 → 仅取该版本样本"""
+        v1 = ProjectVersion(id="v-1", name="ver1", created_at="2026-08-01T00:00:00Z")
+        v2 = ProjectVersion(id="v-2", name="ver2", created_at="2026-08-05T00:00:00Z")
+        self._make_project(isolated_storage, versions=[v1, v2], current="v-2")
+        # v1: p=1.0 (all pass), latency=100ms
+        r1a = [self._case(f"c{i}", latency=100.0, passed=True) for i in range(25)]
+        r1b = [self._case(f"c{i}", latency=100.0, passed=True) for i in range(25)]
+        isolated_storage.save_run(self._make_run("r1a", r1a, created="2026-08-02T12:00:00Z", version_id="v-1"))
+        isolated_storage.save_run(self._make_run("r1b", r1b, created="2026-08-03T12:00:00Z", version_id="v-1"))
+        # v2: p=0.5, latency=500ms
+        r2a = [self._case(f"c{i}", latency=500.0, passed=(i % 2 == 0)) for i in range(25)]
+        r2b = [self._case(f"c{i}", latency=500.0, passed=(i % 2 == 0)) for i in range(25)]
+        isolated_storage.save_run(self._make_run("r2a", r2a, created="2026-08-06T12:00:00Z", version_id="v-2"))
+        isolated_storage.save_run(self._make_run("r2b", r2b, created="2026-08-07T12:00:00Z", version_id="v-2"))
+        # 限定 v-1 → p=1.0, total_exec=100, time=100×100/1000/1=10s
+        r = client.post("/api/projects/q7-proj/estimate-quality",
+                        json={"count": 100, "target_pass_rate": 1.0, "rerun_strategy": "failed_only", "version_id": "v-1"})
+        data = r.json()
+        assert data["pass_rate"] == 1.0
+        assert data["total_time"]["median"] == 10.0
+        joined = " ".join(data["note"])
+        assert "ver1" in joined
+
+    # ---- 低置信 + 跳过比例 ----
+
+    def test_low_confidence(self, client, isolated_storage):
+        """30~100 样本 → low_confidence=True"""
+        self._make_project(isolated_storage)
+        r1 = [self._case(f"c{i}", latency=100.0, passed=True) for i in range(15)]
+        r2 = [self._case(f"c{i}", latency=100.0, passed=True) for i in range(15)]
+        isolated_storage.save_run(self._make_run("r1", r1, created="2026-08-10T12:00:00Z"))
+        isolated_storage.save_run(self._make_run("r2", r2, created="2026-08-11T12:00:00Z"))
+        r = client.post("/api/projects/q7-proj/estimate-quality",
+                        json={"count": 100, "target_pass_rate": 1.0, "rerun_strategy": "failed_only"})
+        data = r.json()
+        assert data["low_confidence"] is True
+        joined = " ".join(data["note"])
+        assert "低置信" in joined
+
+    def test_skipped_ratio_separated(self, client, isolated_storage):
+        """跳过 case 分离统计，不计入通过率"""
+        self._make_project(isolated_storage)
+        r1 = [self._case(f"c{i}", latency=100.0, passed=True) for i in range(40)]
+        r1.append(self._case("skip-1", token=0, skipped_reason="budget_exceeded"))
+        r2 = [self._case(f"c{i}", latency=100.0, passed=True) for i in range(40)]
+        isolated_storage.save_run(self._make_run("r1", r1, created="2026-08-10T12:00:00Z"))
+        isolated_storage.save_run(self._make_run("r2", r2, created="2026-08-11T12:00:00Z"))
+        r = client.post("/api/projects/q7-proj/estimate-quality",
+                        json={"count": 100, "target_pass_rate": 1.0, "rerun_strategy": "failed_only"})
+        data = r.json()
+        assert data["sample_count"] == 81
+        assert abs(data["skipped_ratio"] - round(1 / 81, 4)) < 0.001
+        joined = " ".join(data["note"])
+        assert "跳过" in joined
+
+    # ---- 生产并发 ----
+
+    def test_production_concurrency_divides_time(self, client, isolated_storage):
+        """production_concurrency=4 → 时长 ÷ 4"""
+        self._make_project(isolated_storage)
+        # p=1.0 → total_exec=100; latency=100ms
+        r1 = [self._case(f"c{i}", latency=100.0, passed=True) for i in range(50)]
+        r2 = [self._case(f"c{i}", latency=100.0, passed=True) for i in range(50)]
+        isolated_storage.save_run(self._make_run("r1", r1, created="2026-08-10T12:00:00Z"))
+        isolated_storage.save_run(self._make_run("r2", r2, created="2026-08-11T12:00:00Z"))
+        r_serial = client.post("/api/projects/q7-proj/estimate-quality",
+                               json={"count": 100, "target_pass_rate": 1.0, "rerun_strategy": "failed_only", "production_concurrency": 1})
+        r_par = client.post("/api/projects/q7-proj/estimate-quality",
+                            json={"count": 100, "target_pass_rate": 1.0, "rerun_strategy": "failed_only", "production_concurrency": 4})
+        # serial: 100 × 100/1000/1 = 10s; parallel: 10/4 = 2.5s
+        assert r_serial.json()["total_time"]["median"] == 10.0
+        assert r_par.json()["total_time"]["median"] == 2.5
+
+    def test_cost_no_price_returns_zero(self, client, isolated_storage):
+        """无价格条目 → 成本为 0（不阻断预估）"""
+        self._make_project(isolated_storage)
+        self._setup_100_samples_p50(isolated_storage)
+        r = client.post("/api/projects/q7-proj/estimate-quality",
+                        json={"count": 100, "target_pass_rate": 1.0, "rerun_strategy": "failed_only"})
+        data = r.json()
+        assert data["total_cost"]["median"] == 0.0
+
+
+# ============== Q-9: 预估成本剔除 Judge ==============
+
+class TestQ9JudgeExcludedFromEstimate:
+    """Q-9: 预估的是生产环境跑 N 条的成本，Judge 是评测仪器，不应计入。
+
+    - 单样本成本 = token_used（仅 target）/ 1e6 × 价格
+    - judge_token 不参与价格匹配，也不计入成本
+    - skipped 判定仍用「token 全 0」（target 与 judge 均为 0）
+    """
+
+    # 复用 Q-6 / Q-7 的工程脚手架
+    def _make_project_q6(self, storage_mod, proj_id="q9-q6-proj", target_model="ds-v3"):
+        proj = Project(
+            id=proj_id, name="Q9Q6",
+            judge_config=JudgeConfig(base_url="https://j.example.com", model="judge-m", api_type="openai_compatible"),
+            target_config=TargetConfig(base_url="https://t.example.com", model=target_model, api_type="openai_compatible"),
+            versions=[], current_version_id=None,
+        )
+        storage_mod.save_project(proj)
+        return proj
+
+    def _make_project_q7(self, storage_mod, proj_id="q9-q7-proj", target_model="ds-v3"):
+        proj = Project(
+            id=proj_id, name="Q9Q7",
+            judge_config=JudgeConfig(base_url="https://j.example.com", model="judge-m", api_type="openai_compatible"),
+            target_config=TargetConfig(base_url="https://t.example.com", model=target_model, api_type="openai_compatible"),
+            versions=[], current_version_id=None,
+        )
+        storage_mod.save_project(proj)
+        return proj
+
+    def _case(self, name, token=1000, j_token=0, latency=100.0, passed=True,
+              skipped_reason=None):
+        return CaseResult(
+            case_name=name, passed=passed, score=1.0 if passed else 0.0,
+            actual_output="ok", latency_ms=latency,
+            token_used=token, judge_token=j_token, skipped_reason=skipped_reason,
+        )
+
+    def _make_run_q6(self, run_id, case_results, created="2026-08-10T12:00:00Z",
+                     proj_id="q9-q6-proj", evalset_id="q9-es"):
+        total_token = sum((cr.token_used or 0) for cr in case_results)
+        judge_token = sum((cr.judge_token or 0) for cr in case_results)
+        latencies = [cr.latency_ms or 0.0 for cr in case_results]
+        passed = sum(1 for cr in case_results if cr.passed)
+        total = len(case_results) or 1
+        return EvalRun(
+            id=run_id, project_id=proj_id, evalset_id=evalset_id, status="completed",
+            created_at=created, version_id=None, filter_tags=[],
+            results=case_results,
+            summary=EvalSummary(
+                pass_rate=passed / total,
+                total_token=total_token, total_latency_ms=sum(latencies),
+                judge_token=judge_token,
+                latency_p50=sorted(latencies)[len(latencies) // 2] if latencies else 0,
+                latency_p95=max(latencies) if latencies else 0,
+                token_per_pass=1.0,
+            ),
+        )
+
+    def _make_run_q7(self, run_id, case_results, created="2026-08-10T12:00:00Z",
+                     proj_id="q9-q7-proj", evalset_id="q9-es"):
+        total_token = sum((cr.token_used or 0) for cr in case_results)
+        judge_token = sum((cr.judge_token or 0) for cr in case_results)
+        latencies = [cr.latency_ms or 0.0 for cr in case_results]
+        passed = sum(1 for cr in case_results if cr.passed)
+        total = len(case_results) or 1
+        return EvalRun(
+            id=run_id, project_id=proj_id, evalset_id=evalset_id, status="completed",
+            created_at=created, version_id=None, concurrency=None,
+            results=case_results,
+            summary=EvalSummary(
+                pass_rate=passed / total,
+                total_token=total_token, total_latency_ms=sum(latencies),
+                judge_token=judge_token,
+                latency_p50=sorted(latencies)[len(latencies) // 2] if latencies else 0,
+                latency_p95=max(latencies) if latencies else 0,
+                token_per_pass=1.0,
+            ),
+        )
+
+    # ---- Q-6: batch_estimate ----
+
+    def test_q6_judge_token_excluded_from_cost(self, client, isolated_storage):
+        """Q-6: 含 llm_judge case（j_token>0）时，预估成本仅取 target，剔除 judge
+
+        target 价 = 1.0/Mtok；100 样本 × token_used=1e6 → cost=100
+        若误把 judge_token=5e5 计入 → cost=150（断言失败）
+        """
+        self._make_project_q6(isolated_storage, target_model="ds-v3")
+        isolated_storage.save_model_price("t.example", "ds-v3", 1.0, "¥",
+                                          peak_price_per_mtok=1.0, off_peak_price_per_mtok=1.0)
+        # 每条 token_used=1_000_000, judge_token=500_000
+        r1 = [self._case(f"c{i}", token=1_000_000, j_token=500_000, latency=100.0)
+              for i in range(50)]
+        r2 = [self._case(f"c{i}", token=1_000_000, j_token=500_000, latency=100.0)
+              for i in range(50)]
+        isolated_storage.save_run(self._make_run_q6("r1", r1, created="2026-08-10T12:00:00Z"))
+        isolated_storage.save_run(self._make_run_q6("r2", r2, created="2026-08-11T12:00:00Z"))
+        r = client.post("/api/projects/q9-q6-proj/estimate",
+                        json={"count": 100, "plan_hour": 12})
+        assert r.status_code == 200
+        cost = r.json()["cost"]
+        # 仅 target：100 × 1e6 / 1e6 × 1.0 = 100；若含 judge 会是 150
+        assert cost["median"] == 100.0
+        assert cost["p5"] == 100.0
+        assert cost["p95"] == 100.0
+        assert cost["currency"] == "¥"
+
+    def test_q6_judge_price_not_matched(self, client, isolated_storage):
+        """Q-6: Judge 价格条目存在也不影响预估（不参与匹配，currency 取自 target）"""
+        self._make_project_q6(isolated_storage, target_model="ds-v3")
+        # target 价 = 2.0/Mtok；judge 价 = 999（不应被使用）
+        isolated_storage.save_model_price("t.example", "ds-v3", 2.0, "¥",
+                                          peak_price_per_mtok=2.0, off_peak_price_per_mtok=2.0)
+        isolated_storage.save_model_price("j.example", "judge-m", 999.0, "$",
+                                          peak_price_per_mtok=999.0, off_peak_price_per_mtok=999.0)
+        r1 = [self._case(f"c{i}", token=1_000_000, j_token=500_000, latency=100.0)
+              for i in range(50)]
+        r2 = [self._case(f"c{i}", token=1_000_000, j_token=500_000, latency=100.0)
+              for i in range(50)]
+        isolated_storage.save_run(self._make_run_q6("r1", r1, created="2026-08-10T12:00:00Z"))
+        isolated_storage.save_run(self._make_run_q6("r2", r2, created="2026-08-11T12:00:00Z"))
+        r = client.post("/api/projects/q9-q6-proj/estimate",
+                        json={"count": 100, "plan_hour": 12})
+        cost = r.json()["cost"]
+        # 100 × 1e6/1e6 × 2.0 = 200；currency 取自 target（¥，非 judge 的 $）
+        assert cost["median"] == 200.0
+        assert cost["currency"] == "¥"
+
+    def test_q6_skipped_still_uses_both_tokens_zero(self, client, isolated_storage):
+        """Q-6: skipped 判定仍用「target 与 judge 均为 0」——target=0+judge>0 不算 skipped
+
+        target 价 = 1.0/Mtok；样本：40 条 token=1e6/j_token=0 + 1 条 token=0/j_token=500
+        + 40 条 token=1e6/j_token=0。token=0/j_token>0 的样本不 skipped，但贡献成本 0。
+        """
+        self._make_project_q6(isolated_storage, target_model="ds-v3")
+        isolated_storage.save_model_price("t.example", "ds-v3", 1.0, "¥",
+                                          peak_price_per_mtok=1.0, off_peak_price_per_mtok=1.0)
+        cases_r1 = [self._case(f"ok-{i}", token=1_000_000, j_token=0, latency=100.0)
+                    for i in range(40)]
+        # 这条 target=0 但 judge>0 → 不算 skipped，但成本贡献 0
+        cases_r1.append(self._case("zero-target", token=0, j_token=500, latency=100.0))
+        cases_r2 = [self._case(f"ok-{i}", token=1_000_000, j_token=0, latency=100.0)
+                    for i in range(40)]
+        isolated_storage.save_run(self._make_run_q6("r1", cases_r1, created="2026-08-10T12:00:00Z"))
+        isolated_storage.save_run(self._make_run_q6("r2", cases_r2, created="2026-08-11T12:00:00Z"))
+        r = client.post("/api/projects/q9-q6-proj/estimate",
+                        json={"count": 100, "plan_hour": 12})
+        data = r.json()
+        # 81 样本（无 skipped），skipped_ratio = 0
+        assert data["sample_count"] == 81
+        assert data["skipped_ratio"] == 0.0
+        # 81 条样本成本分布：40+1+40=81 条，其中 80 条 cost=1.0，1 条 cost=0
+        # P5/P50/P95 都来自 1.0（80/81 > 0.95）→ 100 × 1.0 = 100
+        assert data["cost"]["median"] == 100.0
+
+    # ---- Q-7: batch_estimate_quality_cost ----
+
+    def test_q7_judge_token_excluded_from_cost(self, client, isolated_storage):
+        """Q-7: 含 llm_judge case（j_token>0）时，预估总成本仅取 target
+
+        target 价 = 1.0/Mtok；p=1.0、target=1.0、failed_only → total_exec=100
+        每条 token_used=1e6 → total_cost=100；若误含 judge_token=5e5 → 150
+        """
+        self._make_project_q7(isolated_storage, target_model="ds-v3")
+        isolated_storage.save_model_price("t.example", "ds-v3", 1.0, "¥",
+                                          peak_price_per_mtok=1.0, off_peak_price_per_mtok=1.0,
+                                          peak_start_hour=9, peak_end_hour=22)
+        r1 = [self._case(f"c{i}", token=1_000_000, j_token=500_000, latency=100.0, passed=True)
+              for i in range(50)]
+        r2 = [self._case(f"c{i}", token=1_000_000, j_token=500_000, latency=100.0, passed=True)
+              for i in range(50)]
+        isolated_storage.save_run(self._make_run_q7("r1", r1, created="2026-08-10T12:00:00Z"))
+        isolated_storage.save_run(self._make_run_q7("r2", r2, created="2026-08-11T12:00:00Z"))
+        r = client.post("/api/projects/q9-q7-proj/estimate-quality",
+                        json={"count": 100, "target_pass_rate": 1.0,
+                              "rerun_strategy": "failed_only", "time_mode": "peak"})
+        assert r.status_code == 200
+        cost = r.json()["total_cost"]
+        # 100 × 1e6/1e6 × 1.0 = 100；若含 judge 会是 150
+        assert cost["median"] == 100.0
+        assert cost["p5"] == 100.0
+        assert cost["p95"] == 100.0
+        assert cost["currency"] == "¥"
+
+    def test_q7_judge_price_not_matched(self, client, isolated_storage):
+        """Q-7: Judge 价格条目存在也不参与匹配，currency 取自 target"""
+        self._make_project_q7(isolated_storage, target_model="ds-v3")
+        isolated_storage.save_model_price("t.example", "ds-v3", 2.0, "¥",
+                                          peak_price_per_mtok=2.0, off_peak_price_per_mtok=1.0,
+                                          peak_start_hour=9, peak_end_hour=22)
+        isolated_storage.save_model_price("j.example", "judge-m", 999.0, "$",
+                                          peak_price_per_mtok=999.0, off_peak_price_per_mtok=999.0)
+        r1 = [self._case(f"c{i}", token=1_000_000, j_token=500_000, latency=100.0, passed=True)
+              for i in range(50)]
+        r2 = [self._case(f"c{i}", token=1_000_000, j_token=500_000, latency=100.0, passed=True)
+              for i in range(50)]
+        isolated_storage.save_run(self._make_run_q7("r1", r1, created="2026-08-10T12:00:00Z"))
+        isolated_storage.save_run(self._make_run_q7("r2", r2, created="2026-08-11T12:00:00Z"))
+        r_peak = client.post("/api/projects/q9-q7-proj/estimate-quality",
+                             json={"count": 100, "target_pass_rate": 1.0,
+                                   "rerun_strategy": "failed_only", "time_mode": "peak"})
+        r_off = client.post("/api/projects/q9-q7-proj/estimate-quality",
+                            json={"count": 100, "target_pass_rate": 1.0,
+                                  "rerun_strategy": "failed_only", "time_mode": "off_peak"})
+        # peak: 100 × 2.0 = 200；off: 100 × 1.0 = 100；currency=¥（非 $）
+        assert r_peak.json()["total_cost"]["median"] == 200.0
+        assert r_off.json()["total_cost"]["median"] == 100.0
+        assert r_peak.json()["total_cost"]["currency"] == "¥"
+
 
 
