@@ -298,6 +298,8 @@ class EvalRun(BaseModel):
     filter_tags: list[str] = Field(default_factory=list)
     # W-3: 触发来源（手动 / 定时调度器）
     trigger: Literal["manual", "scheduled"] = "manual"
+    # Q-1: 发起 run 时解析的 Judge 指纹（稳定 hash，不含 secret）；旧 run 无此字段为 None
+    judge_fingerprint: Optional[str] = None
 
 
 # ============== API 请求/响应模型 ==============
@@ -362,6 +364,33 @@ class UpdateScheduleRequest(BaseModel):
     tags: list[str] = Field(default_factory=list)
     version_id: Optional[str] = None
     regression_threshold: float = 0.1
+
+
+class ModelPrice(BaseModel):
+    """Q-2: 模型价格（端点 + 模型双 key 锁定）
+
+    - endpoint_pattern: 端点子串匹配（如 "api.deepseek" 匹配 "https://api.deepseek.com/v1"）；
+      空 = 匹配任意端点（向后兼容旧数据）
+    - model_pattern: 模型名前缀匹配（"deepseek" 匹配 "deepseek-v3-chat"）
+    - 匹配规则：endpoint_pattern AND model_pattern 都命中；更具体的（合计 pattern 长度更长）优先
+    - price_per_mtok: 每百万 token 价格
+    - currency: 币种（默认 ¥）
+    """
+    id: str
+    endpoint_pattern: str = ""
+    model_pattern: str
+    price_per_mtok: float
+    currency: str = "¥"
+    note: str = ""
+
+
+class CreateModelPriceRequest(BaseModel):
+    """Q-2: 新建模型价格请求"""
+    endpoint_pattern: str = ""
+    model_pattern: str
+    price_per_mtok: float
+    currency: str = "¥"
+    note: str = ""
 
 
 class TestTargetRequest(BaseModel):

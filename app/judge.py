@@ -1,11 +1,12 @@
 """LLM-as-Judge 调用（OpenAI Compatible）+ 被评测 API 调用"""
 
 import json
+import hashlib
 import httpx
 import re
 from typing import Optional, Union
 
-from .models import AuthConfig, ResponseMapping, ResponseParsing
+from .models import AuthConfig, ResponseMapping, ResponseParsing, JudgeConfig
 from .parser import extract_output, count_tokens, _unpack_output
 
 
@@ -29,6 +30,26 @@ class ResponseFormatError(APIError):
 
 class MissingVariableError(ValueError):
     """模板含未定义的 {占位符} 且 variables 没有对应键"""
+
+
+def compute_judge_fingerprint(judge_config: Optional[JudgeConfig]) -> Optional[str]:
+    """Q-1: 对解析后的实际 Judge 配置取稳定 hash（不含 secret 值）
+
+    指纹覆盖：api_type / base_url / model / prompt_template / auth.type
+    不含：api_key、auth 凭据值（安全考虑）
+    返回 12 位 hex；judge_config 为 None 时返回 None（旧 run 兼容）
+    """
+    if not judge_config:
+        return None
+    fields = {
+        "api_type": judge_config.api_type,
+        "base_url": judge_config.base_url,
+        "model": judge_config.model or "",
+        "prompt_template": judge_config.prompt_template or "",
+        "auth_type": judge_config.auth.type if judge_config.auth else "none",
+    }
+    payload = json.dumps(fields, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:12]
 
 
 def render_request_template(

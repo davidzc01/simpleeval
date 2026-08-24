@@ -1267,6 +1267,7 @@
                         <div class="tab ${initialTab === 'judge' ? 'active' : ''}" data-cfg-tab="judge" onclick="switchConfigManagementTab('judge')">⚖ Judge 配置</div>
                         <div class="tab ${initialTab === 'templates' ? 'active' : ''}" data-cfg-tab="templates" onclick="switchConfigManagementTab('templates')">🎯 Target 模板</div>
                         <div class="tab ${initialTab === 'tags' ? 'active' : ''}" data-cfg-tab="tags" onclick="switchConfigManagementTab('tags')">🏷 标签管理</div>
+                        <div class="tab ${initialTab === 'prices' ? 'active' : ''}" data-cfg-tab="prices" onclick="switchConfigManagementTab('prices')">💰 模型价格</div>
                     </div>
                     <div id="cfgMgmtContent"><div style="color: var(--ink-4);">加载中...</div></div>
                 </div>
@@ -1765,8 +1766,138 @@
                 await renderJudgeConfigsTab(content, params);
             } else if (tab === 'tags') {
                 await renderTagsTab(content);
+            } else if (tab === 'prices') {
+                await renderModelPricesTab(content);
             } else {
                 await renderTargetTemplatesTab(content);
+            }
+        }
+
+        async function renderModelPricesTab(container) {
+            container.innerHTML = '<div style="color: var(--ink-4);">加载中...</div>';
+            try {
+                const data = await api('/model-prices');
+                const prices = data.model_prices || [];
+                if (prices.length === 0) {
+                    container.innerHTML = `
+                        <div class="empty-state" style="padding: 60px 0;">
+                            <div class="empty-state-icon">💰</div>
+                            <div class="empty-state-text">还没有模型价格配置</div>
+                            <button class="btn btn-primary" onclick="showModelPriceEditorModal(null)">+ 新建价格</button>
+                        </div>
+                        <div style="font-size: 12px; color: var(--ink-5); text-align: center;">用于评测成本估算，不影响评测逻辑</div>
+                    `;
+                    return;
+                }
+                container.innerHTML = `
+                    <div style="margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center;">
+                        <div style="color: var(--ink-4); font-size: 13px;">用于评测成本估算，不影响评测逻辑。按模型名前缀匹配。</div>
+                        <button class="btn btn-primary btn-sm" onclick="showModelPriceEditorModal(null)">+ 新建</button>
+                    </div>
+                    <div class="card">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>端点</th>
+                                    <th>模型前缀</th>
+                                    <th style="text-align: right;">每百万 token</th>
+                                    <th>币种</th>
+                                    <th>备注</th>
+                                    <th></th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${prices.map(p => `
+                                    <tr>
+                                        <td style="font-family: monospace; font-size: 11px; color: var(--ink-4);">${escapeHtml(p.endpoint_pattern || '<任意>')}</td>
+                                        <td style="font-family: monospace;">${escapeHtml(p.model_pattern || '<任意>')}</td>
+                                        <td style="text-align: right;">${p.price_per_mtok}</td>
+                                        <td>${escapeHtml(p.currency)}</td>
+                                        <td style="color: var(--ink-4); font-size: 12px;">${escapeHtml(p.note || '')}</td>
+                                        <td style="text-align: right;">
+                                            <button class="btn btn-sm btn-secondary" onclick="deleteModelPrice('${p.id}', '${escapeHtml(p.endpoint_pattern || p.model_pattern)}')">删除</button>
+                                        </td>
+                                    </tr>
+                                `).join('')}
+                            </tbody>
+                        </table>
+                    </div>
+                `;
+            } catch (e) {
+                container.innerHTML = `<div style="padding: 24px; color: var(--red);">加载失败：${escapeHtml(e.message)}</div>`;
+            }
+        }
+
+        function showModelPriceEditorModal(p) {
+            const modal = document.createElement('div');
+            modal.className = 'modal-overlay';
+            modal.id = 'modelPriceModal';
+            modal.innerHTML = `
+                <div class="modal" style="max-width: 460px;">
+                    <div class="modal-header">
+                        <span class="modal-title">新建模型价格</span>
+                        <button class="modal-close" onclick="closeModal('modelPriceModal')">×</button>
+                    </div>
+                    <div class="modal-body">
+                        <div class="form-group">
+                            <label class="form-label">端点子串（可选）</label>
+                            <input type="text" class="form-input" id="mpEndpoint" placeholder="如 api.deepseek（子串匹配 base_url；留空 = 任意端点）">
+                            <div style="font-size: 11px; color: var(--ink-5); margin-top: 4px;">同一模型在不同供应商可能价格不同，用端点子串区分</div>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">模型前缀（可选）</label>
+                            <input type="text" class="form-input" id="mpPattern" placeholder="如 deepseek（前缀匹配模型名；留空 = 任意模型）">
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">每百万 token 价格</label>
+                            <input type="number" step="0.01" class="form-input" id="mpPrice" placeholder="如 1.0">
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">币种</label>
+                            <input type="text" class="form-input" id="mpCurrency" value="¥" style="width: 80px;">
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">备注（可选）</label>
+                            <input type="text" class="form-input" id="mpNote" placeholder="如 官网价格">
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button class="btn btn-secondary" onclick="closeModal('modelPriceModal')">取消</button>
+                        <button class="btn btn-primary" onclick="saveModelPrice()">保存</button>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(modal);
+        }
+
+        async function saveModelPrice() {
+            const endpoint = document.getElementById('mpEndpoint').value.trim();
+            const pattern = document.getElementById('mpPattern').value.trim();
+            const price = parseFloat(document.getElementById('mpPrice').value);
+            const currency = document.getElementById('mpCurrency').value.trim() || '¥';
+            const note = document.getElementById('mpNote').value.trim();
+            if (!endpoint && !pattern) { showToast('端点子串和模型前缀至少填一个'); return; }
+            if (isNaN(price) || price < 0) { showToast('价格必须为非负数'); return; }
+            try {
+                await api('/model-prices', { method: 'POST', body: JSON.stringify({ endpoint_pattern: endpoint, model_pattern: pattern, price_per_mtok: price, currency, note }) });
+                closeModal('modelPriceModal');
+                showToast('模型价格已创建');
+                const content = document.getElementById('cfgMgmtContent');
+                if (content) renderModelPricesTab(content);
+            } catch (e) {
+                showToast('保存失败：' + e.message);
+            }
+        }
+
+        async function deleteModelPrice(id, pattern) {
+            if (!confirm(`确认删除模型价格「${pattern}」？`)) return;
+            try {
+                await api(`/model-prices/${id}`, { method: 'DELETE' });
+                showToast('已删除');
+                const content = document.getElementById('cfgMgmtContent');
+                if (content) renderModelPricesTab(content);
+            } catch (e) {
+                showToast('删除失败：' + e.message);
             }
         }
 
@@ -2662,8 +2793,9 @@
         }
 
         async function loadProjectOverview(projectId) {
+            const ruleOnly = window._overviewRuleOnly === true;
             try {
-                const res = await fetch(`/api/projects/${projectId}/overview`);
+                const res = await fetch(`/api/projects/${projectId}/overview${ruleOnly ? '?rule_only=true' : ''}`);
                 if (!res.ok) throw new Error('overview fetch failed: ' + res.status);
                 const data = await res.json();
                 const container = document.getElementById('overviewContent');
@@ -2724,6 +2856,31 @@
                 </div>
             `;
 
+            // Q-1: Judge 配置变更黄条（指纹不同时提示本次对比仅供参考）
+            const judgeChanged = data.judge_changed === true;
+            const judgeBanner = judgeChanged ? `
+                <div style="margin-bottom: 12px; padding: 8px 12px; background: #fef3c7; border: 1px solid #f59e0b; border-radius: 6px; font-size: 12px; color: #92400e;">
+                    ⚠ Judge 配置已变更，本次对比仅供参考（规则类 case 不受影响）
+                </div>
+            ` : '';
+
+            // Q-2: 成本格式化（有价格时显示金额，无则隐藏）
+            const cost = delta && delta.cost ? delta.cost : null;
+            const fmtCost = (c) => {
+                if (!c || c.total_cost == null) return '';
+                const cur = c.currency || '¥';
+                const parts = [];
+                if (c.target_cost != null) parts.push(`运行 ${cur}${c.target_cost}`);
+                if (c.judge_cost != null) parts.push(`评测 ${cur}${c.judge_cost}`);
+                return parts.length ? `${cur}${c.total_cost}（${parts.join(' · ')}）` : '';
+            };
+            const costLine = cost && cost.total_cost != null ? `
+                <div style="display: flex; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--border);">
+                    <span style="font-size: 12px; color: var(--ink-3); width: 110px; flex-shrink: 0;">本次成本</span>
+                    <span style="font-weight: 600; font-size: 13px;">${escapeHtml(fmtCost(cost))}</span>
+                </div>
+            ` : '';
+
             const deltaBlock = delta ? `
                 <div class="card" style="margin-bottom: 16px;">
                     <div class="card-header" style="padding: 10px 16px; border-bottom: 1px solid var(--border);">
@@ -2733,15 +2890,24 @@
                         ${deltaRow('pass rate', fmtPct(delta.pass_rate.current), delta.pass_rate.previous != null ? fmtPct(delta.pass_rate.previous) : null, fmtDeltaPct(delta.pass_rate.diff), colorForPass(delta.pass_rate.diff))}
                         ${deltaRow('运行 token', fmtTok(delta.total_token.current), delta.total_token.previous != null ? fmtTok(delta.total_token.previous) : null, fmtDeltaTok(delta.total_token.diff), colorForCost(delta.total_token.diff))}
                         ${deltaRow('评测 token', fmtTok(delta.judge_token.current), delta.judge_token.previous != null ? fmtTok(delta.judge_token.previous) : null, fmtDeltaTok(delta.judge_token.diff), colorForCost(delta.judge_token.diff))}
+                        ${costLine}
                     </div>
                 </div>
             ` : `<div class="card" style="margin-bottom: 16px; padding: 24px; text-align: center; color: var(--ink-4);">暂无 run 数据</div>`;
 
             // 趋势区（三系列：pass rate 折线 + 运行 token 柱 + 评测 token 柱）
+            const ruleOnlyActive = data.rule_only === true;
+            const ruleToggle = `
+                <div style="display: inline-flex; gap: 0; border: 1px solid var(--border); border-radius: 4px; overflow: hidden; font-size: 10px;">
+                    <button onclick="window._overviewRuleOnly=false; loadProjectOverview('${escapeHtml(projectId)}')" style="padding: 1px 6px; border: none; background: ${ruleOnlyActive ? 'transparent' : 'var(--accent)'}; color: ${ruleOnlyActive ? 'var(--ink-4)' : '#fff'}; cursor: pointer;">全部</button>
+                    <button onclick="window._overviewRuleOnly=true; loadProjectOverview('${escapeHtml(projectId)}')" style="padding: 1px 6px; border: none; background: ${ruleOnlyActive ? 'var(--accent)' : 'transparent'}; color: ${ruleOnlyActive ? '#fff' : 'var(--ink-4)'}; cursor: pointer;" title="仅规则类 case（eval_type 非 llm_judge），不受 Judge 影响">仅规则类</button>
+                </div>
+            `;
             const trendBlock = trend.length > 0 ? `
                 <div class="card" style="margin-bottom: 16px;">
-                    <div class="card-header" style="padding: 10px 16px; border-bottom: 1px solid var(--border);">
+                    <div class="card-header" style="padding: 10px 16px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center;">
                         <span class="card-title">质量与成本趋势</span>
+                        ${ruleToggle}
                     </div>
                     <div style="padding: 16px;">
                         ${renderTrendChartV2(trend, versions, contentUpdatedAt)}
@@ -2915,7 +3081,7 @@
                 `;
             })() : '';
 
-            return versionBar + deltaBlock + trendBlock + stabilityBlock + failedBlock + runListBlock + configBlock;
+            return versionBar + judgeBanner + deltaBlock + trendBlock + stabilityBlock + failedBlock + runListBlock + configBlock;
         }
 
         // P-4: 趋势图 v2——三系列（pass rate 折线左轴 + 运行 token 柱 + 评测 token 柱右轴）
@@ -2948,6 +3114,17 @@
                     const cx = xOf(idx);
                     changeMarker = `<text x="${cx}" y="${h - pad + 14}" font-size="12" fill="var(--amber, #b45309)" text-anchor="middle">◆</text>
                     <text x="${cx}" y="${h - pad + 24}" font-size="9" fill="var(--ink-4)" text-anchor="middle">变更</text>`;
+                }
+            }
+
+            // Q-1: Judge 变更标记 ⚖（指纹与前次 run 不同）
+            let judgeMarker = '';
+            for (let i = 1; i < trend.length; i++) {
+                const prev = trend[i - 1].judge_fingerprint;
+                const cur = trend[i].judge_fingerprint;
+                if (cur && prev && cur !== prev) {
+                    const cx = xOf(i);
+                    judgeMarker += `<text x="${cx}" y="${pad - 6}" font-size="11" fill="#7c3aed" text-anchor="middle" title="Judge 配置变更">⚖</text>`;
                 }
             }
 
@@ -3008,6 +3185,7 @@
                         <polyline points="${pts}" fill="none" stroke="var(--accent)" stroke-width="1.5" />
                         ${dots}
                         ${changeMarker}
+                        ${judgeMarker}
                         ${versionLabels}
                         ${hoverZones}
                     </svg>
@@ -5705,6 +5883,20 @@
                 const triggerBadge = run.trigger === 'scheduled'
                     ? '<span class="tag-chip" style="font-size: 10px; margin-right: 8px;">⏰ 定时触发</span>'
                     : '';
+                // Q-2: 成本 ROI 行（有价格时显示金额，无则提示未配置）
+                const cost = run.cost;
+                let costLine = '';
+                if (run.status === 'completed' && cost) {
+                    if (cost.total_cost != null) {
+                        const cur = cost.currency || '¥';
+                        const parts = [];
+                        if (cost.target_cost != null) parts.push(`运行 ${cur}${cost.target_cost}`);
+                        if (cost.judge_cost != null) parts.push(`评测 ${cur}${cost.judge_cost}`);
+                        costLine = `<span style="margin-left: 16px; color: var(--ink-4); font-size: 12px;">本次评测 ${cur}${cost.total_cost}${parts.length ? `（${parts.join(' · ')}）` : ''} · 拦截 ${failed} 个失败</span>`;
+                    } else {
+                        costLine = `<span style="margin-left: 16px; color: var(--ink-5); font-size: 11px;">未配置模型价格，仅显示 token</span>`;
+                    }
+                }
                 statusRow.innerHTML = `
                     ${triggerBadge}<span style="margin-right: 12px;">${runStatusBadge(run.status)}</span>
                     ${(run.status === 'running' || run.status === 'queued') ? `
@@ -5713,6 +5905,7 @@
                         </div>
                         <span style="margin-left: 8px; color: var(--ink-4); font-size: 12px;">${completed}/${totalEnabled || '?'}</span>
                     ` : ''}
+                    ${costLine}
                 `;
             }
 
@@ -6176,7 +6369,7 @@
 
             // W-5: 历史明细表（下钻弹窗看完整详情）
             const rowsHtml = history.length === 0
-                ? `<tr><td colspan="7" style="text-align: center; color: var(--ink-4); padding: 16px;">暂无历史 run 记录</td></tr>`
+                ? `<tr><td colspan="8" style="text-align: center; color: var(--ink-4); padding: 16px;">暂无历史 run 记录</td></tr>`
                 : history.map((hh, hhIdx) => {
                     const ts = hh.created_at ? new Date(hh.created_at).toLocaleString('zh-CN', { hour12: false }) : '-';
                     const status = hh.skipped_reason
@@ -6191,17 +6384,26 @@
                     // Type 只显示类型标签，不带模型名
                     const typeCell = `<span class="tag tag-${escapeHtml(hh.eval_type)}">${escapeHtml(hh.eval_type)}</span>`;
                     const versionCell = escapeHtml(hh.version_name || '—');
+                    // Q-1: Judge 指纹短码（hover 显示完整摘要）；与前次指纹不同时加细分隔
+                    const prevFp = hhIdx > 0 ? history[hhIdx - 1].judge_fingerprint : null;
+                    const curFp = hh.judge_fingerprint;
+                    const fpChanged = curFp && prevFp && curFp !== prevFp;
+                    const judgeCell = curFp
+                        ? `<span title="Judge 指纹: ${escapeHtml(curFp)}${fpChanged ? '（与前次不同）' : ''}" style="font-family: monospace; font-size: 10px; color: ${fpChanged ? '#7c3aed' : 'var(--ink-4)'};">${curFp.slice(0, 8)}</span>`
+                        : '<span style="color: var(--ink-5); font-size: 10px;">—</span>';
+                    const judgeBorder = fpChanged ? 'border-top: 2px solid #7c3aed;' : '';
                     // 用 data-* 属性传数据：先 JSON 序列化，再 HTML 转义写入属性
                     const hhJson = escapeHtml(JSON.stringify(hh));
                     const judgeJson = escapeHtml(JSON.stringify(judge));
                     return `
-                        <tr>
+                        <tr style="${judgeBorder}">
                             <td>${status}</td>
                             <td style="font-size: 11px; color: var(--ink-4);">${ts}</td>
                             <td style="text-align: right;">${fmtMs(hh.latency_ms)}</td>
                             <td style="text-align: right;" title="运行消耗 token（不含 judge）">${tokCell}</td>
                             <td>${typeCell}</td>
                             <td style="font-size: 11px;">${checks.length > 0 ? `${passCount}/${checks.length} 通过` : '—'}</td>
+                            <td style="font-size: 11px;">${judgeCell}</td>
                             <td style="font-size: 11px;">
                                 <button class="btn btn-sm btn-secondary" data-hh="${hhJson}" data-judge="${judgeJson}" onclick="showCaseRunDetailModal(JSON.parse(this.dataset.hh), JSON.parse(this.dataset.judge))">详情</button>
                             </td>
@@ -6248,6 +6450,7 @@
                                 <th style="text-align: right;">token</th>
                                 <th>Type</th>
                                 <th>验证</th>
+                                <th>Judge</th>
                                 <th>详情</th>
                             </tr>
                         </thead>

@@ -15,6 +15,7 @@ from .models import (
     TestTargetRequest, TestMappingRequest, TestParsingRequest, TestJudgeRequest,
     CaseResult, ErrorResponse, CreateVersionRequest, ProjectVersion,
     CreateTagRequest, RenameTagRequest, ScheduleConfig, UpdateScheduleRequest,
+    ModelPrice, CreateModelPriceRequest,
 )
 from .storage import (
     list_projects, get_project, save_project, delete_project,
@@ -25,9 +26,10 @@ from .storage import (
     list_judge_configs, get_judge_config, get_judge_config_with_secrets, save_judge_config,
     update_judge_config, delete_judge_config, find_judge_config_by_name,
     list_tags, save_tag, rename_tag, delete_tag, _migrate_legacy_tags,
+    list_model_prices, save_model_price, delete_model_price, cost_estimate,
 )
-from .runner import execute_run, _utc_now, _generate_run_id, _apply_case_filter
-from .judge import call_target, judge_with_llm, NetworkError, APIError, ResponseFormatError
+from .runner import execute_run, _utc_now, _generate_run_id, _apply_case_filter, _resolve_effective_judge_config
+from .judge import call_target, judge_with_llm, compute_judge_fingerprint, NetworkError, APIError, ResponseFormatError
 from .sampling import pass_at_k_case, pass_pow_k_case, compute_project_sampling, compute_evalset_sampling
 from .errors import (
     project_not_found, evalset_not_found, run_not_found,
@@ -789,6 +791,9 @@ async def create_run(req: RunEvalRequest, background_tasks: BackgroundTasks):
     run_created_at = _utc_now()
     # T3-3: 解析归属版本（显式指定或按 created_at 自动落入最近版本）
     version_id = _resolve_version_id(project, run_created_at, req.version_id)
+    # Q-1: 解析实际 Judge 配置并写入指纹（不含 secret），用于跨 run 可比性判断
+    effective_judge = _resolve_effective_judge_config(project)
+    judge_fingerprint = compute_judge_fingerprint(effective_judge)
     run = EvalRun(
         id=run_id,
         project_id=req.project_id,
@@ -798,6 +803,7 @@ async def create_run(req: RunEvalRequest, background_tasks: BackgroundTasks):
         version_id=version_id,
         # V-3: 带入标签筛选信息供历史列表展示
         filter_tags=req.case_filter.tags if req.case_filter and req.case_filter.tags else [],
+        judge_fingerprint=judge_fingerprint,
     )
     save_run(run)
 
@@ -850,6 +856,18 @@ async def get_run_detail(run_id: str, project_id: str):
             item.setdefault("eval_params", cs.eval_params or {})
             item.setdefault("validations", cs.validations or [])
         item.setdefault("version_name", version_name)
+    # Q-2: run 成本估算（端点 + 模型双 key + run token）
+    effective_judge = _resolve_effective_judge_config(project) if project else None
+    target_endpoint = project.target_config.base_url if project else None
+    target_model_name = project.target_config.model if project else None
+    judge_endpoint = effective_judge.base_url if effective_judge else None
+    judge_model_name = effective_judge.model if effective_judge else None
+    if run.summary:
+        data["cost"] = cost_estimate(
+            target_endpoint, target_model_name,
+            judge_endpoint, judge_model_name,
+            run.summary.total_token, run.summary.judge_token,
+        )
     return data
 
 
@@ -892,7 +910,7 @@ async def get_project_sampling(project_id: str):
 
 
 @router.get("/projects/{project_id}/overview")
-async def get_project_overview(project_id: str):
+async def get_project_overview(project_id: str, rule_only: bool = False):
     """P-3: 概览页数据（依据 docs/overview-redesign.md v2）
 
     返回 4 区块数据：
@@ -901,6 +919,8 @@ async def get_project_overview(project_id: str):
     ③ 稳定性：min(pass^3) + 阈值计数 + 最不稳 3 case 列表（来自 sampling API）
     ④ 上次 run 失败 case 列表（导航到问题）
     另附 versions 与 content_updated_at（用于趋势分段与变更标记）
+    Q-1: rule_only=true 时趋势/delta 的 pass_rate 仅统计规则类 case（eval_type 非 llm_judge），
+         规则类线不受 Judge 影响，恒可比。
     """
     project = get_project(project_id)
     if not project:
@@ -935,12 +955,49 @@ async def get_project_overview(project_id: str):
               base.summary.judge_token if base.summary else 0)
         return cv - bv
 
+    # Q-1: rule_only 模式下，从 run.results 重算规则类 pass_rate（排除 llm_judge case）
+    # 需 join evalset 拿每 case 的 eval_type；run.results 里也有 check_results 但 case.eval_type 更准
+    _evalset_for_rule = get_evalset(latest.evalset_id, project_id) if latest and latest.evalset_id else None
+    _case_rule_map = {}  # case_name / case_id → 是否规则类（非 llm_judge）
+    if _evalset_for_rule:
+        for c in _evalset_for_rule.cases:
+            is_rule = c.eval_type != "llm_judge"
+            _case_rule_map[c.case_name] = is_rule
+            if c.id:
+                _case_rule_map[c.id] = is_rule
+    def _rule_pass_rate(run):
+        """重算规则类 pass_rate（排除 llm_judge case）。无规则类 case 时返回原 pass_rate。"""
+        if not rule_only or not run or not run.results or not _case_rule_map:
+            return run.summary.pass_rate if run and run.summary else 0
+        rule_results = [r for r in run.results
+                        if not r.skipped_reason
+                        and _case_rule_map.get(r.case_name, _case_rule_map.get(r.case_id, True))]
+        if not rule_results:
+            return run.summary.pass_rate if run.summary else 0
+        passed = sum(1 for r in rule_results if r.passed)
+        return round(passed / len(rule_results), 4)
+    def _get_pr(run):
+        return _rule_pass_rate(run)
+
+    # Q-2: 成本估算（基于当前项目 target/judge 端点+模型双 key + run token）
+    effective_judge = _resolve_effective_judge_config(project)
+    target_endpoint = project.target_config.base_url
+    target_model_name = project.target_config.model
+    judge_endpoint = effective_judge.base_url if effective_judge else None
+    judge_model_name = effective_judge.model if effective_judge else None
+    def _run_cost(r):
+        if not r or not r.summary:
+            return None
+        return cost_estimate(target_endpoint, target_model_name,
+                             judge_endpoint, judge_model_name,
+                             r.summary.total_token, r.summary.judge_token)
+
     delta = None
     if latest:
         delta = {
-            "pass_rate": {"current": latest.summary.pass_rate if latest.summary else 0,
-                          "previous": baseline.summary.pass_rate if baseline and baseline.summary else None,
-                          "diff": _delta(latest, baseline, "pass_rate")},
+            "pass_rate": {"current": _get_pr(latest),
+                          "previous": _get_pr(baseline) if baseline else None,
+                          "diff": (_get_pr(latest) - _get_pr(baseline)) if baseline else None},
             "total_token": {"current": latest.summary.total_token if latest.summary else 0,
                             "previous": baseline.summary.total_token if baseline and baseline.summary else None,
                             "diff": _delta(latest, baseline, "total_token")},
@@ -948,17 +1005,29 @@ async def get_project_overview(project_id: str):
                             "previous": baseline.summary.judge_token if baseline and baseline.summary else None,
                             "diff": _delta(latest, baseline, "judge_token")},
             "is_first_in_version": is_first_in_version,
+            "cost": _run_cost(latest),
         }
 
-    # ② 趋势（旧→新，最多 20）
+    # ② 趋势（旧→新，最多 20）+ 每条 run 的 judge 指纹（Q-1: 可比性标记）
     trend = list(reversed(runs[:20]))
     trend_data = [{
-        "run_id": r.id, "pass_rate": r.summary.pass_rate if r.summary else 0,
+        "run_id": r.id, "pass_rate": _get_pr(r),
         "total_token": r.summary.total_token if r.summary else 0,
         "judge_token": r.summary.judge_token if r.summary else 0,
         "created_at": r.created_at, "version_id": r.version_id,
         "status": r.status,
+        "judge_fingerprint": r.judge_fingerprint,
     } for r in trend]
+
+    # Q-1: judge_changed —— 最近 run vs 上次 run 的指纹是否不同
+    judge_changed = False
+    judge_fingerprints = {"latest": None, "previous": None}
+    if latest:
+        judge_fingerprints["latest"] = latest.judge_fingerprint
+        if baseline:
+            judge_fingerprints["previous"] = baseline.judge_fingerprint
+            if latest.judge_fingerprint and baseline.judge_fingerprint:
+                judge_changed = latest.judge_fingerprint != baseline.judge_fingerprint
 
     # ③ 稳定性：来自 sampling
     sampling = compute_project_sampling(project_id)
@@ -1019,6 +1088,9 @@ async def get_project_overview(project_id: str):
         "content_updated_at": content_updated_at,
         "latest_run_id": latest.id if latest else None,
         "recent_runs": recent_runs,
+        "judge_changed": judge_changed,
+        "judge_fingerprints": judge_fingerprints,
+        "rule_only": rule_only,
     }
 
 
@@ -1127,6 +1199,7 @@ async def get_case_history(evalset_id: str, case_id: str, project_id: str):
             "version_id": run.version_id,
             "version_name": version_map.get(run.version_id) if run.version_id else None,
             "check_results": result.check_results or [],
+            "judge_fingerprint": run.judge_fingerprint,
         })
 
     # 聚合
@@ -1589,3 +1662,33 @@ async def migrate_tags_route():
     """
     count = _migrate_legacy_tags()
     return {"migrated_count": count}
+
+
+# ============== Q-2: 模型价格管理 ==============
+
+@router.get("/model-prices")
+async def get_model_prices():
+    """列出全部模型价格（评测成本估算用，不影响评测逻辑）"""
+    return {"model_prices": list_model_prices()}
+
+
+@router.post("/model-prices", status_code=201)
+async def create_model_price(req: CreateModelPriceRequest):
+    """新建模型价格（端点 + 模型双 key）"""
+    if not req.model_pattern.strip() and not req.endpoint_pattern.strip():
+        raise HTTPException(status_code=422, detail={
+            "error": {"code": "invalid_config", "message": "endpoint_pattern 和 model_pattern 至少填一个"}
+        })
+    item = save_model_price(req.endpoint_pattern.strip(), req.model_pattern.strip(), req.price_per_mtok, req.currency, req.note)
+    return item
+
+
+@router.delete("/model-prices/{price_id}")
+async def remove_model_price(price_id: str):
+    """删除模型价格"""
+    result = delete_model_price(price_id)
+    if not result:
+        raise HTTPException(status_code=404, detail={
+            "error": {"code": "price_not_found", "message": f"模型价格 {price_id} 不存在"}
+        })
+    return result

@@ -35,6 +35,9 @@ JUDGE_CONFIGS_FILE = DATA_DIR / "judge-configs.json"
 # V-1: 全局标签库存储文件
 TAGS_FILE = DATA_DIR / "tags.json"
 
+# Q-2: 模型价格存储文件（评测成本估算）
+MODEL_PRICES_FILE = DATA_DIR / "model-prices.json"
+
 
 def _read_json(path: Path) -> dict:
     """读取 JSON 文件"""
@@ -616,3 +619,108 @@ def migrate_missing_initial_versions() -> int:
         _write_json(path, data)
         count += 1
     return count
+
+
+# ============== Q-2: 模型价格（评测成本估算） ==============
+
+def _read_model_prices() -> list[dict]:
+    """读取全部模型价格"""
+    if not MODEL_PRICES_FILE.exists():
+        return []
+    data = _read_json(MODEL_PRICES_FILE)
+    return data.get("model_prices", [])
+
+
+def _write_model_prices(prices: list[dict]) -> None:
+    _write_json(MODEL_PRICES_FILE, {"model_prices": prices})
+
+
+def list_model_prices() -> list[dict]:
+    """列出全部模型价格（按 model_pattern 升序）"""
+    prices = _read_model_prices()
+    prices.sort(key=lambda x: x.get("model_pattern", ""))
+    return prices
+
+
+def save_model_price(endpoint_pattern: str, model_pattern: str, price_per_mtok: float, currency: str = "¥", note: str = "") -> dict:
+    """新建模型价格（端点 + 模型双 key）"""
+    prices = _read_model_prices()
+    new_id = f"mp-{uuid.uuid4().hex[:8]}"
+    new_item = {
+        "id": new_id,
+        "endpoint_pattern": endpoint_pattern,
+        "model_pattern": model_pattern,
+        "price_per_mtok": price_per_mtok,
+        "currency": currency,
+        "note": note,
+    }
+    prices.append(new_item)
+    _write_model_prices(prices)
+    return new_item
+
+
+def delete_model_price(price_id: str) -> Optional[dict]:
+    """删除模型价格"""
+    prices = _read_model_prices()
+    new_list = [p for p in prices if p.get("id") != price_id]
+    if len(new_list) == len(prices):
+        return None
+    _write_model_prices(new_list)
+    return {"id": price_id}
+
+
+def _match_model_price(endpoint: str, model_name: str) -> Optional[dict]:
+    """端点 + 模型双 key 匹配（AND 逻辑，更具体的优先）
+
+    - endpoint_pattern 为空 → 匹配任意端点（向后兼容）
+    - model_pattern 为空 → 匹配任意模型
+    - 两者都需命中；合计 pattern 长度更长 = 更具体 = 优先
+    （endpoint 用子串匹配 `ep_pat in ep`，model 用前缀匹配 `startswith`）
+    """
+    if not model_name and not endpoint:
+        return None
+    prices = _read_model_prices()
+    ep = (endpoint or "").rstrip("/")
+    candidates = []
+    for p in prices:
+        ep_pat = p.get("endpoint_pattern", "")
+        mod_pat = p.get("model_pattern", "")
+        # endpoint 匹配（空 pattern = 通配）
+        ep_ok = (not ep_pat) or (ep and ep_pat in ep)
+        # model 匹配（空 pattern = 通配）
+        mod_ok = (not mod_pat) or (model_name and model_name.startswith(mod_pat))
+        if ep_ok and mod_ok:
+            candidates.append(p)
+    if not candidates:
+        return None
+    # 更具体的优先：endpoint_pattern + model_pattern 合计长度降序
+    candidates.sort(
+        key=lambda x: len(x.get("endpoint_pattern", "")) + len(x.get("model_pattern", "")),
+        reverse=True,
+    )
+    return candidates[0]
+
+
+def cost_estimate(target_endpoint: Optional[str], target_model: Optional[str],
+                  judge_endpoint: Optional[str], judge_model: Optional[str],
+                  total_token: int, judge_token: int) -> dict:
+    """Q-2: run 成本估算（端点 + 模型双 key 各自独立查价）
+
+    - target_cost: 运行 token × target 端点+模型价格 / 1e6
+    - judge_cost:  评测 token × judge 端点+模型价格 / 1e6
+    - 任一端无匹配价格 → 对应字段为 None；货币随匹配到的价格
+    返回 {target_cost, judge_cost, total_cost, currency}
+    """
+    result = {"target_cost": None, "judge_cost": None, "total_cost": None, "currency": None}
+    target_price = _match_model_price(target_endpoint or "", target_model or "") if (target_endpoint or target_model) else None
+    judge_price = _match_model_price(judge_endpoint or "", judge_model or "") if (judge_endpoint or judge_model) else None
+    if target_price:
+        result["target_cost"] = round(total_token / 1_000_000 * target_price["price_per_mtok"], 4)
+        result["currency"] = target_price["currency"]
+    if judge_price:
+        result["judge_cost"] = round(judge_token / 1_000_000 * judge_price["price_per_mtok"], 4)
+        if result["currency"] is None:
+            result["currency"] = judge_price["currency"]
+    if result["target_cost"] is not None or result["judge_cost"] is not None:
+        result["total_cost"] = round((result["target_cost"] or 0) + (result["judge_cost"] or 0), 4)
+    return result
