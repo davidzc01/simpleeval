@@ -1537,10 +1537,10 @@
                         <div class="form-group">
                             <label class="form-label">版本（可选，落版本对比）</label>
                             <select class="form-input" id="seVersion">
-                                <option value="">（不指定，按运行时间自动归属）</option>
+                                <option value="">（默认：归属当前活动版本，无则按运行时间）</option>
                                 ${versions.map(v => `<option value="${escapeHtml(v.id)}" ${v.id===initial.version_id?'selected':''}>${escapeHtml(v.name)}</option>`).join('')}
                             </select>
-                            <div style="font-size: 11px; color: var(--ink-4); margin-top: 4px;">编辑弹窗取项目版本；新建时先选项目后可再选版本（保存前会重新读取）。</div>
+                            <div style="font-size: 11px; color: var(--ink-4); margin-top: 4px;">不指定时按当前活动版本归属（可在概览页版本条切换）；编辑弹窗取项目版本，新建时先选项目后可再选版本。</div>
                         </div>
                         <div class="form-group">
                             <label class="form-label">回归阈值（低于该 pass_rate 跌幅标记为回归）</label>
@@ -2815,24 +2815,36 @@
             const versions = data.versions || [];
             const contentUpdatedAt = data.content_updated_at;
 
-            // P-4: 顶部版本信息条（直接取 versions 最新，不依赖 run）
+            // P-4/Q-3: 顶部版本信息条。活动版本 = current_version_id（被测 API 切换锚点）；
+            // 未切换时回退到最近版本（向后兼容旧概览数据）
             const sortedVersions = [...versions].sort((a, b) => (a.created_at || '').localeCompare(b.created_at || ''));
-            const currentVersion = sortedVersions.length ? sortedVersions[sortedVersions.length - 1] : null;
+            const cvId = data.current_version_id || null;
+            const activeVersion = (cvId && versions.find(v => v.id === cvId))
+                || (sortedVersions.length ? sortedVersions[sortedVersions.length - 1] : null);
             const latestTrend = trend.length > 0 ? trend[trend.length - 1] : null;
             const runVersion = latestTrend && latestTrend.version_id
                 ? versions.find(v => v.id === latestTrend.version_id) : null;
-            const runVersionHint = currentVersion && runVersion && runVersion.id !== currentVersion.id
+            const runVersionHint = activeVersion && runVersion && runVersion.id !== activeVersion.id
                 ? `<span style="color: var(--amber, #b45309); margin-left: 6px;">（最近评测仍在 ${escapeHtml(runVersion.name)}）</span>`
                 : '';
-            const versionBar = currentVersion ? `
+            // Q-3: 版本切换下拉（切换被测 Target API 的当前活动版本）
+            const versionSelect = sortedVersions.length > 1
+                ? `<select class="form-control" style="font-size: 11px; padding: 1px 6px; height: auto; width: auto; min-width: 96px;"
+                    onchange="activateProjectVersion('${escapeHtml(projectId)}', this.value)">
+                    ${sortedVersions.map(v => `<option value="${escapeHtml(v.id)}" ${v.id === (activeVersion && activeVersion.id) ? 'selected' : ''}>${escapeHtml(v.name)}</option>`).join('')}
+                   </select>`
+                : `<strong style="color: var(--ink-2);">${activeVersion ? escapeHtml(activeVersion.name) : ''}</strong>`;
+            const versionBar = activeVersion ? `
                 <div style="display: flex; justify-content: flex-end; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 12px; color: var(--ink-4);">
-                    <span>当前版本：<strong style="color: var(--ink-2);">${escapeHtml(currentVersion.name)}</strong>${runVersionHint}</span>
+                    <span>当前版本：${versionSelect}${cvId ? '<span style="color: var(--ink-5); margin-left: 4px;" title="已切换到此活动版本，新发起的评测默认归属此版本">●已切换</span>' : ''}${runVersionHint}</span>
+                    <button class="btn btn-sm btn-secondary" style="font-size: 11px; padding: 1px 8px;" onclick="showBatchEstimateModal('${escapeHtml(projectId)}')">批量预估</button>
                     <button class="btn btn-sm btn-primary" style="font-size: 11px; padding: 1px 8px;" onclick="showCreateVersionModal('${escapeHtml(projectId)}')">+ 开新版本</button>
                     <button class="btn btn-sm btn-secondary" style="font-size: 11px; padding: 1px 8px;" onclick="showVersionCompareModal('${projectId}')">版本历史 →</button>
                 </div>
             ` : `
                 <div style="display: flex; justify-content: flex-end; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 12px; color: var(--ink-4);">
                     <span>当前版本：<em style="color: var(--ink-4);">还没有版本</em></span>
+                    <button class="btn btn-sm btn-secondary" style="font-size: 11px; padding: 1px 8px;" onclick="showBatchEstimateModal('${escapeHtml(projectId)}')">批量预估</button>
                     <button class="btn btn-sm btn-primary" style="font-size: 11px; padding: 1px 8px;" onclick="showCreateVersionModal('${escapeHtml(projectId)}')">+ 开新版本</button>
                 </div>
             `;
@@ -2887,6 +2899,15 @@
                         <span class="card-title">最近一次统计</span>
                     </div>
                     <div style="padding: 4px 16px 8px;">
+                        ${(() => {
+                            // Q-4: 口径标注——基于 N/M 条 case（占评测集 X%）+ 组名 + 不一致提示
+                            const cb = delta.caliber || {};
+                            if (cb.case_count == null && cb.evalset_case_count == null) return '';
+                            const cov = cb.coverage_ratio != null ? `（占评测集 ${(cb.coverage_ratio * 100).toFixed(0)}%）` : '';
+                            const groupLine = cb.group ? `${escapeHtml(cb.group)} · 基于 ${cb.case_count != null ? cb.case_count : '-'}${cb.evalset_case_count != null ? '/' + cb.evalset_case_count : ''} 条${cov}` : '';
+                            const warn = cb.note ? `<span style="color: var(--amber, #b45309); margin-left: 8px;">⚠ ${escapeHtml(cb.note)}</span>` : '';
+                            return groupLine || warn ? `<div style="font-size: 11px; color: var(--ink-4); padding: 6px 0; border-bottom: 1px solid var(--border);">${groupLine}${warn}</div>` : '';
+                        })()}
                         ${deltaRow('pass rate', fmtPct(delta.pass_rate.current), delta.pass_rate.previous != null ? fmtPct(delta.pass_rate.previous) : null, fmtDeltaPct(delta.pass_rate.diff), colorForPass(delta.pass_rate.diff))}
                         ${deltaRow('运行 token', fmtTok(delta.total_token.current), delta.total_token.previous != null ? fmtTok(delta.total_token.previous) : null, fmtDeltaTok(delta.total_token.diff), colorForCost(delta.total_token.diff))}
                         ${deltaRow('评测 token', fmtTok(delta.judge_token.current), delta.judge_token.previous != null ? fmtTok(delta.judge_token.previous) : null, fmtDeltaTok(delta.judge_token.diff), colorForCost(delta.judge_token.diff))}
@@ -3141,12 +3162,45 @@
                 `;
             }).join('');
 
-            // pass_rate 折线
-            const pts = trend.map((t, i) => `${xOf(i)},${yOfRate(t.pass_rate)}`).join(' ');
+            // Q-4: 按口径（caliber）分色连线，避免混合口径产生虚假波动。
+            // 全量 run（无标签筛选）一条主色实线；高频标签组（前4）各一色实线；其余子集画空心点。
+            const TAG_PALETTE = ['#10b981', '#3b82f6', '#f59e0b', '#8b5cf6'];
+            const FULL_COLOR = 'var(--accent)';
+            const caliberOf = t => (t.filter_tags && t.filter_tags.length) ? t.filter_tags.slice().sort().join(',') : 'FULL';
+            const seriesMap = new Map();
+            trend.forEach((t, i) => {
+                const k = caliberOf(t);
+                if (!seriesMap.has(k)) seriesMap.set(k, []);
+                seriesMap.get(k).push({ i, t });
+            });
+            const fullSeries = seriesMap.get('FULL') || [];
+            const subSeries = [...seriesMap.entries()].filter(([k]) => k !== 'FULL');
+            subSeries.sort((a, b) => b[1].length - a[1].length);
+            const coloredSub = subSeries.slice(0, 4);
+            const hollowSub = subSeries.slice(4);
+            const subColorOf = {};
+            coloredSub.forEach(([k], idx) => { subColorOf[k] = TAG_PALETTE[idx % TAG_PALETTE.length]; });
+            const seriesPolyline = (ser, color) => {
+                if (ser.length < 2) return '';
+                const pts = ser.map(p => `${xOf(p.i)},${yOfRate(p.t.pass_rate)}`).join(' ');
+                return `<polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.5" />`;
+            };
+            let trendLines = seriesPolyline(fullSeries, FULL_COLOR);
+            coloredSub.forEach(([k, ser]) => { trendLines += seriesPolyline(ser, subColorOf[k]); });
+            // 点：全量/高频子集实心；低频子集空心
             const dots = trend.map((t, i) => {
-                const color = t.status === 'completed' ? (t.pass_rate >= 0.8 ? 'var(--green)' : t.pass_rate >= 0.5 ? 'var(--amber, #b45309)' : 'var(--red)') : 'var(--ink-4)';
                 const cx = xOf(i), cy = yOfRate(t.pass_rate);
-                return `<circle cx="${cx}" cy="${cy}" r="3" fill="${color}"/>`;
+                const k = caliberOf(t);
+                let fill, stroke, r = 3;
+                if (t.status !== 'completed') { fill = 'var(--ink-4)'; stroke = 'var(--ink-4)'; }
+                else if (k === 'FULL') { fill = FULL_COLOR; stroke = 'white'; }
+                else if (subColorOf[k]) { fill = subColorOf[k]; stroke = 'white'; }
+                else {
+                    fill = 'var(--card-bg, #1e1e2e)';
+                    stroke = (t.pass_rate >= 0.8 ? 'var(--green)' : t.pass_rate >= 0.5 ? 'var(--amber, #b45309)' : 'var(--red)');
+                    r = 3.5;
+                }
+                return `<circle cx="${cx}" cy="${cy}" r="${r}" fill="${fill}" stroke="${stroke}" stroke-width="1.5"/>`;
             }).join('');
 
             // hover 热区（每个 run 覆盖一个透明矩形，mouseover 显示 tooltip）
@@ -3157,11 +3211,17 @@
                 const runTok = formatNumber(t.total_token || 0);
                 const judgeTok = formatNumber(t.judge_token || 0);
                 const ts = t.created_at ? new Date(t.created_at).toLocaleString('zh-CN', { hour12: false, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '';
-                const tip = `${escapeHtml(ts)}\npass rate: ${rate}\n运行 token: ${runTok}\n评测 token: ${judgeTok}`;
+                // Q-4: 口径信息（组名 + case 数 + 占比）
+                const group = (t.filter_tags && t.filter_tags.length) ? t.filter_tags.join('、') : '全量';
+                const caseCnt = t.case_count != null ? t.case_count : null;
+                const esetCnt = t.evalset_case_count != null ? t.evalset_case_count : null;
+                const cov = t.coverage_ratio != null ? (t.coverage_ratio * 100).toFixed(0) + '%' : null;
+                const caliberLine = (caseCnt != null && esetCnt != null) ? `基于 ${caseCnt}/${esetCnt} 条${cov ? '（占 ' + cov + '）' : ''}` : '';
+                const tip = `${escapeHtml(ts)}\npass rate: ${rate}\n口径: ${escapeHtml(group)}${caliberLine ? '\n' + caliberLine : ''}\n运行 token: ${runTok}\n评测 token: ${judgeTok}`;
                 const x0 = Math.max(pad, cx - halfStep);
                 const x1 = Math.min(w - pad, cx + halfStep);
                 return `<rect x="${x0}" y="${pad - 4}" width="${x1 - x0}" height="${h - pad + 8}" fill="transparent"
-                    data-run-tip='${escapeHtml(JSON.stringify({ rate, runTok, judgeTok, ts, rid: t.run_id, cx: cx, cy: yOfRate(t.pass_rate) }))}'
+                    data-run-tip='${escapeHtml(JSON.stringify({ rate, runTok, judgeTok, ts, rid: t.run_id, cx: cx, cy: yOfRate(t.pass_rate), group, caseCnt, esetCnt, cov }))}'
                     onmouseenter="showTrendTip(this, event)" onmouseleave="hideTrendTip()" style="cursor: pointer;"/>`;
             }).join('');
 
@@ -3182,7 +3242,7 @@
                         <text x="${pad - 4}" y="${h - pad}" font-size="9" fill="var(--ink-4)" text-anchor="end">0%</text>
                         <text x="${w - pad}" y="${pad - 2}" font-size="9" fill="var(--ink-4)" text-anchor="end">${formatNumber(maxTok)}</text>
                         ${bars}
-                        <polyline points="${pts}" fill="none" stroke="var(--accent)" stroke-width="1.5" />
+                        ${trendLines}
                         ${dots}
                         ${changeMarker}
                         ${judgeMarker}
@@ -3191,11 +3251,13 @@
                     </svg>
                     <div id="trendTip" style="display: none; position: absolute; pointer-events: none; z-index: 50; background: var(--card-bg, #1e1e2e); border: 1px solid var(--border, #333); border-radius: 6px; padding: 8px 10px; font-size: 11px; box-shadow: 0 4px 12px rgba(0,0,0,0.4);"></div>
                 </div>
-                <div style="font-size: 10px; color: var(--ink-4); margin-top: 4px;">
-                    <span style="color: var(--accent);">—</span> pass rate
-                    <span style="color: rgba(59,130,246,0.7); margin-left: 8px;">▮</span> 运行 token
-                    <span style="color: rgba(245,158,11,0.7); margin-left: 8px;">▮</span> 评测 token
-                    ${contentUpdatedAt ? '<span style="color: var(--amber, #b45309); margin-left: 12px;">◆</span> 评测集变更' : ''}
+                <div style="font-size: 10px; color: var(--ink-4); margin-top: 4px; display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center;">
+                    <span><span style="color: ${FULL_COLOR};">●</span> 全量</span>
+                    ${coloredSub.map(([k]) => `<span><span style="color: ${subColorOf[k]};">●</span> ${escapeHtml(k)}</span>`).join('')}
+                    ${hollowSub.length ? '<span><span style="color: var(--ink-4);">○</span> 其他子集</span>' : ''}
+                    <span style="color: rgba(59,130,246,0.7);">▮</span> 运行 token
+                    <span style="color: rgba(245,158,11,0.7);">▮</span> 评测 token
+                    ${contentUpdatedAt ? '<span style="color: var(--amber, #b45309);">◆</span> 评测集变更' : ''}
                 </div>
             `;
         }
@@ -3208,6 +3270,8 @@
             tip.innerHTML = `
                 <div style="font-size: 10px; color: var(--ink-4); margin-bottom: 4px;">${escapeHtml(d.ts || '')}</div>
                 <div style="display: grid; grid-template-columns: auto auto; gap: 2px 10px;">
+                    <span style="color: var(--ink-4);">口径</span>
+                    <span style="font-weight: 600;">${escapeHtml(d.group || '全量')}${(d.caseCnt != null && d.esetCnt != null) ? ` · 基于 ${d.caseCnt}/${d.esetCnt} 条${d.cov ? '（占 ' + d.cov + '）' : ''}` : ''}</span>
                     <span style="color: var(--ink-4);">pass rate</span>
                     <span style="font-weight: 600;">${escapeHtml(d.rate)}</span>
                     <span style="color: var(--ink-4);">运行 token</span>
@@ -5683,6 +5747,137 @@
             } catch (err) {}
         }
 
+        // Q-6: 批量预估弹窗——基于历史 case 级样本预估 N 条任务的成本/用时区间
+        async function showBatchEstimateModal(projectId) {
+            // 拉项目当前版本与版本列表，预填默认值
+            let proj = state.currentProject;
+            if (!proj || proj.id !== projectId) {
+                try { proj = await api(`/projects/${projectId}`); } catch (e) { return; }
+            }
+            const versions = proj.versions || [];
+            const curId = proj.current_version_id || (versions.length ? versions[versions.length - 1].id : null);
+            const versionOptions = versions.length
+                ? versions.map(v => `<option value="${escapeHtml(v.id)}" ${v.id === curId ? 'selected' : ''}>${escapeHtml(v.name)}</option>`).join('')
+                : '';
+            const modal = document.createElement('div');
+            modal.className = 'modal-overlay';
+            modal.id = 'batchEstimateModal';
+            modal.innerHTML = `
+                <div class="modal" style="max-width: 540px;">
+                    <div class="modal-header">
+                        <span class="modal-title">批量预估</span>
+                        <button class="modal-close" onclick="closeModal('batchEstimateModal')">×</button>
+                    </div>
+                    <div class="modal-body" style="padding: 16px;">
+                        <div style="color: var(--ink-3); font-size: 12px; margin-bottom: 12px;">
+                            基于历史 case 级样本（每条 case 每次执行为一样本）预估 N 条任务的成本与用时区间。P5–P95 为约 90% 置信区间，跳过类 case 已分离统计（不计入区间）。
+                        </div>
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+                            <div class="form-group">
+                                <label class="form-label">任务规模 N</label>
+                                <input type="number" min="1" class="form-input" id="beCount" value="100" placeholder="如 1000">
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label">生产端并发度</label>
+                                <input type="number" min="1" class="form-input" id="beConcurrency" value="1" placeholder="1 = 串行">
+                                <div style="font-size: 10px; color: var(--ink-5); margin-top: 2px;">时间区间按此分摊</div>
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label">计划运行时段</label>
+                                <select class="form-control" id="bePlanHour">
+                                    <option value="">自动（峰价兜底）</option>
+                                    <option value="0">00:00（谷）</option>
+                                    <option value="3">03:00（谷）</option>
+                                    <option value="9">09:00（峰）</option>
+                                    <option value="12" selected>12:00（峰）</option>
+                                    <option value="21">21:00（峰）</option>
+                                    <option value="22">22:00（谷）</option>
+                                </select>
+                                <div style="font-size: 10px; color: var(--ink-5); margin-top: 2px;">影响峰/谷价选择</div>
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label">版本作用域</label>
+                                ${versionOptions
+                                    ? `<select class="form-control" id="beVersionId">
+                                        <option value="">自动（按当前活动版本）</option>
+                                        ${versionOptions}
+                                      </select>`
+                                    : `<input type="text" class="form-input" value="（无版本，全量）" disabled>`}
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">标签筛选（可选，逗号分隔，OR）</label>
+                            <input type="text" class="form-input" id="beTags" placeholder="如 smoke,regression">
+                        </div>
+                        <div id="beResult" style="margin-top: 16px;"></div>
+                    </div>
+                    <div class="modal-footer">
+                        <button class="btn btn-secondary" onclick="closeModal('batchEstimateModal')">关闭</button>
+                        <button class="btn btn-primary" onclick="runBatchEstimate('${escapeHtml(projectId)}')">预估</button>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(modal);
+        }
+
+        async function runBatchEstimate(projectId) {
+            const count = parseInt(document.getElementById('beCount')?.value || '0', 10);
+            const concurrency = parseInt(document.getElementById('beConcurrency')?.value || '1', 10);
+            const planHourRaw = document.getElementById('bePlanHour')?.value || '';
+            const planHour = planHourRaw === '' ? null : parseInt(planHourRaw, 10);
+            const versionIdRaw = document.getElementById('beVersionId')?.value || '';
+            const versionId = versionIdRaw === '' ? null : versionIdRaw;
+            const tagsStr = document.getElementById('beTags')?.value?.trim() || '';
+            const tags = tagsStr ? tagsStr.split(',').map(s => s.trim()).filter(Boolean) : [];
+            const resultEl = document.getElementById('beResult');
+            if (!count || count <= 0) { showToast('N 必须 > 0', 'error'); return; }
+            if (concurrency < 1) { showToast('并发度必须 ≥ 1', 'error'); return; }
+            resultEl.innerHTML = `<div style="color: var(--ink-4); font-size: 12px; padding: 12px;">估算中…</div>`;
+            try {
+                const body = { count, concurrency };
+                if (planHour !== null) body.plan_hour = planHour;
+                if (versionId) body.version_id = versionId;
+                if (tags.length) body.tags = tags;
+                const data = await api(`/projects/${projectId}/estimate`, {
+                    method: 'POST', body: JSON.stringify(body),
+                });
+                const cost = data.cost || {};
+                const time = data.time || {};
+                const fmtCost = (v) => v != null ? `${cost.currency || '¥'}${Number(v).toLocaleString(undefined, { maximumFractionDigits: 2 })}` : '—';
+                const fmtSec = (v) => {
+                    if (v == null) return '—';
+                    const s = Number(v);
+                    if (s < 60) return `${s.toFixed(1)} 秒`;
+                    if (s < 3600) return `${(s / 60).toFixed(1)} 分钟`;
+                    return `${(s / 3600).toFixed(1)} 小时`;
+                };
+                const lowConfTag = data.low_confidence
+                    ? `<span style="color: var(--amber, #b45309); font-size: 11px; margin-left: 8px;">⚠ 低置信（< 100 样本）</span>` : '';
+                const noteBlock = data.note
+                    ? `<div style="margin-top: 12px; padding: 8px 10px; background: var(--bg-2); border-radius: 4px; font-size: 11px; color: var(--ink-3);">${escapeHtml(data.note)}</div>`
+                    : '';
+                resultEl.innerHTML = `
+                    <div style="border-top: 1px solid var(--border); padding-top: 12px;">
+                        <div style="display: flex; align-items: center; margin-bottom: 10px;">
+                            <strong style="font-size: 13px;">预估区间</strong>
+                            ${lowConfTag}
+                        </div>
+                        <div style="display: grid; grid-template-columns: 90px 1fr; gap: 6px 12px; font-size: 12px;">
+                            <span style="color: var(--ink-4);">成本 P50：</span><span style="font-weight: 600;">${fmtCost(cost.median)}</span>
+                            <span style="color: var(--ink-4);">成本 P5–P95：</span><span>${fmtCost(cost.p5)} ~ ${fmtCost(cost.p95)}</span>
+                            <span style="color: var(--ink-4);">用时 P50：</span><span style="font-weight: 600;">${fmtSec(time.median)}</span>
+                            <span style="color: var(--ink-4);">用时 P5–P95：</span><span>${fmtSec(time.p5)} ~ ${fmtSec(time.p95)}</span>
+                            <span style="color: var(--ink-4);">跳过比例：</span><span>${(data.skipped_ratio * 100).toFixed(1)}%</span>
+                            <span style="color: var(--ink-4);">样本来源：</span><span>${data.sample_count} 条 case 样本，跨 ${data.run_count} 次 run</span>
+                        </div>
+                        ${noteBlock}
+                    </div>
+                `;
+            } catch (err) {
+                resultEl.innerHTML = `<div style="color: var(--red); font-size: 12px; padding: 12px;">预估失败：${escapeHtml(err.message)}</div>`;
+            }
+        }
+
         async function deleteVersion(projectId, versionId, versionName) {
             if (!confirm(`确认删除版本「${versionName}」？\n\n历史 run 的 version_id 变为孤儿引用，对比时归入「未分版本」桶。`)) return;
             try {
@@ -5692,6 +5887,18 @@
                 showToast('版本已删除');
                 renderVersionsTab(document.getElementById('tabContent'), projectId);
             } catch (err) {}
+        }
+
+        // Q-3: 切换当前活动版本（被测 Target API 版本切换）
+        async function activateProjectVersion(projectId, versionId) {
+            try {
+                await api(`/projects/${projectId}/versions/${versionId}/activate`, { method: 'POST' });
+                showToast('已切换活动版本');
+                loadProjectOverview(projectId);
+            } catch (err) {
+                // 失败时回滚下拉到当前 current_version_id（重拉概览）
+                loadProjectOverview(projectId);
+            }
         }
 
         // W-7: 版本改名
@@ -7233,6 +7440,14 @@
                 // T3-1: 取项目最大并发作为 concurrency 默认与上限
                 const maxConc = parseInt(proj?.max_concurrency ?? 1, 10) || 1;
 
+                // Q-3: 本次 run 将归属的活动版本（current_version_id 优先，无则最近版本）
+                const projVersions = (proj?.versions || []).slice().sort((a, b) => (a.created_at || '').localeCompare(b.created_at || ''));
+                const activeVer = (proj?.current_version_id && projVersions.find(v => v.id === proj.current_version_id))
+                    || projVersions[projVersions.length - 1] || null;
+                const versionHint = activeVer
+                    ? `<div style="font-size: 12px; color: var(--ink-4); margin-bottom: 10px;">本次评测将归属版本：<strong style="color: var(--ink-3);">${escapeHtml(activeVer.name)}</strong>${proj?.current_version_id ? '' : '（按运行时间自动落入）'}</div>`
+                    : '';
+
                 body.innerHTML = `
                     ${dirtyNow ? `
                         <div class="dirty-bar">
@@ -7240,6 +7455,7 @@
                             <a onclick="closeModal('runModal'); switchTab('config')">去保存</a>
                         </div>
                     ` : ''}
+                    ${versionHint}
                     <div class="form-group">
                         <label class="form-label">选择评测集</label>
                         <select class="form-input" id="runEvalsetSelect" onchange="updateRunEvalsetInfo()">

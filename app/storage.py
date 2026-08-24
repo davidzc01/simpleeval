@@ -642,8 +642,12 @@ def list_model_prices() -> list[dict]:
     return prices
 
 
-def save_model_price(endpoint_pattern: str, model_pattern: str, price_per_mtok: float, currency: str = "¥", note: str = "") -> dict:
-    """新建模型价格（端点 + 模型双 key）"""
+def save_model_price(endpoint_pattern: str, model_pattern: str, price_per_mtok: float,
+                     currency: str = "¥", note: str = "",
+                     peak_price_per_mtok: Optional[float] = None,
+                     off_peak_price_per_mtok: Optional[float] = None,
+                     peak_start_hour: int = 9, peak_end_hour: int = 22) -> dict:
+    """新建模型价格（端点 + 模型双 key + Q-5 峰谷定价）"""
     prices = _read_model_prices()
     new_id = f"mp-{uuid.uuid4().hex[:8]}"
     new_item = {
@@ -651,12 +655,29 @@ def save_model_price(endpoint_pattern: str, model_pattern: str, price_per_mtok: 
         "endpoint_pattern": endpoint_pattern,
         "model_pattern": model_pattern,
         "price_per_mtok": price_per_mtok,
+        "peak_price_per_mtok": peak_price_per_mtok,
+        "off_peak_price_per_mtok": off_peak_price_per_mtok,
+        "peak_start_hour": peak_start_hour,
+        "peak_end_hour": peak_end_hour,
         "currency": currency,
         "note": note,
     }
     prices.append(new_item)
     _write_model_prices(prices)
     return new_item
+
+
+def update_model_price(price_id: str, fields: dict) -> Optional[dict]:
+    """Q-5: 编辑模型价格（仅更新给定字段，未给字段保留原值）"""
+    prices = _read_model_prices()
+    for p in prices:
+        if p.get("id") == price_id:
+            for k, v in fields.items():
+                if v is not None:
+                    p[k] = v
+            _write_model_prices(prices)
+            return p
+    return None
 
 
 def delete_model_price(price_id: str) -> Optional[dict]:
@@ -667,6 +688,50 @@ def delete_model_price(price_id: str) -> Optional[dict]:
         return None
     _write_model_prices(new_list)
     return {"id": price_id}
+
+
+def _effective_peak_price(p: dict) -> float:
+    """Q-5: 峰价 = peak_price_per_mtok（若有）否则 price_per_mtok（兼容旧条目迁移）"""
+    pp = p.get("peak_price_per_mtok")
+    return pp if pp is not None else p.get("price_per_mtok", 0)
+
+
+def _effective_off_peak_price(p: dict) -> float:
+    """Q-5: 谷价 = off_peak_price_per_mtok（若有）否则回退到峰价"""
+    op = p.get("off_peak_price_per_mtok")
+    if op is not None:
+        return op
+    return _effective_peak_price(p)
+
+
+def _is_peak_hour(p: dict, hour: int) -> bool:
+    """Q-5: 给定小时是否在峰时段 [peak_start_hour, peak_end_hour)"""
+    start = p.get("peak_start_hour", 9)
+    end = p.get("peak_end_hour", 22)
+    # 支持跨午夜（start > end，如 22..6）
+    if start <= end:
+        return start <= hour < end
+    return hour >= start or hour < end
+
+
+def _select_price_for_hour(p: dict, hour: Optional[int]) -> float:
+    """Q-5: 按 run 所在小时选峰/谷价；hour=None → 峰价（向后兼容旧调用）"""
+    peak = _effective_peak_price(p)
+    if hour is None:
+        return peak
+    return peak if _is_peak_hour(p, hour) else _effective_off_peak_price(p)
+
+
+def _parse_hour(created_at: Optional[str]) -> Optional[int]:
+    """Q-5: 从 ISO 时间串解析小时（解析失败返回 None → 走峰价兜底）"""
+    if not created_at:
+        return None
+    try:
+        from datetime import datetime
+        ts = created_at.replace("Z", "+00:00")
+        return datetime.fromisoformat(ts).hour
+    except Exception:
+        return None
 
 
 def _match_model_price(endpoint: str, model_name: str) -> Optional[dict]:
@@ -703,24 +768,216 @@ def _match_model_price(endpoint: str, model_name: str) -> Optional[dict]:
 
 def cost_estimate(target_endpoint: Optional[str], target_model: Optional[str],
                   judge_endpoint: Optional[str], judge_model: Optional[str],
-                  total_token: int, judge_token: int) -> dict:
-    """Q-2: run 成本估算（端点 + 模型双 key 各自独立查价）
+                  total_token: int, judge_token: int,
+                  run_created_at: Optional[str] = None) -> dict:
+    """Q-2/Q-5: run 成本估算（端点 + 模型双 key 各自独立查价 + 峰谷按时段选价）
 
     - target_cost: 运行 token × target 端点+模型价格 / 1e6
     - judge_cost:  评测 token × judge 端点+模型价格 / 1e6
+    - Q-5: run_created_at 解析小时 → 按价格条目的峰谷时段选价；未提供时间 → 峰价兜底
     - 任一端无匹配价格 → 对应字段为 None；货币随匹配到的价格
     返回 {target_cost, judge_cost, total_cost, currency}
     """
     result = {"target_cost": None, "judge_cost": None, "total_cost": None, "currency": None}
+    hour = _parse_hour(run_created_at)
     target_price = _match_model_price(target_endpoint or "", target_model or "") if (target_endpoint or target_model) else None
     judge_price = _match_model_price(judge_endpoint or "", judge_model or "") if (judge_endpoint or judge_model) else None
     if target_price:
-        result["target_cost"] = round(total_token / 1_000_000 * target_price["price_per_mtok"], 4)
-        result["currency"] = target_price["currency"]
+        t_price = _select_price_for_hour(target_price, hour)
+        result["target_cost"] = round(total_token / 1_000_000 * t_price, 4)
+        result["currency"] = target_price.get("currency", "¥")
     if judge_price:
-        result["judge_cost"] = round(judge_token / 1_000_000 * judge_price["price_per_mtok"], 4)
+        j_price = _select_price_for_hour(judge_price, hour)
+        result["judge_cost"] = round(judge_token / 1_000_000 * j_price, 4)
         if result["currency"] is None:
-            result["currency"] = judge_price["currency"]
+            result["currency"] = judge_price.get("currency", "¥")
     if result["target_cost"] is not None or result["judge_cost"] is not None:
         result["total_cost"] = round((result["target_cost"] or 0) + (result["judge_cost"] or 0), 4)
     return result
+
+
+# ============== Q-6: 批量预估 ==============
+
+def _percentile(sorted_vals: list[float], p: float) -> float:
+    """线性插值分位数（p ∈ [0,1]）。空列表返回 0.0。"""
+    if not sorted_vals:
+        return 0.0
+    if len(sorted_vals) == 1:
+        return sorted_vals[0]
+    s = sorted(sorted_vals)
+    rank = p * (len(s) - 1)
+    lo = int(rank)
+    hi = min(lo + 1, len(s) - 1)
+    frac = rank - lo
+    return s[lo] * (1 - frac) + s[hi] * frac
+
+
+def _is_skipped_sample(cr: dict) -> bool:
+    """Q-6: 跳过类 case = skipped_reason 非空或 token 全为 0"""
+    if cr.get("skipped_reason"):
+        return True
+    return (cr.get("token_used", 0) or 0) == 0 and (cr.get("judge_token", 0) or 0) == 0
+
+
+def batch_estimate(project: Project, count: int,
+                   plan_hour: Optional[int] = None,
+                   version_id: Optional[str] = None,
+                   tags: Optional[list[str]] = None,
+                   concurrency: int = 1) -> dict:
+    """Q-6: 基于 case 级历史样本预估批量任务的成本/用时区间
+
+    - 样本 = 每条 case 每次执行（CaseResult 级，非 run 级）
+    - 仅取 project_id 下 completed run；version_id 给定时按版本过滤，否则按 current_version_id
+    - tags 给定时按 run.filter_tags 命中过滤（OR；空 = 不过滤）
+    - 跳过类 case（skipped_reason 非空或 token 全 0）分离统计：skipped_ratio
+    - 单样本成本 = (token_used + judge_token) / 1e6 × 选定时段价
+      （target+judge 各自匹配价格；plan_hour 给定时按峰/谷选价，None → 峰价兜底）
+    - 单样本时长 = latency_ms（毫秒）
+    - 区间 = P5/P50/P95 × N；time 区间按并发度 ÷ concurrency
+    - 最小样本量：< 30 拒绝（low_confidence=False，error）；30~100 低置信标注
+    - 跨 ≥ 2 次 run 校验（防单次系统偏差冒充多样性）
+
+    返回 {cost: {median, p5, p95, currency}, time: {median, p5, p95, unit},
+           skipped_ratio, sample_count, run_count, low_confidence, note}
+    """
+    if count <= 0:
+        return {"error": "invalid_count", "message": "count 必须 > 0"}
+    if concurrency < 1:
+        concurrency = 1
+
+    runs = list_runs(project.id)
+    completed = [r for r in runs if r.status == "completed"]
+    # 版本作用域：显式 > current_version_id > 全量（None）
+    target_vid = version_id or project.current_version_id
+    if target_vid:
+        scoped = [r for r in completed if r.version_id == target_vid]
+        completed = scoped if scoped else completed  # 没数据则回退全量避免空结果
+    # tags 过滤：run.filter_tags 与给定 tags 有交集即入选（OR），tags 为空 = 不过滤
+    if tags:
+        tag_set = set(tags)
+        filtered = [r for r in completed if tag_set & set(r.filter_tags or [])]
+        completed = filtered if filtered else completed
+
+    # 收集 case 级样本
+    exec_samples_token: list[int] = []  # 每条 case 的 token_used + judge_token（用于价格匹配）
+    exec_samples_latency: list[float] = []  # 每条 case 的 latency_ms
+    skipped_count = 0
+    seen_run_ids: set[str] = set()
+    for r in completed:
+        seen_run_ids.add(r.id)
+        for cr in (r.results or []):
+            cr_dict = cr.model_dump() if hasattr(cr, "model_dump") else cr
+            if _is_skipped_sample(cr_dict):
+                skipped_count += 1
+                continue
+            t = (cr_dict.get("token_used") or 0) + (cr_dict.get("judge_token") or 0)
+            exec_samples_token.append(t)
+            exec_samples_latency.append(cr_dict.get("latency_ms") or 0.0)
+
+    total_samples = len(exec_samples_token) + skipped_count
+    run_count = len(seen_run_ids)
+    skipped_ratio = round(skipped_count / total_samples, 4) if total_samples else 0.0
+
+    # 最小样本量门槛
+    if total_samples < 30:
+        return {
+            "error": "insufficient_samples",
+            "message": f"样本量不足：当前 {total_samples} 条，需 ≥ 30 条 case 样本（含跨 ≥ 2 次 run）才能预估",
+            "sample_count": total_samples,
+            "run_count": run_count,
+        }
+    low_confidence = total_samples < 100
+    if run_count < 2:
+        return {
+            "error": "insufficient_runs",
+            "message": f"样本仅来自 {run_count} 次 run，需跨 ≥ 2 次 run 才能预估（防单次系统偏差）",
+            "sample_count": total_samples,
+            "run_count": run_count,
+        }
+
+    # 价格匹配：用 project.target_config / judge_config 解析端点+模型
+    target_ep = getattr(project.target_config, "base_url", None)
+    target_mod = getattr(project.target_config, "model", None)
+    # judge 解析优先 judge_config_id 全局引用
+    judge_ep = None
+    judge_mod = None
+    if project.judge_config_id:
+        jc_global = get_judge_config_with_secrets(project.judge_config_id)
+        if jc_global and "judge_config" in jc_global:
+            jc = JudgeConfig(**jc_global["judge_config"])
+            judge_ep = jc.base_url
+            judge_mod = jc.model
+    if judge_ep is None:
+        judge_ep = getattr(project.judge_config, "base_url", None)
+        judge_mod = getattr(project.judge_config, "model", None)
+
+    # 每样本成本：token × 价格 / 1e6；plan_hour 给定 → 按价格条目峰谷选价
+    target_price = _match_model_price(target_ep or "", target_mod or "") if (target_ep or target_mod) else None
+    judge_price = _match_model_price(judge_ep or "", judge_mod or "") if (judge_ep or judge_mod) else None
+    t_price = _select_price_for_hour(target_price, plan_hour) if target_price else None
+    j_price = _select_price_for_hour(judge_price, plan_hour) if judge_price else None
+    currency = (target_price or judge_price or {}).get("currency", "¥")
+
+    def _sample_cost(total_tok: int, judge_tok: int) -> Optional[float]:
+        if t_price is None and j_price is None:
+            return None
+        c = 0.0
+        if t_price is not None:
+            c += (total_tok - judge_tok) / 1_000_000 * t_price
+        if j_price is not None:
+            c += judge_tok / 1_000_000 * j_price
+        return c
+
+    # 拆分 target / judge token（CaseResult 把 target token 存 token_used，judge 存 judge_token）
+    cost_samples: list[float] = []
+    for r in completed:
+        for cr in (r.results or []):
+            cr_dict = cr.model_dump() if hasattr(cr, "model_dump") else cr
+            if _is_skipped_sample(cr_dict):
+                continue
+            total_tok = (cr_dict.get("token_used") or 0) + (cr_dict.get("judge_token") or 0)
+            judge_tok = cr_dict.get("judge_token") or 0
+            c = _sample_cost(total_tok, judge_tok)
+            if c is None:
+                continue
+            cost_samples.append(c)
+
+    # 区间 = 分位 × N；时间区间按并发度 ÷ concurrency（毫秒 → 秒）
+    cost_median = _percentile(cost_samples, 0.50) * count
+    cost_p5 = _percentile(cost_samples, 0.05) * count
+    cost_p95 = _percentile(cost_samples, 0.95) * count
+
+    time_median_s = _percentile(exec_samples_latency, 0.50) * count / 1000.0 / concurrency
+    time_p5_s = _percentile(exec_samples_latency, 0.05) * count / 1000.0 / concurrency
+    time_p95_s = _percentile(exec_samples_latency, 0.95) * count / 1000.0 / concurrency
+
+    note_parts = []
+    if low_confidence:
+        note_parts.append(f"样本量 {total_samples} < 100，区间为低置信估计")
+    if skipped_ratio > 0:
+        note_parts.append(f"含跳过 case 比例 {skipped_ratio * 100:.1f}%（已分离统计，不计入区间）")
+    if target_vid:
+        v = next((v for v in (project.versions or []) if v.id == target_vid), None)
+        if v:
+            note_parts.append(f"按版本「{v.name}」作用域采样")
+    note = "；".join(note_parts) if note_parts else None
+
+    return {
+        "cost": {
+            "median": round(cost_median, 2),
+            "p5": round(cost_p5, 2),
+            "p95": round(cost_p95, 2),
+            "currency": currency,
+        },
+        "time": {
+            "median": round(time_median_s, 2),
+            "p5": round(time_p5_s, 2),
+            "p95": round(time_p95_s, 2),
+            "unit": "seconds",
+        },
+        "skipped_ratio": skipped_ratio,
+        "sample_count": total_samples,
+        "run_count": run_count,
+        "low_confidence": low_confidence,
+        "note": note,
+    }

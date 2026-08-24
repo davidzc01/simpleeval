@@ -15,7 +15,8 @@ from .models import (
     TestTargetRequest, TestMappingRequest, TestParsingRequest, TestJudgeRequest,
     CaseResult, ErrorResponse, CreateVersionRequest, ProjectVersion,
     CreateTagRequest, RenameTagRequest, ScheduleConfig, UpdateScheduleRequest,
-    ModelPrice, CreateModelPriceRequest,
+    ModelPrice, CreateModelPriceRequest, UpdateModelPriceRequest,
+    BatchEstimateRequest,
 )
 from .storage import (
     list_projects, get_project, save_project, delete_project,
@@ -26,7 +27,8 @@ from .storage import (
     list_judge_configs, get_judge_config, get_judge_config_with_secrets, save_judge_config,
     update_judge_config, delete_judge_config, find_judge_config_by_name,
     list_tags, save_tag, rename_tag, delete_tag, _migrate_legacy_tags,
-    list_model_prices, save_model_price, delete_model_price, cost_estimate,
+    list_model_prices, save_model_price, update_model_price, delete_model_price, cost_estimate,
+    batch_estimate,
 )
 from .runner import execute_run, _utc_now, _generate_run_id, _apply_case_filter, _resolve_effective_judge_config
 from .judge import call_target, judge_with_llm, compute_judge_fingerprint, NetworkError, APIError, ResponseFormatError
@@ -75,10 +77,12 @@ def _generate_id(prefix: str) -> str:
 
 
 def _resolve_version_id(project: Project, run_created_at: str, explicit: Optional[str] = None) -> Optional[str]:
-    """T3-3: 解析 run 的归属版本 id。
+    """T3-3 / Q-3: 解析 run 的归属版本 id。
 
     - explicit 非空：校验是否在 project.versions 中，存在则用，不存在返回 None（不阻断，兼容旧数据）
-    - explicit 为空：按 run_created_at 落入最近版本（version.created_at ≤ run_created_at 的最大者）
+    - explicit 为空：
+      Q-3: 若 project.current_version_id 存在且在 versions 中 → 用它（切换版本后新 run 归属当前版本）
+      否则按 run_created_at 落入最近版本（version.created_at ≤ run_created_at 的最大者）
     - 项目无版本：返回 None（向后兼容，旧 run 无 version_id）
     """
     versions = project.versions or []
@@ -88,6 +92,10 @@ def _resolve_version_id(project: Project, run_created_at: str, explicit: Optiona
         if any(v.id == explicit for v in versions):
             return explicit
         return None
+    # Q-3: 优先 current_version_id（被测 API 版本切换锚点）
+    cv = project.current_version_id
+    if cv and any(v.id == cv for v in versions):
+        return cv
     # 按 created_at 降序找第一个 <= run_created_at 的版本
     sorted_vers = sorted(versions, key=lambda v: v.created_at, reverse=True)
     for v in sorted_vers:
@@ -324,8 +332,28 @@ async def create_version(project_id: str, req: CreateVersionRequest):
         created_at=_utc_now(),
     )
     project.versions = (project.versions or []) + [version]
+    # Q-3: 新建版本即成为当前活动版本（新发起 run 默认归属此版本）
+    project.current_version_id = version.id
     save_project(project)
     return version.model_dump()
+
+
+@router.post("/projects/{project_id}/versions/{version_id}/activate")
+async def activate_version(project_id: str, version_id: str):
+    """Q-3: 切换当前活动版本（被测 Target API 版本切换）。
+
+    切到指定版本后，新发起的 run 默认归属此版本，概览/统计以该版本为准。
+    """
+    project = get_project(project_id)
+    if not project:
+        project_not_found(project_id)
+    if not any(v.id == version_id for v in (project.versions or [])):
+        raise HTTPException(status_code=404, detail={
+            "error": {"code": "version_not_found", "message": f"版本 {version_id} 不存在"}
+        })
+    project.current_version_id = version_id
+    save_project(project)
+    return {"project_id": project_id, "current_version_id": version_id}
 
 
 @router.put("/projects/{project_id}/versions/{version_id}")
@@ -360,6 +388,9 @@ async def delete_version(project_id: str, version_id: str):
         raise HTTPException(status_code=404, detail={
             "error": {"code": "version_not_found", "message": f"版本 {version_id} 不存在"}
         })
+    # Q-3: 删除的正是当前活动版本 → 清空，回到按 created_at 自动落入最近版本的行为
+    if project.current_version_id == version_id:
+        project.current_version_id = None
     save_project(project)
     return {"deleted": version_id}
 
@@ -867,6 +898,7 @@ async def get_run_detail(run_id: str, project_id: str):
             target_endpoint, target_model_name,
             judge_endpoint, judge_model_name,
             run.summary.total_token, run.summary.judge_token,
+            run.created_at,
         )
     return data
 
@@ -929,20 +961,41 @@ async def get_project_overview(project_id: str, rule_only: bool = False):
     runs = list_runs(project_id)
     completed = [r for r in runs if r.status == "completed"]
 
-    # ① delta 基准：同版本内上次 completed run
-    latest = completed[0] if completed else None
+    # Q-3: 切换版本后概览以当前活动版本为准——delta/latest/失败 case 聚焦该版本
+    cv = project.current_version_id
+    cv_valid = bool(cv and any(v.id == cv for v in (project.versions or [])))
+    scoped = [r for r in completed if r.version_id == cv] if cv_valid else completed
+
+    # Q-4: 口径（caliber）= 标签筛选集合；空 = 全量 run。
+    def _caliber(r):
+        if not r:
+            return None
+        ts = getattr(r, "filter_tags", None) or []
+        return "FULL" if not ts else ",".join(sorted(ts))
+
+    # ① delta headline：优先最近一次全量 run（口径可比、不误导）；无全量则取 scoped 最新
+    full_scoped = [r for r in scoped if not (getattr(r, "filter_tags", None) or [])]
+    latest = full_scoped[0] if full_scoped else (scoped[0] if scoped
+              else (completed[0] if completed and not cv_valid else None))
+    latest_caliber = _caliber(latest) if latest else None
+    # Q-3 兼容：baseline 限定在 latest 同版本内（未切换版本时 = latest 所在版本）
+    _lv = latest.version_id if latest else None
+    version_pool = [r for r in completed if (r.version_id or None) == (_lv or None)]
+    version_pool_excl_latest = [r for r in version_pool if latest and r.id != latest.id] if latest else []
+    same_caliber = [r for r in version_pool_excl_latest if _caliber(r) == latest_caliber]
     baseline = None
     is_first_in_version = True
-    if latest and latest.version_id:
-        same_version = [r for r in completed if r.version_id == latest.version_id]
-        if len(same_version) > 1:
-            baseline = same_version[1]  # 新→旧排序，[0]=最新，[1]=上次
-            is_first_in_version = False
-    elif latest and not latest.version_id:
-        # 旧 run 无 version_id：取上次 completed 作为 baseline
-        if len(completed) > 1:
-            baseline = completed[1]
-            is_first_in_version = False
+    # Q-4: 口径一致性——baseline 是否与 latest 同口径（同 case 集合才可直接对比）
+    caliber_consistent = False
+    if same_caliber:
+        baseline = same_caliber[0]
+        is_first_in_version = False
+        caliber_consistent = True
+    elif version_pool_excl_latest:
+        # 无同口径 baseline → 退到同版本最近一次（口径不同，前端标「仅供参考」）
+        baseline = version_pool_excl_latest[0]
+        is_first_in_version = False
+        caliber_consistent = False
 
     def _delta(cur, base, key):
         if not cur or not base:
@@ -990,10 +1043,21 @@ async def get_project_overview(project_id: str, rule_only: bool = False):
             return None
         return cost_estimate(target_endpoint, target_model_name,
                              judge_endpoint, judge_model_name,
-                             r.summary.total_token, r.summary.judge_token)
+                             r.summary.total_token, r.summary.judge_token,
+                             r.created_at)
 
     delta = None
     if latest:
+        # Q-4: 口径标注——基于 N/M 条 case（占评测集 X%）；子集 run 标组名
+        _es_for_caliber = get_evalset(latest.evalset_id, project_id) if latest.evalset_id else None
+        _enabled_total = len([c for c in (_es_for_caliber.cases if _es_for_caliber else []) if c.enabled]) if _es_for_caliber else 0
+        _exec_count = len([r for r in (latest.results or []) if not r.skipped_reason]) if latest.results else 0
+        _coverage = round(_exec_count / _enabled_total, 4) if _enabled_total else None
+        _latest_tags = list(getattr(latest, "filter_tags", None) or [])
+        _base_tags = list(getattr(baseline, "filter_tags", None) or []) if baseline else []
+        # 组名：全量→"全量"；子集→标签名拼接
+        def _group_name(tags):
+            return "全量" if not tags else "、".join(tags)
         delta = {
             "pass_rate": {"current": _get_pr(latest),
                           "previous": _get_pr(baseline) if baseline else None,
@@ -1006,10 +1070,33 @@ async def get_project_overview(project_id: str, rule_only: bool = False):
                             "diff": _delta(latest, baseline, "judge_token")},
             "is_first_in_version": is_first_in_version,
             "cost": _run_cost(latest),
+            # Q-4: 口径信息
+            "caliber": {
+                "case_count": _exec_count,
+                "evalset_case_count": _enabled_total,
+                "coverage_ratio": _coverage,
+                "group": _group_name(_latest_tags),
+                "tags": _latest_tags,
+                "is_full": not _latest_tags,
+                "current_group": _group_name(_latest_tags),
+                "previous_group": _group_name(_base_tags) if baseline else None,
+                "consistent": caliber_consistent if baseline else None,
+                "note": (None if (not baseline or caliber_consistent)
+                         else "口径不同，仅供参考"),
+            },
         }
 
     # ② 趋势（旧→新，最多 20）+ 每条 run 的 judge 指纹（Q-1: 可比性标记）
     trend = list(reversed(runs[:20]))
+    # Q-4: 预加载每个 run 的 evalset 启用 case 数（用于口径标注 N/M + coverage）
+    _es_cache = {}  # evalset_id → enabled_count
+    def _enabled_count(evalset_id):
+        if not evalset_id:
+            return 0
+        if evalset_id not in _es_cache:
+            es = get_evalset(evalset_id, project_id)
+            _es_cache[evalset_id] = len([c for c in (es.cases if es else []) if c.enabled]) if es else 0
+        return _es_cache[evalset_id]
     trend_data = [{
         "run_id": r.id, "pass_rate": _get_pr(r),
         "total_token": r.summary.total_token if r.summary else 0,
@@ -1017,6 +1104,13 @@ async def get_project_overview(project_id: str, rule_only: bool = False):
         "created_at": r.created_at, "version_id": r.version_id,
         "status": r.status,
         "judge_fingerprint": r.judge_fingerprint,
+        # Q-4: 口径字段（分色连线 + 口径标注）
+        "filter_tags": list(getattr(r, "filter_tags", None) or []),
+        "is_full": not (getattr(r, "filter_tags", None) or []),
+        "case_count": len([x for x in (r.results or []) if not x.skipped_reason]),
+        "evalset_case_count": _enabled_count(r.evalset_id),
+        "coverage_ratio": (round(len([x for x in (r.results or []) if not x.skipped_reason]) / _en, 4)
+                           if r.results and (_en := _enabled_count(r.evalset_id)) else None),
     } for r in trend]
 
     # Q-1: judge_changed —— 最近 run vs 上次 run 的指纹是否不同
@@ -1085,6 +1179,8 @@ async def get_project_overview(project_id: str, rule_only: bool = False):
         },
         "failed_cases": failed_cases,
         "versions": versions,
+        # Q-3: 当前活动版本（被测 API 版本切换锚点），None = 未切换
+        "current_version_id": project.current_version_id,
         "content_updated_at": content_updated_at,
         "latest_run_id": latest.id if latest else None,
         "recent_runs": recent_runs,
@@ -1674,13 +1770,65 @@ async def get_model_prices():
 
 @router.post("/model-prices", status_code=201)
 async def create_model_price(req: CreateModelPriceRequest):
-    """新建模型价格（端点 + 模型双 key）"""
+    """新建模型价格（端点 + 模型双 key + Q-5 峰谷定价）"""
     if not req.model_pattern.strip() and not req.endpoint_pattern.strip():
         raise HTTPException(status_code=422, detail={
             "error": {"code": "invalid_config", "message": "endpoint_pattern 和 model_pattern 至少填一个"}
         })
-    item = save_model_price(req.endpoint_pattern.strip(), req.model_pattern.strip(), req.price_per_mtok, req.currency, req.note)
+    item = save_model_price(
+        req.endpoint_pattern.strip(), req.model_pattern.strip(), req.price_per_mtok,
+        req.currency, req.note,
+        peak_price_per_mtok=req.peak_price_per_mtok,
+        off_peak_price_per_mtok=req.off_peak_price_per_mtok,
+        peak_start_hour=req.peak_start_hour, peak_end_hour=req.peak_end_hour,
+    )
     return item
+
+
+@router.put("/model-prices/{price_id}")
+async def edit_model_price(price_id: str, req: UpdateModelPriceRequest):
+    """Q-5: 编辑模型价格（峰谷字段可选更新）"""
+    fields = req.model_dump(exclude_none=True)
+    updated = update_model_price(price_id, fields)
+    if not updated:
+        raise HTTPException(status_code=404, detail={
+            "error": {"code": "price_not_found", "message": f"模型价格 {price_id} 不存在"}
+        })
+    return updated
+
+
+@router.get("/model-prices/sources")
+async def get_model_price_sources():
+    """Q-5: 引用式模型选择——从已保存的 Judge 配置与 Target API 配置中收集模型名供价格下拉选择。
+
+    返回 {judge_models: [{name, endpoint, config_id, config_name}], target_models: [{name, endpoint, project_id, project_name}]}
+    """
+    judge_models = []
+    seen_j = set()
+    for jc in list_judge_configs():
+        name = jc.get("judge_config", {}).get("model")
+        if name and name not in seen_j:
+            seen_j.add(name)
+            judge_models.append({
+                "name": name,
+                "endpoint": jc.get("judge_config", {}).get("base_url", ""),
+                "config_id": jc.get("id"),
+                "config_name": jc.get("name", ""),
+            })
+    target_models = []
+    seen_t = set()
+    for p in list_projects():
+        tc = p.target_config
+        name = getattr(tc, "model", None)
+        if name and name not in seen_t:
+            seen_t.add(name)
+            target_models.append({
+                "name": name,
+                "endpoint": getattr(tc, "base_url", ""),
+                "project_id": p.id,
+                "project_name": p.name,
+            })
+    return {"judge_models": judge_models, "target_models": target_models}
 
 
 @router.delete("/model-prices/{price_id}")
@@ -1691,4 +1839,31 @@ async def remove_model_price(price_id: str):
         raise HTTPException(status_code=404, detail={
             "error": {"code": "price_not_found", "message": f"模型价格 {price_id} 不存在"}
         })
+    return result
+
+
+@router.post("/projects/{project_id}/estimate")
+async def batch_estimate_route(project_id: str, req: BatchEstimateRequest):
+    """Q-6: 批量预估——基于历史 case 级样本预估 N 条任务的成本/用时区间
+
+    返回 {cost: {median, p5, p95, currency}, time: {median, p5, p95, unit},
+           skipped_ratio, sample_count, run_count, low_confidence, note}
+    样本不足或仅 1 次 run → 422 + error.code
+    """
+    project = get_project(project_id)
+    if not project:
+        project_not_found(project_id)
+    result = batch_estimate(
+        project, req.count,
+        plan_hour=req.plan_hour,
+        version_id=req.version_id,
+        tags=req.tags or None,
+        concurrency=req.concurrency,
+    )
+    if "error" in result:
+        raise HTTPException(status_code=422, detail={"error": {
+            "code": result["error"], "message": result.get("message", ""),
+            "sample_count": result.get("sample_count", 0),
+            "run_count": result.get("run_count", 0),
+        }})
     return result

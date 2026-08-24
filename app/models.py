@@ -163,6 +163,10 @@ class Project(BaseModel):
     versions: list[ProjectVersion] = Field(default_factory=list)
     # T3-4: 定时回归配置（None = 未配置，向后兼容）
     schedule: Optional[ScheduleConfig] = None
+    # Q-3: 当前活动版本（被测 Target API 的版本切换锚点）。
+    # None = 未切换（向后兼容，新 run 按 created_at 自动落入最近版本）；
+    # 非 None 且存在于 versions → 新发起 run 默认归属此版本，概览以该版本为准。
+    current_version_id: Optional[str] = None
 
 
 class EvalCheck(BaseModel):
@@ -367,30 +371,69 @@ class UpdateScheduleRequest(BaseModel):
 
 
 class ModelPrice(BaseModel):
-    """Q-2: 模型价格（端点 + 模型双 key 锁定）
+    """Q-2/Q-5: 模型价格（端点 + 模型双 key 锁定，峰谷定价）
 
     - endpoint_pattern: 端点子串匹配（如 "api.deepseek" 匹配 "https://api.deepseek.com/v1"）；
       空 = 匹配任意端点（向后兼容旧数据）
     - model_pattern: 模型名前缀匹配（"deepseek" 匹配 "deepseek-v3-chat"）
     - 匹配规则：endpoint_pattern AND model_pattern 都命中；更具体的（合计 pattern 长度更长）优先
-    - price_per_mtok: 每百万 token 价格
+    - price_per_mtok: 每百万 token 价格（Q-2 基础价；Q-5 作为峰价兜底，peak_price_per_mtok 为空时用它）
+    - peak_price_per_mtok: 峰价（可选，覆盖 price_per_mtok）；off_peak_price_per_mtok: 谷价（可选，空则用峰价）
+    - peak_start_hour/peak_end_hour: 峰时段（[start, end) 小时，默认 9–22）；cost_estimate 按 run 时段选价
     - currency: 币种（默认 ¥）
     """
     id: str
     endpoint_pattern: str = ""
     model_pattern: str
     price_per_mtok: float
+    peak_price_per_mtok: Optional[float] = None
+    off_peak_price_per_mtok: Optional[float] = None
+    peak_start_hour: int = 9
+    peak_end_hour: int = 22
     currency: str = "¥"
     note: str = ""
 
 
 class CreateModelPriceRequest(BaseModel):
-    """Q-2: 新建模型价格请求"""
+    """Q-2/Q-5: 新建模型价格请求（峰谷定价可选）"""
     endpoint_pattern: str = ""
     model_pattern: str
     price_per_mtok: float
+    peak_price_per_mtok: Optional[float] = None
+    off_peak_price_per_mtok: Optional[float] = None
+    peak_start_hour: int = 9
+    peak_end_hour: int = 22
     currency: str = "¥"
     note: str = ""
+
+
+class UpdateModelPriceRequest(BaseModel):
+    """Q-5: 编辑模型价格请求（所有字段可选）"""
+    endpoint_pattern: Optional[str] = None
+    model_pattern: Optional[str] = None
+    price_per_mtok: Optional[float] = None
+    peak_price_per_mtok: Optional[float] = None
+    off_peak_price_per_mtok: Optional[float] = None
+    peak_start_hour: Optional[int] = None
+    peak_end_hour: Optional[int] = None
+    currency: Optional[str] = None
+    note: Optional[str] = None
+
+
+class BatchEstimateRequest(BaseModel):
+    """Q-6: 批量预估请求
+
+    - count: 批量任务规模 N（每条视为 1 个 case 执行）
+    - plan_hour: 计划运行时段（0-23），用于选峰/谷价；None → 峰价兜底
+    - version_id: 限定版本作用域采样（None → 用 current_version_id，再 None → 全量）
+    - tags: 按标签筛选 run（OR；空 = 不过滤）
+    - concurrency: 生产端并发度（time 区间按此分摊；默认 1 = 串行）
+    """
+    count: int
+    plan_hour: Optional[int] = None
+    version_id: Optional[str] = None
+    tags: list[str] = Field(default_factory=list)
+    concurrency: int = 1
 
 
 class TestTargetRequest(BaseModel):
