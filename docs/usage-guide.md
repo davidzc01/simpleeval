@@ -1,7 +1,7 @@
 # simpleEval 使用指南
 
 > 面向想用它评测自己工作流的人。按顺序走一遍，就能完成第一次评测。
-> 练习材料：`examples/demo-evalset.json`（通用客服场景 15 条，五类评测类型）。
+> 练习材料：`examples/demo-evalset.json`（通用客服场景 15 条，九类评测类型）。
 
 ---
 
@@ -95,14 +95,30 @@ token: 兼容层不返回真实 token → 留空，结果会标注「token 不�
 
 评测集 tab：导入 CSV/JSON（有模版可下载），或逐条表单添加。
 
-### 五类评测类型怎么选
+### 评测类型怎么选（九类）
 
 | 类型 | 判定 | 用在哪 |
 |------|------|--------|
 | `exact` | 输出与期望**完全一致**（去除首尾空白后） | 答案固定、话术标准化的场景 |
 | `contains` / `not_contains` | 输出包含/不包含指定子串 | 关键词命中、敏感信息拒绝 |
 | `length` | 输出长度在 min/max 区间 | 回答长度控制 |
+| `regex` | 正则匹配 | 格式校验（手机号/日期/编号格式） |
+| `json_schema` | 输出 JSON 结构校验 | 结构化输出的字段/类型约束 |
+| `numeric` | 数值比较（>/≥/</≤/=/≠） | 数值类输出（价格、数量） |
+| `script` | 受限脚本判定，可引用多字段 | **跨字段条件**（如「result 为 true 且 evidence ≥2 条」） |
 | `llm_judge` | Judge 模型按判据打分（≥0.5 通过） | 语义正确性、开放性回答 |
+
+**script 跨字段示例**：
+
+```python
+x = fields.result
+if x == "true" and len(fields.evidence) >= 2:
+    True
+else:
+    False
+```
+
+最后一行是判定返回值；可用变量 `actual`（主输出）与 `fields`（解包后各字段）；支持 if/else 与中间变量，不支持循环与 import。
 
 选型直觉：**能写死规则的用规则类，只有语义判断才用 llm_judge**——Judge 每次调用都消耗 token。
 

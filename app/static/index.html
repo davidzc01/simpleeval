@@ -3731,13 +3731,27 @@
                 });
             }
             // 用例预览文本（按 eval_type 取对应字段）
+            // R-4: 新增 regex / json_schema / numeric / script 预览
             const previewField = c => {
+                const ep = c.eval_params || {};
                 if (c.eval_type === 'llm_judge') return c.output_requirement;
-                if (c.eval_type === 'contains' || c.eval_type === 'not_contains') return c.eval_params?.substring;
+                if (c.eval_type === 'contains' || c.eval_type === 'not_contains') return ep.substring;
                 if (c.eval_type === 'length') {
-                    const mn = c.eval_params?.min;
-                    const mx = c.eval_params?.max;
+                    const mn = ep.min;
+                    const mx = ep.max;
                     return `[${mn ?? 0}, ${mx ?? '∞'}]`;
+                }
+                if (c.eval_type === 'regex') {
+                    return ep.pattern ? `/${ep.pattern}/${ep.ignore_case ? 'i' : ''}` : '';
+                }
+                if (c.eval_type === 'json_schema') {
+                    return ep.schema ? 'schema ✓' : '';
+                }
+                if (c.eval_type === 'numeric') {
+                    return ep.operator && ep.value !== undefined ? `${ep.operator} ${ep.value}` : '';
+                }
+                if (c.eval_type === 'script') {
+                    return ep.code ? (ep.code.length > 40 ? ep.code.slice(0, 40) + '…' : ep.code) : '';
                 }
                 return c.expected_output;
             };
@@ -3767,7 +3781,7 @@
                             <input type="text" class="form-input" id="evalsetKeywordInput" placeholder="搜索 case 名或输入内容..." value="${escapeHtml(state._evalsetKeyword || '')}" oninput="onEvalsetKeywordInput(this.value)" style="width: 220px; font-size: 12px; padding: 4px 8px;">
                             <span style="font-size: 12px; color: var(--ink-4);">类型：</span>
                             <div style="display: flex; gap: 4px; flex-wrap: wrap;">
-                                ${['exact', 'contains', 'not_contains', 'length', 'llm_judge'].map(t => `<button class="tag-chip filter-chip ${typeFilter.includes(t) ? 'active' : ''}" data-type="${t}" onclick="toggleEvalsetTypeFilter(this)">${escapeHtml(t)}</button>`).join('')}
+                                ${['exact', 'contains', 'not_contains', 'length', 'llm_judge', 'regex', 'json_schema', 'numeric', 'script'].map(t => `<button class="tag-chip filter-chip ${typeFilter.includes(t) ? 'active' : ''}" data-type="${t}" onclick="toggleEvalsetTypeFilter(this)">${escapeHtml(t)}</button>`).join('')}
                             </div>
                             <span style="font-size: 12px; color: var(--ink-4); margin-left: 8px;">状态：</span>
                             <select class="form-input" style="width: 90px; font-size: 12px; padding: 4px 8px;" onchange="setEvalsetStatusFilter(this.value)">
@@ -4240,21 +4254,44 @@
         }
 
         // T1-5: checks 列表编辑器
+        // R-4: 新增 regex / json_schema / numeric / script 四种确定性类型
         const CHECK_EVAL_TYPES = [
             { value: 'exact', label: 'exact（精确匹配）' },
             { value: 'contains', label: 'contains（包含子串）' },
             { value: 'not_contains', label: 'not_contains（不包含子串）' },
             { value: 'length', label: 'length（长度范围）' },
-            { value: 'llm_judge', label: 'llm_judge（LLM 评判）' }
+            { value: 'llm_judge', label: 'llm_judge（LLM 评判）' },
+            { value: 'regex', label: 'regex（正则匹配）' },
+            { value: 'json_schema', label: 'json_schema（JSON Schema）' },
+            { value: 'numeric', label: 'numeric（数值比较）' },
+            { value: 'script', label: 'script（受限表达式·跨字段）' }
+        ];
+        const NUMERIC_OPS = [
+            { value: 'gt', label: '> 大于' },
+            { value: 'gte', label: '>= 大于等于' },
+            { value: 'lt', label: '< 小于' },
+            { value: 'lte', label: '<= 小于等于' },
+            { value: 'eq', label: '== 等于' },
+            { value: 'neq', label: '!= 不等于' }
         ];
         function checkRowHTML(chk) {
             chk = chk || { name: '', field: '', eval_type: 'exact', expected: '', eval_params: {} };
             const epSubstr = chk.eval_params?.substring || '';
             const epMin = chk.eval_params?.min ?? '';
             const epMax = chk.eval_params?.max ?? '';
+            const epPattern = chk.eval_params?.pattern || '';
+            const epIgnoreCase = chk.eval_params?.ignore_case ? 'checked' : '';
+            const epSchema = chk.eval_params?.schema ? JSON.stringify(chk.eval_params.schema, null, 2) : '';
+            const epOp = chk.eval_params?.operator || 'gt';
+            const epValue = chk.eval_params?.value ?? '';
+            const epCode = chk.eval_params?.code || '';
             const expectedVisible = chk.eval_type === 'exact' || chk.eval_type === 'llm_judge';
             const containsVisible = chk.eval_type === 'contains' || chk.eval_type === 'not_contains';
             const lengthVisible = chk.eval_type === 'length';
+            const regexVisible = chk.eval_type === 'regex';
+            const schemaVisible = chk.eval_type === 'json_schema';
+            const numericVisible = chk.eval_type === 'numeric';
+            const scriptVisible = chk.eval_type === 'script';
             return `
                 <div class="check-row" data-eval-type="${escapeHtml(chk.eval_type)}">
                     <input type="text" class="form-input chk-name" value="${escapeHtml(chk.name || '')}" placeholder="check 名称">
@@ -4271,6 +4308,18 @@
                             <input type="number" class="form-input chk-len-min" value="${epMin}" placeholder="min" style="width: 50%;">
                             <input type="number" class="form-input chk-len-max" value="${epMax}" placeholder="max" style="width: 50%;">
                         </div>
+                        <div class="chk-regex" style="display: ${regexVisible ? 'flex' : 'none'}; gap: 4px; align-items: center;">
+                            <input type="text" class="form-input chk-regex-pattern" value="${escapeHtml(epPattern)}" placeholder="正则 pattern（如 ^Hello）" style="flex:1;">
+                            <label style="font-size:11px;color:var(--ink-3);white-space:nowrap;"><input type="checkbox" class="chk-regex-ignore" ${epIgnoreCase}> 忽略大小写</label>
+                        </div>
+                        <textarea class="form-input chk-schema" placeholder='JSON Schema（如 {"type":"object","required":["result"]}）' style="display: ${schemaVisible ? 'block' : 'none'}; min-height:60px; font-family:var(--mono-font, monospace); font-size:11px;">${escapeHtml(epSchema)}</textarea>
+                        <div class="chk-numeric" style="display: ${numericVisible ? 'flex' : 'none'}; gap: 4px;">
+                            <select class="form-input chk-num-op" style="width: 50%;">
+                                ${NUMERIC_OPS.map(o => `<option value="${o.value}" ${epOp === o.value ? 'selected' : ''}>${escapeHtml(o.label)}</option>`).join('')}
+                            </select>
+                            <input type="number" step="any" class="form-input chk-num-value" value="${escapeHtml(epValue)}" placeholder="数值" style="width: 50%;">
+                        </div>
+                        <textarea class="form-input chk-code" placeholder='受限表达式（可用：actual / fields.key；如 fields.result == "true" and len(fields.evidence) >= 2）' style="display: ${scriptVisible ? 'block' : 'none'}; min-height:60px; font-family:var(--mono-font, monospace); font-size:11px;">${escapeHtml(epCode)}</textarea>
                     </div>
                     <button class="btn btn-sm btn-danger" onclick="this.closest('.check-row').remove()" title="删除">×</button>
                 </div>
@@ -4302,14 +4351,22 @@
             const expected = row.querySelector('.chk-expected');
             const substr = row.querySelector('.chk-substr');
             const lenWrap = row.querySelector('.chk-length');
+            const regexWrap = row.querySelector('.chk-regex');
+            const schema = row.querySelector('.chk-schema');
+            const numericWrap = row.querySelector('.chk-numeric');
+            const code = row.querySelector('.chk-code');
             if (expected) expected.style.display = (t === 'exact' || t === 'llm_judge') ? '' : 'none';
             if (substr) substr.style.display = (t === 'contains' || t === 'not_contains') ? '' : 'none';
             if (lenWrap) lenWrap.style.display = (t === 'length') ? 'flex' : 'none';
+            if (regexWrap) regexWrap.style.display = (t === 'regex') ? 'flex' : 'none';
+            if (schema) schema.style.display = (t === 'json_schema') ? 'block' : 'none';
+            if (numericWrap) numericWrap.style.display = (t === 'numeric') ? 'flex' : 'none';
+            if (code) code.style.display = (t === 'script') ? 'block' : 'none';
         }
         function collectChecks() {
             const list = document.getElementById('ceChecksList');
             if (!list) return null;
-            const rows = list.querySelectorAll('.check-row');
+            const rows = list.querySelectorAll('.check-row:not(.val-row)');
             if (rows.length === 0) return null;
             const checks = [];
             rows.forEach(r => {
@@ -4318,23 +4375,53 @@
                 const type = r.querySelector('.chk-type')?.value;
                 const field = r.querySelector('.chk-field')?.value.trim() || '';
                 const expected = r.querySelector('.chk-expected')?.value || null;
-                const evalParams = {};
-                if (type === 'contains' || type === 'not_contains') {
-                    const s = r.querySelector('.chk-substr')?.value;
-                    if (s !== null) evalParams.substring = s;
-                } else if (type === 'length') {
-                    const mn = r.querySelector('.chk-len-min')?.value;
-                    const mx = r.querySelector('.chk-len-max')?.value;
-                    if (mn !== '') evalParams.min = parseInt(mn, 10);
-                    if (mx !== '') evalParams.max = parseInt(mx, 10);
-                }
+                const evalParams = collectR4EvalParams(r, 'chk-');
                 checks.push({ name, field, eval_type: type, expected, eval_params: evalParams });
             });
             return checks.length ? checks : null;
         }
+        // R-4: 共享的 eval_params 收集器（prefix 支持 chk- / val-，复用于 checks 与 validations）
+        // 含 contains/length + regex/json_schema/numeric/script 五种参数
+        function collectR4EvalParams(row, prefix) {
+            const type = row.querySelector(`.${prefix}type`)?.value;
+            const evalParams = {};
+            if (type === 'contains' || type === 'not_contains') {
+                const s = row.querySelector(`.${prefix}substr`)?.value;
+                if (s != null && s !== '') evalParams.substring = s;
+            } else if (type === 'length') {
+                const mn = row.querySelector(`.${prefix}len-min`)?.value;
+                const mx = row.querySelector(`.${prefix}len-max`)?.value;
+                if (mn !== '') evalParams.min = parseInt(mn, 10);
+                if (mx !== '') evalParams.max = parseInt(mx, 10);
+            } else if (type === 'regex') {
+                const p = row.querySelector(`.${prefix}regex-pattern`)?.value;
+                if (p != null && p !== '') evalParams.pattern = p;
+                const ig = row.querySelector(`.${prefix}regex-ignore`)?.checked;
+                if (ig) evalParams.ignore_case = true;
+            } else if (type === 'json_schema') {
+                const raw = row.querySelector(`.${prefix}schema`)?.value;
+                if (raw && raw.trim()) {
+                    try {
+                        evalParams.schema = JSON.parse(raw);
+                    } catch (e) {
+                        evalParams.schema = raw; // 非法 JSON 原样保留，后端会判不过
+                    }
+                }
+            } else if (type === 'numeric') {
+                const op = row.querySelector(`.${prefix}num-op`)?.value;
+                const v = row.querySelector(`.${prefix}num-value`)?.value;
+                if (op) evalParams.operator = op;
+                if (v !== '') evalParams.value = parseFloat(v);
+            } else if (type === 'script') {
+                const c = row.querySelector(`.${prefix}code`)?.value;
+                if (c != null && c !== '') evalParams.code = c;
+            }
+            return evalParams;
+        }
 
         // U-10: validations 列表编辑器（input 组与验证组对称化的新结构）
         // 与 checks 的关键差异：llm_judge 用 output_requirement（与 expected 平级），不再复用 expected
+        // R-4: 新增 regex / json_schema / numeric / script 四种类型的参数编辑器
         function validationRowHTML(v) {
             v = v || { name: '', field: '', eval_type: 'exact', expected: '', output_requirement: '', eval_params: {} };
             // W-6 补充：field 默认回填 `output` 保留字（与 input 组首行 `input` 对称）；旧数据 field 空也回填
@@ -4342,10 +4429,20 @@
             const epSubstr = v.eval_params?.substring || '';
             const epMin = v.eval_params?.min ?? '';
             const epMax = v.eval_params?.max ?? '';
+            const epPattern = v.eval_params?.pattern || '';
+            const epIgnoreCase = v.eval_params?.ignore_case ? 'checked' : '';
+            const epSchema = v.eval_params?.schema ? JSON.stringify(v.eval_params.schema, null, 2) : '';
+            const epOp = v.eval_params?.operator || 'gt';
+            const epValue = v.eval_params?.value ?? '';
+            const epCode = v.eval_params?.code || '';
             const expectedVisible = v.eval_type === 'exact';
             const containsVisible = v.eval_type === 'contains' || v.eval_type === 'not_contains';
             const lengthVisible = v.eval_type === 'length';
             const judgeVisible = v.eval_type === 'llm_judge';
+            const regexVisible = v.eval_type === 'regex';
+            const schemaVisible = v.eval_type === 'json_schema';
+            const numericVisible = v.eval_type === 'numeric';
+            const scriptVisible = v.eval_type === 'script';
             return `
                 <div class="check-row val-row" data-eval-type="${escapeHtml(v.eval_type)}">
                     <input type="text" class="form-input val-field" value="${escapeHtml(fieldVal)}" placeholder="字段（output = 主输出；如 result / a.b.c）">
@@ -4363,6 +4460,18 @@
                             <input type="number" class="form-input val-len-min" value="${epMin}" placeholder="min" style="width: 50%;">
                             <input type="number" class="form-input val-len-max" value="${epMax}" placeholder="max" style="width: 50%;">
                         </div>
+                        <div class="chk-regex val-regex" style="display: ${regexVisible ? 'flex' : 'none'}; gap: 4px; align-items: center;">
+                            <input type="text" class="form-input val-regex-pattern" value="${escapeHtml(epPattern)}" placeholder="正则 pattern（如 ^Hello）" style="flex:1;">
+                            <label style="font-size:11px;color:var(--ink-3);white-space:nowrap;"><input type="checkbox" class="val-regex-ignore" ${epIgnoreCase}> 忽略大小写</label>
+                        </div>
+                        <textarea class="form-input val-schema" placeholder='JSON Schema（如 {"type":"object","required":["result"]}）' style="display: ${schemaVisible ? 'block' : 'none'}; min-height:60px; font-family:var(--mono-font, monospace); font-size:11px;">${escapeHtml(epSchema)}</textarea>
+                        <div class="chk-numeric val-numeric" style="display: ${numericVisible ? 'flex' : 'none'}; gap: 4px;">
+                            <select class="form-input val-num-op" style="width: 50%;">
+                                ${NUMERIC_OPS.map(o => `<option value="${o.value}" ${epOp === o.value ? 'selected' : ''}>${escapeHtml(o.label)}</option>`).join('')}
+                            </select>
+                            <input type="number" step="any" class="form-input val-num-value" value="${escapeHtml(epValue)}" placeholder="数值" style="width: 50%;">
+                        </div>
+                        <textarea class="form-input val-code" placeholder='受限表达式（可用：actual / fields.key；如 fields.result == "true" and len(fields.evidence) >= 2）' style="display: ${scriptVisible ? 'block' : 'none'}; min-height:60px; font-family:var(--mono-font, monospace); font-size:11px;">${escapeHtml(epCode)}</textarea>
                     </div>
                     <button class="btn btn-sm btn-danger" onclick="this.closest('.val-row').remove()" title="删除">×</button>
                 </div>
@@ -4394,11 +4503,20 @@
             const outputReq = row.querySelector('.val-output-requirement');
             const substr = row.querySelector('.val-substr');
             const lenWrap = row.querySelector('.val-length');
+            const regexWrap = row.querySelector('.val-regex');
+            const schema = row.querySelector('.val-schema');
+            const numericWrap = row.querySelector('.val-numeric');
+            const code = row.querySelector('.val-code');
             // 仅 exact 用 expected；contains/not_contains 用 substring；length 用 min/max；llm_judge 用 output_requirement
+            // R-4: regex/json_schema/numeric/script 各自的参数区
             if (expected) expected.style.display = (t === 'exact') ? '' : 'none';
             if (outputReq) outputReq.style.display = (t === 'llm_judge') ? '' : 'none';
             if (substr) substr.style.display = (t === 'contains' || t === 'not_contains') ? '' : 'none';
             if (lenWrap) lenWrap.style.display = (t === 'length') ? 'flex' : 'none';
+            if (regexWrap) regexWrap.style.display = (t === 'regex') ? 'flex' : 'none';
+            if (schema) schema.style.display = (t === 'json_schema') ? 'block' : 'none';
+            if (numericWrap) numericWrap.style.display = (t === 'numeric') ? 'flex' : 'none';
+            if (code) code.style.display = (t === 'script') ? 'block' : 'none';
         }
         function collectValidations() {
             const list = document.getElementById('ceValidationsList');
@@ -4416,16 +4534,7 @@
                     expected = r.querySelector('.val-expected')?.value || null;
                 }
                 const outputReq = r.querySelector('.val-output-requirement')?.value || null;
-                const evalParams = {};
-                if (type === 'contains' || type === 'not_contains') {
-                    const s = r.querySelector('.val-substr')?.value;
-                    if (s !== null && s !== '') evalParams.substring = s;
-                } else if (type === 'length') {
-                    const mn = r.querySelector('.val-len-min')?.value;
-                    const mx = r.querySelector('.val-len-max')?.value;
-                    if (mn !== '') evalParams.min = parseInt(mn, 10);
-                    if (mx !== '') evalParams.max = parseInt(mx, 10);
-                }
+                const evalParams = collectR4EvalParams(r, 'val-');
                 // 跳过完全空的行（无 field/expected/output_requirement/eval_params）
                 const hasEvalParams = Object.keys(evalParams).length > 0;
                 if (!field && !expected && !outputReq && !hasEvalParams) return;
@@ -4458,11 +4567,16 @@
                 if (ep.max !== undefined && ep.max !== null) main.eval_params.max = ep.max;
             } else if (mainType === 'llm_judge') {
                 main.output_requirement = c.output_requirement || '';
+            } else if (mainType === 'regex' || mainType === 'json_schema'
+                       || mainType === 'numeric' || mainType === 'script') {
+                // R-4: 新类型 eval_params 原样透传（pattern/ignore_case、schema、operator/value、code）
+                main.eval_params = { ...ep };
             }
             vals.push(main);
             // checks 展开为后续 validations（llm_judge 的 expected 转成 output_requirement）
             // W-6 补充：空 field 回填为 `output` 保留字（与主验证对称，向后兼容）
             // O-1: validation 不再有名称字段
+            // R-4: 新类型（regex/json_schema/numeric/script）eval_params 原样透传
             (c.checks || []).forEach(chk => {
                 const v = {
                     field: chk.field || 'output', eval_type: chk.eval_type || 'exact',
@@ -4480,6 +4594,9 @@
                     } else if (chk.eval_type === 'length') {
                         if (cep.min !== undefined && cep.min !== null) v.eval_params.min = cep.min;
                         if (cep.max !== undefined && cep.max !== null) v.eval_params.max = cep.max;
+                    } else if (chk.eval_type === 'regex' || chk.eval_type === 'json_schema'
+                               || chk.eval_type === 'numeric' || chk.eval_type === 'script') {
+                        v.eval_params = { ...cep };
                     }
                 }
                 vals.push(v);

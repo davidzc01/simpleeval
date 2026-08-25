@@ -178,10 +178,14 @@ class EvalCheck(BaseModel):
     - output_requirement: llm_judge 用的评判标准（U-10 新增，与 expected 平级）
     - eval_params: 如 contains 的 substring、length 的 min/max
     - name: 可选，未命名时按 field 或序号兜底（U-10 放宽）
+    - R-4: 新增 regex / json_schema / numeric / script 四种确定性类型（免 Judge）
     """
     name: str = ""
     field: str = ""
-    eval_type: Literal["exact", "contains", "not_contains", "length", "llm_judge"]
+    eval_type: Literal[
+        "exact", "contains", "not_contains", "length", "llm_judge",
+        "regex", "json_schema", "numeric", "script",
+    ]
     expected: Optional[str] = None
     output_requirement: Optional[str] = None
     eval_params: Optional[dict] = Field(default_factory=dict)
@@ -196,7 +200,11 @@ class EvalCase(BaseModel):
     output_requirement: Optional[str] = None    # llm_judge 用的评判标准
     # U-10: 当 validations 显式提供时，eval_type/expected_output/output_requirement 仅作旧字段兼容
     # 默认 "exact" 使 validations-only case 可直接构造（不强制填旧字段）
-    eval_type: Literal["exact", "contains", "not_contains", "length", "llm_judge"] = "exact"
+    # R-4: 新增 regex / json_schema / numeric / script 四种确定性类型（免 Judge）
+    eval_type: Literal[
+        "exact", "contains", "not_contains", "length", "llm_judge",
+        "regex", "json_schema", "numeric", "script",
+    ] = "exact"
     eval_params: Optional[dict] = Field(default_factory=dict)  # 如 contains 的 substring、length 的 min/max
     task_shape: Optional[str] = None            # 覆盖项目默认值
     enabled: bool = True

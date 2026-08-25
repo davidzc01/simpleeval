@@ -652,3 +652,248 @@ class TestBug1HardTimeout:
         from app.storage import RUNS_DIR
         assert (RUNS_DIR / "proj-sync" / "run-sync-001.json").exists()
 
+
+# ============== R-4: 新增确定性检测类型端到端集成 ==============
+
+class TestR4RunnerIntegration:
+    """R-4: 4 种新 eval_type 走完整 run_evalset 流程，验证 runner 分发与 fields 上下文"""
+
+    def _make_project(self, sample_project):
+        return Project(**sample_project)
+
+    def _make_evalset(self, sample_evalset, cases):
+        data = dict(sample_evalset)
+        data["cases"] = cases
+        return EvalSet(**data)
+
+    @pytest.mark.asyncio
+    async def test_regex_pass_and_fail(self, sample_project, sample_evalset):
+        """regex 类型：命中即过"""
+        from app.models import EvalCase
+        project = self._make_project(sample_project)
+        evalset = self._make_evalset(sample_evalset, [
+            EvalCase(id="c1", case_name="regex-hit", input="hi", eval_type="regex",
+                     eval_params={"pattern": "hello"}, enabled=True),
+            EvalCase(id="c2", case_name="regex-miss", input="hi", eval_type="regex",
+                     eval_params={"pattern": "xyz"}, enabled=True),
+        ])
+        with patch("app.runner.call_target", new_callable=AsyncMock) as mock_call, \
+             patch("app.runner.check_judge_available", new_callable=AsyncMock) as mock_check:
+            mock_call.return_value = ("hello world", 50, False)
+            mock_check.return_value = (True, "")
+            run = await run_evalset(project, evalset)
+        results = {r.case_id: r for r in run.results}
+        assert results["c1"].passed is True
+        assert results["c2"].passed is False
+
+    @pytest.mark.asyncio
+    async def test_json_schema_pass_and_fail(self, sample_project, sample_evalset):
+        """json_schema 类型：合法 JSON + 符合 schema 通过"""
+        from app.models import EvalCase
+        project = self._make_project(sample_project)
+        schema = {"type": "object", "required": ["status"], "properties": {"status": {"type": "string"}}}
+        evalset = self._make_evalset(sample_evalset, [
+            EvalCase(id="c1", case_name="schema-pass", input="hi", eval_type="json_schema",
+                     eval_params={"schema": schema}, enabled=True),
+            EvalCase(id="c2", case_name="schema-missing-field", input="hi", eval_type="json_schema",
+                     eval_params={"schema": schema}, enabled=True),
+            EvalCase(id="c3", case_name="schema-not-json", input="hi", eval_type="json_schema",
+                     eval_params={"schema": schema}, enabled=True),
+        ])
+        with patch("app.runner.call_target", new_callable=AsyncMock) as mock_call, \
+             patch("app.runner.check_judge_available", new_callable=AsyncMock) as mock_check:
+            # 依次返回三个不同的 actual（用 side_effect 列表）
+            mock_call.side_effect = [
+                ('{"status": "ok"}', 50, False),
+                ('{"foo": "bar"}', 50, False),
+                ("not a json", 50, False),
+            ]
+            mock_check.return_value = (True, "")
+            run = await run_evalset(project, evalset)
+        results = {r.case_id: r for r in run.results}
+        assert results["c1"].passed is True   # 符合 schema
+        assert results["c2"].passed is False  # 缺 required 字段 status
+        assert results["c3"].passed is False  # 非 JSON
+
+    @pytest.mark.asyncio
+    async def test_numeric_pass_and_fail(self, sample_project, sample_evalset):
+        """numeric 类型：数值比较"""
+        from app.models import EvalCase
+        project = self._make_project(sample_project)
+        evalset = self._make_evalset(sample_evalset, [
+            EvalCase(id="c1", case_name="num-pass", input="hi", eval_type="numeric",
+                     eval_params={"operator": "gt", "value": 3}, enabled=True),
+            EvalCase(id="c2", case_name="num-fail", input="hi", eval_type="numeric",
+                     eval_params={"operator": "gt", "value": 100}, enabled=True),
+            EvalCase(id="c3", case_name="num-non-numeric", input="hi", eval_type="numeric",
+                     eval_params={"operator": "gt", "value": 3}, enabled=True),
+        ])
+        with patch("app.runner.call_target", new_callable=AsyncMock) as mock_call, \
+             patch("app.runner.check_judge_available", new_callable=AsyncMock) as mock_check:
+            mock_call.side_effect = [
+                ("42", 50, False),     # 42 > 3 → True
+                ("2", 50, False),      # 2 > 100 → False
+                ("not a number", 50, False),
+            ]
+            mock_check.return_value = (True, "")
+            run = await run_evalset(project, evalset)
+        results = {r.case_id: r for r in run.results}
+        assert results["c1"].passed is True
+        assert results["c2"].passed is False
+        assert results["c3"].passed is False
+
+    @pytest.mark.asyncio
+    async def test_script_actual_only(self, sample_project, sample_evalset):
+        """script 类型：仅用 actual，无 fields"""
+        from app.models import EvalCase
+        project = self._make_project(sample_project)
+        evalset = self._make_evalset(sample_evalset, [
+            EvalCase(id="c1", case_name="script-pass", input="hi", eval_type="script",
+                     eval_params={"code": "len(actual) > 3"}, enabled=True),
+            EvalCase(id="c2", case_name="script-fail", input="hi", eval_type="script",
+                     eval_params={"code": "len(actual) > 10"}, enabled=True),
+        ])
+        with patch("app.runner.call_target", new_callable=AsyncMock) as mock_call, \
+             patch("app.runner.check_judge_available", new_callable=AsyncMock) as mock_check:
+            mock_call.return_value = ("hello", 50, False)
+            mock_check.return_value = (True, "")
+            run = await run_evalset(project, evalset)
+        results = {r.case_id: r for r in run.results}
+        assert results["c1"].passed is True
+        assert results["c2"].passed is False
+
+    @pytest.mark.asyncio
+    async def test_script_cross_field(self, sample_project, sample_evalset):
+        """script 类型：跨字段判断 fields.result == "true" and len(fields.evidence) >= 2"""
+        from app.models import EvalCase
+        project = self._make_project(sample_project)
+        code = 'fields.result == "true" and len(fields.evidence) >= 2'
+        evalset = self._make_evalset(sample_evalset, [
+            EvalCase(id="c1", case_name="cross-pass", input="hi", eval_type="script",
+                     eval_params={"code": code}, enabled=True),
+            EvalCase(id="c2", case_name="cross-short-evidence", input="hi", eval_type="script",
+                     eval_params={"code": code}, enabled=True),
+            EvalCase(id="c3", case_name="cross-fail-result", input="hi", eval_type="script",
+                     eval_params={"code": code}, enabled=True),
+        ])
+        with patch("app.runner.call_target", new_callable=AsyncMock) as mock_call, \
+             patch("app.runner.check_judge_available", new_callable=AsyncMock) as mock_check:
+            mock_call.side_effect = [
+                # actual 是 JSON 对象，runner 会 _parse_fields_for_script 解析为 fields
+                ('{"result": "true", "evidence": ["a", "b"]}', 50, False),
+                ('{"result": "true", "evidence": ["a"]}', 50, False),  # evidence < 2 → 不过
+                ('{"result": "false", "evidence": ["a", "b"]}', 50, False),  # result != true → 不过
+            ]
+            mock_check.return_value = (True, "")
+            run = await run_evalset(project, evalset)
+        results = {r.case_id: r for r in run.results}
+        assert results["c1"].passed is True
+        assert results["c2"].passed is False
+        assert results["c3"].passed is False
+
+    @pytest.mark.asyncio
+    async def test_script_in_validations_cross_field(self, sample_project, sample_evalset):
+        """script 作为 validations 子项（非主验证）走 cross-field 路径"""
+        from app.models import EvalCase, EvalCheck
+        project = self._make_project(sample_project)
+        # 主验证：exact（主输出 == "ok"）
+        # 子验证：script 跨字段
+        evalset = self._make_evalset(sample_evalset, [
+            EvalCase(
+                id="c1", case_name="validations-script", input="hi", enabled=True,
+                validations=[
+                    EvalCheck(name="主输出", field="", eval_type="exact", expected="ok"),
+                    EvalCheck(name="跨字段", field="", eval_type="script",
+                              eval_params={"code": 'fields.score > 0.8'}),
+                ],
+            ),
+        ])
+        with patch("app.runner.call_target", new_callable=AsyncMock) as mock_call, \
+             patch("app.runner.check_judge_available", new_callable=AsyncMock) as mock_check:
+            # actual 是 "ok"（非 JSON）→ fields 解析为空 dict → fields.score AttributeError → 不过
+            mock_call.return_value = ("ok", 50, False)
+            mock_check.return_value = (True, "")
+            run = await run_evalset(project, evalset)
+        r = run.results[0]
+        # 主验证通过，子验证 script 因 fields.score 不存在 → 不过 → 整体不过
+        assert r.passed is False
+        # check_results 两条
+        assert len(r.check_results) == 2
+        assert r.check_results[0]["passed"] is True   # exact 主验证
+        assert r.check_results[1]["eval_type"] == "script"
+        assert r.check_results[1]["passed"] is False  # fields.score 不存在
+
+    @pytest.mark.asyncio
+    async def test_script_cross_field_with_explicit_field(self, sample_project, sample_evalset):
+        """script + field="result"：主输出取字段值，fields 仍可访问其他字段"""
+        from app.models import EvalCase, EvalCheck
+        project = self._make_project(sample_project)
+        evalset = self._make_evalset(sample_evalset, [
+            EvalCase(
+                id="c1", case_name="script-field-extract", input="hi", enabled=True,
+                validations=[
+                    EvalCheck(name="脚本", field="result", eval_type="script",
+                              eval_params={"code": 'actual == "pass" and len(fields.evidence) >= 2'}),
+                ],
+            ),
+        ])
+        with patch("app.runner.call_target", new_callable=AsyncMock) as mock_call, \
+             patch("app.runner.check_judge_available", new_callable=AsyncMock) as mock_check:
+            mock_call.return_value = ('{"result": "pass", "evidence": ["a", "b", "c"]}', 50, False)
+            mock_check.return_value = (True, "")
+            run = await run_evalset(project, evalset)
+        r = run.results[0]
+        # field="result" → actual = "pass"（提取后）→ actual=="pass" 且 fields.evidence 有 3 条 → 过
+        assert r.passed is True
+
+    @pytest.mark.asyncio
+    async def test_script_security_rejected_in_runner(self, sample_project, sample_evalset):
+        """runner 路径下 script 安全拒绝仍生效（__import__ 被拦）"""
+        from app.models import EvalCase
+        project = self._make_project(sample_project)
+        evalset = self._make_evalset(sample_evalset, [
+            EvalCase(id="c1", case_name="evil", input="hi", eval_type="script",
+                     eval_params={"code": '__import__("os").system("echo pwned")'}, enabled=True),
+        ])
+        with patch("app.runner.call_target", new_callable=AsyncMock) as mock_call, \
+             patch("app.runner.check_judge_available", new_callable=AsyncMock) as mock_check:
+            mock_call.return_value = ("anything", 50, False)
+            mock_check.return_value = (True, "")
+            run = await run_evalset(project, evalset)
+        # 被拒绝 → 不过（不执行系统命令）
+        assert run.results[0].passed is False
+
+    @pytest.mark.asyncio
+    async def test_script_statement_mode_runner(self, sample_project, sample_evalset):
+        """R-4 语句集模式：if/else + 变量赋值 + 末行返回，走 runner 完整流程"""
+        from app.models import EvalCase
+        project = self._make_project(sample_project)
+        code = (
+            'ev_count = len(fields.evidence)\n'
+            'if fields.confidence > 0.7:\n'
+            '    ok = ev_count >= 2\n'
+            'else:\n'
+            '    ok = ev_count >= 4\n'
+            'ok and fields.result == "true"'
+        )
+        evalset = self._make_evalset(sample_evalset, [
+            EvalCase(id="c1", case_name="stmt-pass", input="hi", eval_type="script",
+                     eval_params={"code": code}, enabled=True),
+            EvalCase(id="c2", case_name="stmt-low-conf", input="hi", eval_type="script",
+                     eval_params={"code": code}, enabled=True),
+        ])
+        with patch("app.runner.call_target", new_callable=AsyncMock) as mock_call, \
+             patch("app.runner.check_judge_available", new_callable=AsyncMock) as mock_check:
+            mock_call.side_effect = [
+                # 高置信 + 2 条 evidence + result=true → True
+                ('{"confidence": 0.9, "evidence": ["a", "b"], "result": "true"}', 50, False),
+                # 低置信 + 2 条 evidence（需 >= 4）→ False
+                ('{"confidence": 0.5, "evidence": ["a", "b"], "result": "true"}', 50, False),
+            ]
+            mock_check.return_value = (True, "")
+            run = await run_evalset(project, evalset)
+        results = {r.case_id: r for r in run.results}
+        assert results["c1"].passed is True
+        assert results["c2"].passed is False
+
+

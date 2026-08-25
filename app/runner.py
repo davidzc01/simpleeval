@@ -115,6 +115,18 @@ def _extract_check_field(actual_output: str, field: str) -> str:
     return str(cur)
 
 
+def _parse_fields_for_script(actual_output: str) -> dict:
+    """R-4: 为 script 类型解析 fields 上下文（actual 为 JSON 对象时取其字段 dict）。
+
+    非 JSON 或非 dict → 返回空 dict；script 仍可通过 `actual` 访问原文。
+    """
+    try:
+        obj = json.loads(actual_output)
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    return obj if isinstance(obj, dict) else {}
+
+
 def percentile(data: list[float], p: float) -> float:
     """计算分位数，使用线性插值"""
     if not data:
@@ -266,8 +278,11 @@ async def _evaluate_case(
                 judge_token += v_judge_token
                 v_passed = v_score >= JUDGE_THRESHOLD
         else:
+            # R-4: script 类型需 fields 上下文（解析自 actual 全文）
+            v_fields = _parse_fields_for_script(actual) if main_v.eval_type == "script" else None
             v_passed = run_rule_based(
-                main_v.eval_type, v_value, main_v.expected, main_v.eval_params or {}
+                main_v.eval_type, v_value, main_v.expected, main_v.eval_params or {},
+                fields=v_fields,
             )
             v_score = 1.0 if v_passed else 0.0
         # 主验证结果始终入 check_results（U-10 统一展示）
@@ -310,8 +325,11 @@ async def _evaluate_case(
                     chk_passed = chk_score >= JUDGE_THRESHOLD
                     judge_token += chk_judge_token
             else:
+                # R-4: script 类型需 fields 上下文（解析自 actual 全文）
+                chk_fields = _parse_fields_for_script(actual) if chk.eval_type == "script" else None
                 chk_passed = run_rule_based(
-                    chk.eval_type, chk_value, chk.expected, chk.eval_params or {}
+                    chk.eval_type, chk_value, chk.expected, chk.eval_params or {},
+                    fields=chk_fields,
                 )
                 chk_score = 1.0 if chk_passed else 0.0
             check_results.append({

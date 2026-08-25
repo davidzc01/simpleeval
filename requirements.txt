@@ -3,6 +3,7 @@ uvicorn
 httpx
 pydantic
 anyio
+jsonschema>=4.0.0  # R-4: json_schema 评测类型
 
 # 测试依赖
 pytest>=7.0.0
